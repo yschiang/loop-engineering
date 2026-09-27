@@ -25,7 +25,8 @@ _STRENGTH = {"R-unaffected": 0, "R-reevaluate": 1, "R-base": 2, "R-reobserve": 3
 
 
 def version_key(vs: dict[str, Any]) -> str:
-    return "sha256:" + hashlib.sha256(json.dumps(vs, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    # "vk:" keeps version keys distinct from "sha256:" blob references scanned by the store barrier.
+    return "vk:" + hashlib.sha256(json.dumps(vs, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def matrix_rows() -> dict[str, dict[str, str]]:
