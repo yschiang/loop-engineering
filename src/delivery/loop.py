@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import fnmatch
 import hashlib
 import json
 import subprocess
@@ -84,8 +85,8 @@ def start_run(ctx: Context, run_id: str, feature_key: str, tasks: list[dict[str,
         "schema_version": 1, "run_id": run_id, "feature_key": feature_key, "plan_version": plan_version,
         "approval": approval, "phase": "implementing" if approval else "awaiting_approval",
         "next_action": {"kind": "step", "detail": ""}, "versions": versions,
-        "tasks": [{**t, "status": "pending", "lease": None, "attempts": [], "change_class": "behavior", "red": []}
-                  for t in tasks],
+        "tasks": [{**t, "status": "pending", "lease": None, "attempts": [],
+                   "change_class": t.get("change_class", "behavior"), "red": []} for t in tasks],
         "gates": {g: {"gate": g, "status": "missing", "version_key": k, "evidence": []} for g in ("g1", "g2", "g3")},
         "ticket": ticket, "dependencies": list(dependencies or []), "waits": [],
         "registry": {"seq": 0, "findings": {}},
@@ -332,12 +333,53 @@ def _return_to_producer(store: Store, state: dict[str, Any], a: dict[str, Any]) 
     return "g1_returned"
 
 
+def _na_eligibility(ctx: Context, store: Store, state: dict[str, Any]) -> str | None:
+    """N/A is never self-granted: controller pre-filter, then an independent reviewer bound to the diff (D26)."""
+    for task in state["tasks"]:
+        if task["change_class"] != "na_requested" or task.get("na"):
+            continue
+        entry = next(e for e in reversed(state["integration"]["log"]) if e["task_id"] == task["task_id"])
+        diff = _git(ctx.ctl_repo, "diff", entry["from"], entry["to"])
+        paths = _git(ctx.ctl_repo, "diff", "--name-only", entry["from"], entry["to"]).split()
+        digest = "diff:" + hashlib.sha256(diff.encode()).hexdigest()
+        task["diff_digest"] = digest
+        nondoc = [p for p in paths if not any(fnmatch.fnmatch(p, g) for g in ctx.policy.get("na_doc_globs", []))]
+        if nondoc:
+            task["na"] = {"status": "rejected", "reason": f"prefilter: non-doc paths {nondoc}", "diff_digest": digest}
+            store.commit(state)
+            return "na_prefilter_rejected"
+        unit = task.setdefault("na_review", {"task_id": f"na-{task['task_id']}", "scope": [], "attempts": [],
+                                             "lease": None})
+        if unit["lease"] is None:
+            refused = _dispatch_guard(ctx, store, state, unit, "na_reviewer")
+            if refused is not None:
+                return refused
+            return _new_attempt(ctx, store, state, unit, "na_reviewer",
+                                {"diff_digest": digest, "diff_paths": paths, "na_task": task["task_id"],
+                                 "na_reason": task.get("na_reason", "")})
+        waiting = _drive_attempt(ctx, store, state, unit["attempts"][-1])
+        if waiting is not None:
+            return waiting
+        task = next(t for t in state["tasks"] if t["task_id"] == task["task_id"])
+        ref = state["imported_results"][task["na_review"]["attempts"][-1]["attempt_id"]]
+        result = _load_blob(store, ref)
+        status = result["eligibility"] if result.get("diff_digest") == digest else "rejected"
+        task["na"] = {"status": status, "diff_digest": result.get("diff_digest"), "result": ref}
+        store.commit(state)
+        return "na_decided"
+    return None
+
+
 def _step_validate(ctx: Context, store: Store, state: dict[str, Any]) -> str:
+    na_step = _na_eligibility(ctx, store, state)
+    if na_step is not None and na_step != "na_prefilter_rejected":
+        return na_step
     head = _git(ctx.ctl_repo, "rev-parse", f"refs/heads/{ctx.branch}")
     if state["versions"]["head_sha"] != head:
         reassess(state, {**state["versions"], "head_sha": head})
     green, ref = _green(ctx, store, state, head)
-    tasks = [{"task_id": t["task_id"], "change_class": t["change_class"], "red": t["red"]} for t in state["tasks"]]
+    tasks = [{"task_id": t["task_id"], "change_class": t["change_class"], "red": t["red"], "na": t.get("na"),
+              "diff_digest": t.get("diff_digest")} for t in state["tasks"]]
     a = evaluate_g1(tasks, green, head, _is_ancestor(ctx))
     state["gates"]["g1"] = {**a, "gate": "g1", "version_key": _key(state), "evidence": [ref]}
     if a["status"] != "passed":

@@ -112,6 +112,10 @@ def derive(assessment: dict[str, Any], old_vs: dict[str, Any], new_vs: dict[str,
                            "reasons": [], "derived": {"from": assessment["version_key"], "rule": rule,
                                                       "changed_fields": fields}}
     status = assessment["status"]
+    if rule == "R-unaffected":
+        # An unaffected gate keeps its full assessment detail (per-task findings, reasons) under the new key.
+        out.update({k: v for k, v in assessment.items() if k not in out and k != "status"})
+        out["reasons"] = list(assessment.get("reasons", []))
     if rule == "stale":
         status = "stale"
     elif rule == "R-reobserve":
