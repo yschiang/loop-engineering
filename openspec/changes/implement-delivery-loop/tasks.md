@@ -62,7 +62,7 @@ D40 採三個 feature PR。單一 PR／四 PR 為歷史替代方案，未選用�
     - `abandon_run` decision 後新 run 繼承已用 rounds/active time；
     - lineage 中任一 run 不可讀 → Blocked；
     - project.json 被刪 → 由 authority 修復
-- [ ] 1.7 (DR-07) Outbox 引擎與 dispatch 分段恢復（design.md §11），以 fake runtime/GitHub 注入故障；驗法：`tests/test_outbox.py`、`tests/test_dispatch_recovery.py` 通過（AC-D06, D12–D14, D16, F14）
+- [x] 1.7 (DR-07) Outbox 引擎與 dispatch 分段恢復（design.md §11），以 fake runtime/GitHub 注入故障；驗法：`tests/test_outbox.py`、`tests/test_dispatch_recovery.py` 通過（AC-D06, D12–D14, D16, F14）
   - Red 測試：故障矩陣每一格斷言最終 stage 與外部呼叫次數
     - crash 在 session create 前 → 恰 1 次 create；
     - create 回應遺失且 lookup 查得 → 不重建；
