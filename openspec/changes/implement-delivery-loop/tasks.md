@@ -53,7 +53,7 @@ D40 採三個 feature PR。單一 PR／四 PR 為歷史替代方案，未選用�
     - SIGKILL 隨機中斷 200 次後不變式成立（process 層級）；
     - `strace -f -e trace=fsync,link,rename` 顯示所有 blob fsync 早於 snapshot rename（僅 Linux）
 - [x] 1.4 events.jsonl pending history、ID 去重、尾筆截斷、中段損壞；驗法：`tests/test_events.py`（AC-D10）
-- [ ] 1.5 Result 匯入：inbox → durable blob、同內容去重、不同內容 conflict、身份不符拒收；驗法：`tests/test_results.py`（AC-D05, D07, D08）
+- [x] 1.5 Result 匯入：inbox → durable blob、同內容去重、不同內容 conflict、身份不符拒收；驗法：`tests/test_results.py`（AC-D05, D07, D08）
 - [ ] 1.6 (DR-06) Feature authority locator、flock、run lineage 與預算加總（design.md §9.1）；驗法：`tests/test_authority.py` 通過（AC-D03, D17, F07）
   - Red 測試：
     - 兩 subprocess 同時 start → 恰一方成功；
