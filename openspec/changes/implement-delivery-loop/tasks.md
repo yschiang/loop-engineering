@@ -89,7 +89,7 @@ D40 採三個 feature PR。單一 PR／四 PR 為歷史替代方案，未選用�
     - (DR-10) plan binding 改釘新 skill digest → G1 evidence 標 `method_changed`、G2 stale，須新契約 review；
     - (DR-10) controller_version 變更 → 各 gate 經 R-reevaluate／R-reobserve 重算，不直接沿用；新 evaluator 更嚴時原 passed 轉 failed；
     - (DR-10) G3 在任何 key 變更後都重新查詢，不沿用舊 assessment
-- [ ] 2.2 G1 evaluator：Red 有效性、replay、controller Green、lineage（integration.log）、adopt 缺 Red、N/A；驗法：`tests/test_gate_g1.py`（AC-G04–G10）
+- [x] 2.2 G1 evaluator：Red 有效性、replay、controller Green、lineage（integration.log）、adopt 缺 Red、N/A；驗法：`tests/test_gate_g1.py`（AC-G04–G10）
 - [ ] 2.3 (DR-01) G2 evaluator：profile/actual model、session 獨立、isolation 只依 §10.3 能力報告＋receipt；驗法：`tests/test_gate_g2.py`（AC-G03, G11, G12, D24）
   - Red 測試：
     - clone＋env 清理＋事後 ref 不變但無 verified 報告 → G2 unknown；
