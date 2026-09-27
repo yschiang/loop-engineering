@@ -142,3 +142,17 @@ Pass 標準共通前提：測試由 runner 捕捉且 evidence digest 可核對�
 - Worker 權限邊界（design.md §10）：目前只有本輪 macOS Darwin 27.0 的 tmp probe（非產品測試）；Linux launcher、OpenCode 在 sandbox 下、keychain 與網路未測。未通過負例套件的 profile 一律 unverified。
 - Durability：process 層級（SIGKILL）與 Linux syscall 順序可測；主機斷電／儲存 crash 未覆蓋（需 VM 硬重置），macOS 目錄 `F_FULLFSYNC` 支援待測。
 - G3 merge snapshot 與所有 GH 層案例依 S2 GitHub sandbox 與權限實測。
+
+## S1 實作執行紀錄（bootstrap-s1-20260927／s1-impl-01，進行中）
+
+本段只記錄 S1 worker 在本機實際執行的測試與未執行項目；不是 G1/G2/G3 結論，也不改動上方 AC 對照。原始 Red/Green 證據（命令、cwd、起迄時間、exit、完整 stdout/stderr、HEAD/tree、hash）保存在 run 目錄 `s1-run/evidence/<task>/`，不進 Git。
+
+| 層級 | 已實際執行（本機 macOS 27.0、Python 3.12.13） | 未執行／未覆蓋 |
+| --- | --- | --- |
+| F | tasks 1.1、1.2、1.4–1.8、2.1–2.9 與 2.10 的部分行為；全量回歸指向 worker head | CI `test` job 尚未執行（未 push） |
+| F／Linux | — | `test_blob_and_dir_fsync_precede_snapshot_rename`（strace 順序）只在 Linux 執行；本機為 skipped，**不算通過**；CI 以 `DELIVERY_REQUIRE_LINUX_CHECKS=1` 強制執行 |
+| OS | macOS Seatbelt 負例套件（直接與孫程序；寫 author repo、update-ref、寫 state／authority／他 attempt、讀憑證、push 被拒；寫自己 clone／inbox 成功） | Linux launcher（bubblewrap／Landlock）未實作亦未安裝：`run_suite` 在 Linux 回 `unverified`／`not_run`，對應 AC 未覆蓋；`gh auth token`／keychain 負例屬 S2 task 4.3 |
+
+環境觀察：本機 `/usr/local/bin/git` 為 x86_64 build，在 Seatbelt 下 exec 失敗（"Bad CPU type"）；OS 負例改釘 `/usr/bin/git`，使拒絕可歸因於邊界而非 binary。`git push` 被拒時不回報 EPERM 文字，該負例以「remote ref 未產生」的效果核對判定。
+
+待獨立 Reviewer 核對的文字歧義：design.md §5.3 矩陣的 skills×G3 格寫 R-unaffected，但 R-reobserve 定義與 task 2.1（DR-10）驗收要求「G3 在任何 key 變更後重新查詢」。依協調者指示採既有明確驗收（G3 一律 R-reobserve），未修改 spec/design。

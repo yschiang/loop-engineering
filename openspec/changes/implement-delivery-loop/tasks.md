@@ -73,7 +73,7 @@ D40 採三個 feature PR。單一 PR／四 PR 為歷史替代方案，未選用�
     - accepted 後 receipt 未存 → 由 messages 補存；
     - session lookup 得 2 個 → Blocked
 - [x] 1.8 Budget：active interval 聯集、crash unknown interval、per-op retries；驗法：`tests/test_budget.py`（AC-D16, D17）
-- [ ] 1.9 (DR-01) Sandbox profile 產生器與 OS 負例套件（design.md §10），不需 runtime；驗法：`tests/os/test_sandbox_macos.py -m os` 在 macOS 通過；Linux launcher 未安裝時該測試標 skipped 並在 validation 記未覆蓋
+- [x] 1.9 (DR-01) Sandbox profile 產生器與 OS 負例套件（design.md §10），不需 runtime；驗法：`tests/os/test_sandbox_macos.py -m os` 在 macOS 通過；Linux launcher 未安裝時該測試標 skipped 並在 validation 記未覆蓋
   - Red 測試：以 profile 啟動 `sh`／`python` 並分別以直接呼叫與孫程序執行 §10.4 清單，拒絕項須得 EPERM/EACCES、允許項成功；profile 缺規則時 isolation 報告必須為 `unverified`
 
 ## 2. S1-B Gates、findings、整合與狀態機
