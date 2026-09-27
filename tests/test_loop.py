@@ -62,7 +62,7 @@ def begin(c, approval=True):
 
 def test_full_loop_with_review_finding_fix_and_rereview_reaches_pass_across_restarts(tmp_path, ctl):
     rt = AgentRuntime(reviews=[{"verdict": "changes_required", "findings": [FINDING]},
-                               {"verdict": "clean", "close": ["F-0001"]}])
+                               {"verdict": "clean", "close": ["F-0001"]}], fix_spec=FIX)
     gh = RepoGitHub(ctl)
     c = ctx(tmp_path, ctl, rt, gh)
     begin(c)
@@ -105,7 +105,7 @@ def test_unverified_reviewer_isolation_blocks_instead_of_passing(tmp_path, ctl):
 
 
 def test_ci_failure_waits_for_review_and_joins_one_batch(tmp_path, ctl):
-    rt = AgentRuntime(reviews=[{"verdict": "clean"}, {"verdict": "clean"}])
+    rt = AgentRuntime(reviews=[{"verdict": "clean"}, {"verdict": "clean"}], fix_spec=FIX)
     gh = RepoGitHub(ctl, ci=lambda sha, n: "failure" if n == 1 else "success")
     c = ctx(tmp_path, ctl, rt, gh)
     begin(c)

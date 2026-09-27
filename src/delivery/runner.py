@@ -198,4 +198,12 @@ def run_evidence(kind: str, task_id: str, attempt_id: str, argv: list[str], cwd:
 
 
 def evidence_record(ev: Evidence) -> dict[str, object]:
-    raise NotImplementedError
+    """JSON form of an Evidence (raw bytes stay in separate files, referenced by digest)."""
+    snap = ev.snapshot
+    return {"kind": ev.kind, "task_id": ev.task_id, "attempt_id": ev.attempt_id, "argv": list(ev.argv),
+            "cwd": ev.cwd, "status": ev.status, "exit_code": ev.exit_code, "started_at": ev.started_at,
+            "ended_at": ev.ended_at, "failing_ids": list(ev.failing_ids), "passing_ids": list(ev.passing_ids),
+            "snapshot": None if snap is None else {"commit": snap.commit, "tree": snap.tree, "parent": snap.parent,
+                                                   "ref": snap.ref, "included": list(snap.included)},
+            "refusal": None if ev.refusal is None else [list(r) for r in ev.refusal.reasons],
+            "digests": dict(ev.digests), "producer": {"tool": "delivery-runner"}}

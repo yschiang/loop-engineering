@@ -29,6 +29,8 @@ class RuntimePort(Protocol):
 
 
 TERMINAL = ("succeeded", "blocked", "fenced")
+# GitHub-style operations share one marker/retry engine; only the port methods differ.
+_PORT = {"pr_comment": ("post_comment", "find_comment"), "pr_ensure": ("ensure_pr", "find_pr")}
 
 
 def new_comment_op(state: dict[str, Any], op_id: str, target: str, body: str, run_id: str) -> dict[str, Any]:
@@ -38,6 +40,12 @@ def new_comment_op(state: dict[str, Any], op_id: str, target: str, body: str, ru
         "op_id": op_id, "kind": "pr_comment", "target": target, "body": full, "marker": marker,
         "payload_digest": hashlib.sha256(full.encode()).hexdigest(), "state": "pending",
         "attempts": [], "retries_used": 0, "receipt": None}
+    return state
+
+
+def new_pr_op(state: dict[str, Any], op_id: str, branch: str, body: str, run_id: str) -> dict[str, Any]:
+    new_comment_op(state, op_id, branch, body, run_id)
+    state["operations"][op_id]["kind"] = "pr_ensure"
     return state
 
 
@@ -77,7 +85,7 @@ def _advance_comment(store: Any, state: dict[str, Any], op: dict[str, Any], gh: 
     while op["state"] not in TERMINAL:
         if op["state"] == "outcome_unknown":
             try:
-                found = gh.find_comment(op["target"], op["marker"])
+                found = getattr(gh, _PORT[op["kind"]][1])(op["target"], op["marker"])
             except ResponseUnknown as e:
                 op["retries_used"] += 1
                 if op["retries_used"] > EXTRA_RETRIES:
@@ -85,7 +93,8 @@ def _advance_comment(store: Any, state: dict[str, Any], op: dict[str, Any], gh: 
                 store.commit(state)
                 continue
             if found is not None:
-                op.update(state="succeeded", receipt=_receipt(store, found), result_url=found.get("url"))
+                op.update(state="succeeded", receipt=_receipt(store, found), result_url=found.get("url"),
+                          result=found)
                 store.commit(state)
                 break
             op["state"] = "pending"  # proven absent: a retry cannot duplicate
@@ -96,14 +105,15 @@ def _advance_comment(store: Any, state: dict[str, Any], op: dict[str, Any], gh: 
         op["state"] = "in_flight"
         store.commit(state)
         try:
-            receipt = gh.post_comment(op["target"], op["body"])
+            receipt = getattr(gh, _PORT[op["kind"]][0])(op["target"], op["body"])
         except ResponseUnknown as e:
             op["attempts"].append({"outcome": "unknown", "error": str(e)})
             op["state"] = "outcome_unknown"
             store.commit(state)
             continue
         op["attempts"].append({"outcome": "ok"})
-        op.update(state="succeeded", receipt=_receipt(store, receipt), result_url=receipt.get("url"))
+        op.update(state="succeeded", receipt=_receipt(store, receipt), result_url=receipt.get("url"),
+                  result=receipt)
         store.commit(state)
     return state
 

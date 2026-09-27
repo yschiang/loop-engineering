@@ -17,10 +17,11 @@ class AgentRuntime(FakeRuntime):
     """Implementer: write test → capture Red with the real runner → implement → commit → result.
     Reviewer: return the scripted verdict for its review number."""
 
-    def __init__(self, reviews, skip_red=False):
+    def __init__(self, reviews, skip_red=False, fix_spec=None):
         super().__init__()
         self.reviews = list(reviews)
         self.skip_red = skip_red
+        self.fix_spec = fix_spec  # what the worker decides to change for a correction batch
 
     def send_prompt(self, session, text):
         mid = super().send_prompt(session, text)
@@ -32,7 +33,7 @@ class AgentRuntime(FakeRuntime):
         clone, inbox = Path(a["clone_path"]), Path(a["inbox"])
         for k, v in (("user.email", "w@x"), ("user.name", "worker")):
             git(clone, "config", k, v)
-        spec = a["task"]["spec"]
+        spec = a["task"].get("spec") or self.fix_spec
         for path, body in spec["tests"].items():
             (clone / path).parent.mkdir(parents=True, exist_ok=True)
             (clone / path).write_text(body)
