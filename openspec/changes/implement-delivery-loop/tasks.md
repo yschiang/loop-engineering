@@ -110,7 +110,7 @@ D40 採三個 feature PR。單一 PR／四 PR 為歷史替代方案，未選用�
     - ref 為第三值 → Blocked；
     - scope 外修改 → 拒絕；
     - 整合後 regression 紅 → G1 failed
-- [ ] 2.10 狀態機、adopt、依賴檢查（D27）、Project Lead 授權；驗法：`tests/test_controller_flow.py` 以 fake runtime/GitHub 跑完整路徑（AC-O01–O04, O08, O09, O12, O13, O18, O19, O22, O23, O26）
+- [x] 2.10 狀態機、adopt、依賴檢查（D27）、Project Lead 授權；驗法：`tests/test_controller_flow.py` 以 fake runtime/GitHub 跑完整路徑（AC-O01–O04, O08, O09, O12, O13, O18, O19, O22, O23, O26）
   - (DR-03) 必含兩個端到端案例：
     - pre-PR G1 → push＋PR 建立 → G2/G3 → Pass；
     - Pass 前 base-only 變更 → R-base 重驗 → 重新收齊三 gates 得 Pass，另一分支為 merge-tree 衝突 → correcting；
