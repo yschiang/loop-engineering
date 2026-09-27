@@ -222,3 +222,45 @@ def test_active_time_is_accumulated_from_dispatch_to_result(tmp_path, ctl):
     b = Store(c.run_dir).load().state["budget"]
     assert b["carried_seconds"] == 100 and b["activities"]
     assert all(a["end"] is not None for a in b["activities"].values())
+
+
+def test_integration_is_persisted_before_its_effect_and_converges_after_crash(tmp_path, ctl):
+    from delivery.loop import step
+
+    rt = AgentRuntime(reviews=[{"verdict": "clean"}])
+    c = ctx(tmp_path, ctl, rt, RepoGitHub(ctl))
+    begin(c)
+    trail = []
+    while not trail or trail[-1] != "integrate_registered":
+        trail.append(step(c))
+        assert len(trail) < 20, trail
+    store = Store(c.run_dir)
+    state = store.load().state
+    op = next(o for o in state["operations"].values() if o["kind"] == "integrate")
+    assert op["state"] == "pending" and git(ctl, "rev-parse", f"refs/heads/{BRANCH}") == op["t0"]
+    # Crash after the ref moved but before the snapshot recorded it.
+    git(ctl, "fetch", "-q", op["clone"], f"+HEAD:refs/delivery/attempts/{op['attempt_id']}")
+    git(ctl, "update-ref", f"refs/heads/{BRANCH}", git(op["clone"], "rev-parse", "HEAD"), op["t0"])
+    op["state"] = "in_flight"
+    store.commit(state)
+    run_until_idle(c)
+    final = Store(c.run_dir).load().state
+    assert final["phase"] == "ready_for_acceptance"
+    assert [e["task_id"] for e in final["integration"]["log"]] == ["t1"]
+    iop = next(o for o in final["operations"].values() if o["kind"] == "integrate")
+    assert iop["state"] == "succeeded" and iop["result"]["already_integrated"] is True
+
+
+def test_review_is_published_to_pr_and_issue_through_the_outbox(tmp_path, ctl):
+    rt = AgentRuntime(reviews=[{"verdict": "changes_required", "findings": [FINDING]},
+                               {"verdict": "clean", "close": ["F-0001"]}], fix_spec=FIX)
+    gh = RepoGitHub(ctl)
+    c = ctx(tmp_path, ctl, rt, gh)
+    begin(c)
+    run_until_idle(c)
+    state = Store(c.run_dir).load().state
+    assert len(gh.comments["pr"]) == 2 and len(gh.comments["issue"]) == 2
+    assert "F-0001" in gh.comments["pr"][0] and "changes_required" in gh.comments["pr"][0]
+    assert "https://gh/pr#c1" in gh.comments["issue"][0]
+    pubs = [o for o in state["operations"].values() if o["op_id"].startswith("op-pub-")]
+    assert len(pubs) == 4 and all(o["state"] == "succeeded" for o in pubs)

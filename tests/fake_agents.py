@@ -82,6 +82,7 @@ class RepoGitHub:
         self.ctl, self.ci, self.required = ctl, ci, set(required)
         self.prs, self.ensure_calls, self.check_reads = {}, 0, 0
         self.dependencies = {}
+        self.comments = {}
 
     def ensure_pr(self, target, body):
         self.ensure_calls += 1
@@ -96,6 +97,17 @@ class RepoGitHub:
 
     def pr_head(self, number):
         return next(p["head"] for p in self.prs.values() if p["number"] == number)
+
+    def post_comment(self, target, body):
+        self.comments.setdefault(target, []).append(body)
+        n = len(self.comments[target])
+        return {"id": n, "url": f"https://gh/{target}#c{n}"}
+
+    def find_comment(self, target, marker):
+        for i, body in enumerate(self.comments.get(target, []), 1):
+            if marker in body:
+                return {"id": i, "url": f"https://gh/{target}#c{i}"}
+        return None
 
     def read_dependency(self, feature):
         return self.dependencies.get(feature, {"merged": False, "merge_commit": None})
