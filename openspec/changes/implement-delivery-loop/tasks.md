@@ -117,7 +117,7 @@ D40 採三個 feature PR。單一 PR／四 PR 為歷史替代方案，未選用�
   - (DR-10) 另含：契約變更 S1→S2 → awaiting_approval → adopt_binding → planning/implementing 補新 AC → 新契約 review＋G3 重新查詢 → Pass
 - [x] 2.11 Resume/reconcile：各 crash 點的磁碟 fixture＋fake adapter 以 `os._exit` 中斷的 subprocess 測試（含 dispatch stages、integrate、blob 屏障）；驗法：`tests/test_resume.py`（AC-D07, D09, D14, D15）
 - [ ] 2.12 Publication 內容與 `delivery status`；驗法：`tests/test_publication.py`、`tests/test_status.py`（AC-F13, F14, D01）
-- [ ] 2.13 Retro operation 去重與 P03 guard；驗法：`tests/test_retro.py`（AC-O14, O15）
+- [x] 2.13 Retro operation 去重與 P03 guard；驗法：`tests/test_retro.py`（AC-O14, O15）
 - [ ] 2.14 S1 整合驗證：`uv run pytest` 全綠＋CI `test` 綠＋獨立 review；驗法：G1/G2/G3 evidence 由 `docs/validation/implement-delivery-loop.md` 引用
 
 ## 3. S2-A 真實 GitHub adapter
