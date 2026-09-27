@@ -127,3 +127,8 @@ def evaluate_g2(review: dict[str, Any] | None, current_vs: dict[str, Any], curre
         return {**out, "status": "failed",
                 "reasons": [f"verdict {review['verdict']}; open blocking findings {open_blocking_findings}"]}
     return {**out, "status": "passed"}
+
+
+def evaluate_g3(policy: dict[str, Any], repo_rules: set[str] | None, head: str, base_tip: str,
+                merge: dict[str, Any] | None, checks: list[dict[str, Any]]) -> dict[str, Any]:
+    raise NotImplementedError
