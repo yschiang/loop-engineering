@@ -78,7 +78,7 @@ D40 採三個 feature PR。單一 PR／四 PR 為歷史替代方案，未選用�
 
 ## 2. S1-B Gates、findings、整合與狀態機
 
-- [ ] 2.1 (DR-02, DR-03) Bindings/observations、`VersionSet`、gate 完整依賴矩陣與推導規則 R-unaffected／R-base／R-reevaluate／R-reobserve（design.md §5，DR-10）；驗法：`tests/test_versions.py`、`tests/test_assessments.py` 通過（AC-O03, G11, G16, G17, D15）
+- [x] 2.1 (DR-02, DR-03) Bindings/observations、`VersionSet`、gate 完整依賴矩陣與推導規則 R-unaffected／R-base／R-reevaluate／R-reobserve（design.md §5，DR-10）；驗法：`tests/test_versions.py`、`tests/test_assessments.py` 通過（AC-O03, G11, G16, G17, D15）
   - Red 測試：
     - 相同 issue body 輪詢 10 次＋restart → version_key 不變，V1 發出的 review 仍被採用；
     - body 改 1 byte → candidate binding＋awaiting_approval；
