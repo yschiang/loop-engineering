@@ -6,11 +6,13 @@ import datetime
 import hashlib
 import json
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from delivery.controller import reassess
+from delivery.budget import ACTIVE_LIMIT_SECONDS, active_seconds, close_activity, open_activity
+from delivery.controller import authorize_dispatch, dependency_ready, reassess
 from delivery.correction import check_result, dispatch_batch, ready_for_batch
 from delivery.decisions import may_dispatch_implementation
 from delivery.findings import close, import_review, open_blocking, submit_fix
@@ -23,7 +25,8 @@ from delivery.store import Store
 from delivery.versions import version_key
 
 # Step outcomes after which nothing more can happen without an external event or a person.
-RESTING = frozenset({"awaiting_approval", "blocked", "pass", "waiting_result", "waiting_ci", "idle"})
+RESTING = frozenset({"awaiting_approval", "blocked", "pass", "waiting_result", "waiting_ci", "idle",
+                     "waiting_dependency"})
 
 
 @dataclass
@@ -74,7 +77,7 @@ def start_run(ctx: Context, run_id: str, feature_key: str, tasks: list[dict[str,
     base = _git(ctx.ctl_repo, "rev-parse", "refs/heads/main")
     versions = {"repo_id": str(ctx.ctl_repo), "pr_number": None, "head_sha": tip, "base_ref": "main",
                 "base_tip": base, "merge_base": _git(ctx.ctl_repo, "merge-base", base, tip), "bindings": bindings,
-                "skills": {}, "controller_version": "0.1.0"}
+                "skills": dict(skills or {}), "controller_version": "0.1.0"}
     k = version_key(versions)
     state: dict[str, Any] = {
         "schema_version": 1, "run_id": run_id, "feature_key": feature_key, "plan_version": plan_version,
@@ -83,7 +86,10 @@ def start_run(ctx: Context, run_id: str, feature_key: str, tasks: list[dict[str,
         "tasks": [{**t, "status": "pending", "lease": None, "attempts": [], "change_class": "behavior", "red": []}
                   for t in tasks],
         "gates": {g: {"gate": g, "status": "missing", "version_key": k, "evidence": []} for g in ("g1", "g2", "g3")},
-        "registry": {"seq": 0, "findings": {}}, "budget": {"correction_rounds_used": 0}, "batches": [],
+        "ticket": ticket, "dependencies": list(dependencies or []), "waits": [],
+        "registry": {"seq": 0, "findings": {}},
+        "budget": {"correction_rounds_used": 0, "carried_seconds": carried_active_seconds, "activities": {},
+                   "extensions": []}, "batches": [],
         "disputes": {}, "operations": {}, "imported_results": {}, "blockers": [], "pass_history": [],
         "current_pass": None, "acceptance": {"history": []}, "decisions": [], "pending_history": [],
         "reviews": [], "integration": {"branch": ctx.branch, "tip": tip, "log": []}}
@@ -92,6 +98,55 @@ def start_run(ctx: Context, run_id: str, feature_key: str, tasks: list[dict[str,
     store = Store(ctx.run_dir)
     store.commit(state)
     return state
+
+
+def _now_s(ctx: Context) -> float:
+    return float(ctx.clock()) if ctx.clock is not None else time.time()
+
+
+def _is_ancestor(ctx: Context) -> Any:
+    return lambda a, b: subprocess.run(["git", "merge-base", "--is-ancestor", a, b], cwd=ctx.ctl_repo,
+                                       capture_output=True, check=False).returncode == 0
+
+
+def _dispatch_guard(ctx: Context, store: Store, state: dict[str, Any], unit: dict[str, Any], role: str) -> str | None:
+    """Every dispatch passes the approved-contract checks first; None means dispatch may proceed."""
+    if ctx.authority is None or ctx.authority.active_run_id() != state["run_id"]:
+        return _block(store, state, "authority_not_held", run_id=state["run_id"])
+    if not state.get("ticket"):
+        return _block(store, state, "no_ticket")
+    if state["versions"]["bindings"].get("plan") != state["plan_version"]:
+        state["phase"] = "awaiting_approval"
+        store.commit(state)
+        return "awaiting_approval"
+    installed = ctx.installed_skills or {}
+    drift = sorted(n for n, d in state["versions"]["skills"].items() if installed.get(n) != d)
+    if drift:
+        return _block(store, state, "skill_pin_mismatch", skills=drift)
+    if role == "implementer" and (ctx.implementer_isolation or {}).get("status") != "verified":
+        return _block(store, state, "implementer_isolation_unverified")
+    b = state["budget"]
+    limit = ACTIVE_LIMIT_SECONDS + sum(e["seconds"] for e in b.get("extensions", []))
+    budget_ok = b.get("carried_seconds", 0) + active_seconds(b, _now_s(ctx)) < limit
+    if not budget_ok:
+        return _block(store, state, "active_budget_exhausted", limit=limit)
+    waits = []
+    for dep in state["dependencies"]:
+        ready = dependency_ready({**dep, **ctx.github.read_dependency(dep["feature"])}, _is_ancestor(ctx),
+                                 state["versions"]["base_tip"])
+        if not ready["ready"]:
+            waits.append({"kind": "dependency", "feature": dep["feature"], "wait": ready["wait"]})
+    if waits:
+        state["waits"] = waits
+        store.commit(state)
+        return "waiting_dependency"
+    state["waits"] = []
+    if role == "implementer":
+        verdict = authorize_dispatch(state, {"task_id": unit["task_id"], "via": "controller",
+                                             "requested_by": "implementer"}, budget_ok, not waits)
+        if not verdict["accepted"]:
+            return _block(store, state, "dispatch_refused", reason=verdict["reason"])
+    return None
 
 
 def _new_attempt(ctx: Context, store: Store, state: dict[str, Any], unit: dict[str, Any], role: str,
@@ -112,6 +167,7 @@ def _new_attempt(ctx: Context, store: Store, state: dict[str, Any], unit: dict[s
     new_dispatch_op(state, op_id, attempt_id, json.dumps(assignment))
     state["operations"][op_id]["role"] = role
     state["operations"][op_id]["sandbox_profile_digest"] = ctx.sandbox_profile_digest
+    open_activity(state["budget"], attempt_id, role, _now_s(ctx))
     unit["lease"] = attempt_id
     unit["attempts"].append({"attempt_id": attempt_id, "clone": str(clone), "t0": t0, "assignment_ref": ref,
                              "op_id": op_id})
@@ -141,6 +197,8 @@ def _drive_attempt(ctx: Context, store: Store, state: dict[str, Any], att: dict[
     out = import_result(store, state, assignment, inbox)
     state.clear()
     state.update(out.state)
+    if att["attempt_id"] in state["budget"].get("activities", {}):
+        close_activity(state["budget"], att["attempt_id"], _now_s(ctx))
     if out.status != "imported":
         return _block(store, state, f"result_{out.status}", attempt_id=att["attempt_id"], reasons=out.reasons)
     store.commit(state)
@@ -181,6 +239,9 @@ def _step_implement(ctx: Context, store: Store, state: dict[str, Any]) -> str:
         store.commit(state)
         return "all_tasks_integrated"
     if task["lease"] is None:
+        refused = _dispatch_guard(ctx, store, state, task, "implementer")
+        if refused is not None:
+            return refused
         batch = next((b for b in state["batches"] if b["batch_id"] == task.get("batch_id")), None)
         return _new_attempt(ctx, store, state, task, "implementer",
                             {"batch": batch["items"] if batch else {}, "g1_return": task.get("g1_return")})
@@ -255,9 +316,7 @@ def _step_validate(ctx: Context, store: Store, state: dict[str, Any]) -> str:
         reassess(state, {**state["versions"], "head_sha": head})
     green, ref = _green(ctx, store, state, head)
     tasks = [{"task_id": t["task_id"], "change_class": t["change_class"], "red": t["red"]} for t in state["tasks"]]
-    a = evaluate_g1(tasks, green, head,
-                    lambda x, y: subprocess.run(["git", "merge-base", "--is-ancestor", x, y], cwd=ctx.ctl_repo,
-                                                capture_output=True, check=False).returncode == 0)
+    a = evaluate_g1(tasks, green, head, _is_ancestor(ctx))
     state["gates"]["g1"] = {**a, "gate": "g1", "version_key": _key(state), "evidence": [ref]}
     if a["status"] != "passed":
         if _g1_fixable(a, green):
@@ -282,6 +341,9 @@ def _step_check(ctx: Context, store: Store, state: dict[str, Any]) -> str:
     k, vs = _key(state), state["versions"]
     review = next((r for r in state["reviews"] if r["version_key"] == k), None)
     if review is None:
+        refused = _dispatch_guard(ctx, store, state, {"task_id": "review"}, "reviewer")
+        if refused is not None:
+            return refused
         review = {"task_id": f"review-{len(state['reviews']) + 1}", "version_key": k, "scope": [], "attempts": [],
                   "lease": None}
         state["reviews"].append(review)

@@ -195,7 +195,7 @@ def test_dispatch_guards_block_before_any_dispatch(tmp_path, ctl, setup, kind):
         c.authority.abandon("r1", {"kind": "abandon_run", "actor": "u", "reason": "moved", "evidence": ["x"]})
         c.authority.start(str(tmp_path / "other"), str(tmp_path / "other-run"), "r-other")
     begin(c, ticket=None if setup == "no_ticket" else "yschiang/orca-delivery#1",
-          carried=4 * 3600 - 1 if setup == "budget" else 0)
+          carried=4 * 3600 if setup == "budget" else 0)  # limit already reached
     run_until_idle(c)
     state = Store(c.run_dir).load().state
     assert state["phase"] == "blocked" and state["blockers"][-1]["kind"] == kind

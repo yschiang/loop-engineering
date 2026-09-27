@@ -35,7 +35,8 @@ def route_intake(facts: dict[str, Any]) -> dict[str, Any]:
     return {**out, "phase": "checking" if facts.get("g1_verified") else "validating", "blockers": []}
 
 
-def authorize_dispatch(state: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+def authorize_dispatch(state: dict[str, Any], request: dict[str, Any], budget_ok: bool = False,
+                       deps_ready: bool = False) -> dict[str, Any]:
     """Only the controller dispatches, and only inside an approved implementer plan (D11, D23)."""
     def no(reason: str) -> dict[str, Any]:
         return {"accepted": False, "reason": reason}
@@ -51,10 +52,10 @@ def authorize_dispatch(state: dict[str, Any], request: dict[str, Any]) -> dict[s
         auth = request.get("authorization") or {}
         if not auth.get("source") or request["task_id"] not in auth.get("scope", []):
             return no("project lead request lacks a user authorisation covering this task")
-    task = state["tasks"].get(request["task_id"])
+    task = next((t for t in state["tasks"] if t["task_id"] == request["task_id"]), None)  # design §4 list
     if task is None or task["status"] == "blocked":
         return no(f"task {request['task_id']} is not dispatchable")
-    if not state["budget_ok"] or not state["deps_ready"]:
+    if not budget_ok or not deps_ready:
         return no("budget or dependencies not satisfied")
     return {"accepted": True, "reason": ""}
 
@@ -71,8 +72,9 @@ def dependency_ready(dep: dict[str, Any], is_ancestor: Callable[[str, str], bool
 
 
 def mark_cross_feature_impact(state: dict[str, Any], task_ids: list[str], impact: str) -> None:
-    for tid in task_ids:
-        state["tasks"][tid]["status"] = "blocked"
+    for task in state["tasks"]:
+        if task["task_id"] in task_ids:
+            task["status"] = "blocked"
     state["blockers"].append({"kind": "cross_feature_impact", "tasks": task_ids, "impact": impact,
                               "route": "project_lead_and_user"})
 

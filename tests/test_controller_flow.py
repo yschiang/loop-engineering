@@ -31,8 +31,7 @@ def test_adopt_routes_by_existing_evidence_and_reports_each_gap():
 
 def st(**over):
     s = {"approval": {"plan_version": "P2", "plan_producer": "implementer"}, "plan_version": "P2",
-         "tasks": {"2.3": {"status": "pending", "scope": ["src"]}}, "budget_ok": True, "deps_ready": True,
-         "blockers": []}
+         "tasks": [{"task_id": "2.3", "status": "pending", "scope": ["src"]}], "blockers": []}
     s.update(over)
     return s
 
@@ -45,28 +44,28 @@ def req(**over):
 
 
 def test_only_controller_dispatch_with_approved_plan_is_accepted():
-    assert authorize_dispatch(st(), req())["accepted"] is True
-    assert authorize_dispatch(st(), req(via="skill"))["accepted"] is False
-    assert authorize_dispatch(st(), req(via="other_session"))["accepted"] is False
+    assert authorize_dispatch(st(), req(), True, True)["accepted"] is True
+    assert authorize_dispatch(st(), req(via="skill"), True, True)["accepted"] is False
+    assert authorize_dispatch(st(), req(via="other_session"), True, True)["accepted"] is False
 
 
 def test_sa_confirmation_without_d11_never_dispatches():
     s = st(approval=None, sa_confirmation={"version": "SA1"})
-    assert authorize_dispatch(s, req())["accepted"] is False
+    assert authorize_dispatch(s, req(), True, True)["accepted"] is False
 
 
 def test_project_lead_needs_authorisation_source_and_parent_session_grants_nothing():
     s = st()
-    assert authorize_dispatch(s, req(requested_by="project_lead"))["accepted"] is False
+    assert authorize_dispatch(s, req(requested_by="project_lead"), True, True)["accepted"] is False
     auth = {"source": "chat:88", "scope": ["2.3"]}
-    assert authorize_dispatch(s, req(requested_by="project_lead", authorization=auth))["accepted"] is True
+    assert authorize_dispatch(s, req(requested_by="project_lead", authorization=auth), True, True)["accepted"] is True
     parent_only = req(requested_by="project_lead", runtime_parent="implementer-session")
-    assert authorize_dispatch(s, parent_only)["accepted"] is False
+    assert authorize_dispatch(s, parent_only, True, True)["accepted"] is False
 
 
 def test_project_lead_draft_plan_is_not_dispatchable():
     s = st(approval={"plan_version": "P2", "plan_producer": "project_lead_draft"})
-    assert authorize_dispatch(s, req())["accepted"] is False
+    assert authorize_dispatch(s, req(), True, True)["accepted"] is False
 
 
 def test_upstream_accepted_but_unmerged_waits_and_merged_in_baseline_releases():
@@ -79,7 +78,13 @@ def test_upstream_accepted_but_unmerged_waits_and_merged_in_baseline_releases():
 
 
 def test_cross_feature_impact_blocks_only_affected_tasks():
-    s = st(tasks={"2.3": {"status": "pending", "scope": ["src"]}, "2.4": {"status": "pending", "scope": ["src"]}})
+    s = st(tasks=[{"task_id": "2.3", "status": "pending", "scope": ["src"]},
+                  {"task_id": "2.4", "status": "pending", "scope": ["src"]}])
     mark_cross_feature_impact(s, ["2.3"], "changes contract used by F2")
-    assert authorize_dispatch(s, req(task_id="2.3"))["accepted"] is False
-    assert authorize_dispatch(s, req(task_id="2.4"))["accepted"] is True
+    assert authorize_dispatch(s, req(task_id="2.3"), True, True)["accepted"] is False
+    assert authorize_dispatch(s, req(task_id="2.4"), True, True)["accepted"] is True
+
+
+def test_unsatisfied_budget_or_dependencies_refuse_dispatch():
+    assert authorize_dispatch(st(), req(), False, True)["accepted"] is False
+    assert authorize_dispatch(st(), req(), True, False)["accepted"] is False

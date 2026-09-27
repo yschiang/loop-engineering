@@ -89,6 +89,11 @@ class Authority:
             _atomic_write_json(self.path, data)
         return StartOutcome("created", run_id, state_dir, repo_path)
 
+    def active_run_id(self) -> str | None:
+        with self._locked() as data:
+            active: str | None = data["active_run_id"]
+        return active
+
     def abandon(self, run_id: str, decision: dict[str, Any]) -> None:
         if decision.get("kind") != "abandon_run" or not decision.get("evidence") or not decision.get("actor"):
             raise ValueError("abandon requires an abandon_run decision with actor and stop/fencing evidence")
