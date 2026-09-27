@@ -8,6 +8,7 @@ from typing import Any
 IsAncestor = Callable[[str, str], bool]
 
 
+GATE_NAMES = ("g1", "g2", "g3")
 RUNNER = "delivery-runner"
 CONTROLLER_RUNNER = "controller-runner"
 # Worst status wins when combining tasks and green.
@@ -184,8 +185,29 @@ def evaluate_g3(policy: dict[str, Any], repo_rules: set[str] | None, head: str, 
 
 def decide_pass(state: dict[str, Any], current_key: str, open_blocking: list[str],
                 reread: Callable[[], str], now: str) -> dict[str, Any]:
-    raise NotImplementedError
+    """Record Pass only from gate assessments; task results and notifications never count."""
+    gates = state["gates"]
+    ready = all(gates[g]["status"] == "passed" and gates[g]["version_key"] == current_key for g in GATE_NAMES)
+    if not ready or open_blocking:
+        return state
+    observed = reread()
+    if observed != current_key:
+        state["next_action"] = {"kind": "reconcile",
+                                "detail": f"re-read before Pass saw {observed}, expected {current_key}"}
+        return state
+    record = {"version_key": current_key, "observed_at": now,
+              "gates": {g: gates[g]["version_key"] for g in GATE_NAMES}}
+    state["current_pass"] = record
+    state["pass_history"].append(dict(record))
+    state["phase"] = "ready_for_acceptance"
+    return state
 
 
 def observe_new_version(state: dict[str, Any], new_key: str, now: str) -> dict[str, Any]:
-    raise NotImplementedError
+    """A new version invalidates the current Pass; the historical Pass stays with its version."""
+    current = state.get("current_pass")
+    if current is not None and current["version_key"] != new_key:
+        state["pass_history"][-1]["invalidated_at"] = now
+        state["current_pass"] = None
+        state["phase"] = "validating"
+    return state
