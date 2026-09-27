@@ -407,3 +407,17 @@ def test_finding_that_survives_two_rechecks_blocks_before_a_third_round(tmp_path
     assert state["phase"] == "blocked" and state["blockers"][-1]["kind"] == "recurrence"
     assert state["registry"]["findings"]["F-0001"]["failed_rechecks"] == 2
     assert state["budget"]["correction_rounds_used"] == 2
+
+
+def test_every_state_changing_step_is_recorded_once_in_events(tmp_path, ctl):
+    rt = AgentRuntime(reviews=[{"verdict": "clean"}])
+    c = ctx(tmp_path, ctl, rt, RepoGitHub(ctl))
+    begin(c)
+    trail = run_until_idle(c)
+    run_until_idle(c)  # resting steps add nothing
+    events = [json.loads(x) for x in (c.run_dir / "events.jsonl").read_text().splitlines()]
+    steps = [e["step"] for e in events]
+    assert {"dispatch_registered", "integrated", "g1_passed", "pass"} <= set(steps)
+    assert len({e["id"] for e in events}) == len(events)
+    assert len(events) == sum(1 for t in trail if t not in ("waiting_result",))
+    assert Store(c.run_dir).load().state["pending_history"] == []
