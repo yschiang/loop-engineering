@@ -197,13 +197,22 @@ def cmd_submit(a: argparse.Namespace) -> int:
 
 
 def _reconcile_local(run_dir: Path) -> tuple[int, dict[str, Any]]:
+    import time
+
+    from delivery.budget import on_resume
     from delivery.events import EventLog, flush_pending
     from delivery.store import Store
 
     store = Store(run_dir)
-    if store.load().blocked:
+    loaded = store.load()
+    if loaded.blocked:
         print("state not trusted; nothing done", file=sys.stderr)
         return 1, {}
+    budget = loaded.state.get("budget", {})
+    if any(act["end"] is None for act in budget.get("activities", {}).values()):
+        # A previous controller process ended with work in flight: count the gap until external ends are known.
+        on_resume(budget, os.path.getmtime(run_dir / "run.json"), time.time(), external_ends={})
+        store.commit(loaded.state)
     if flush_pending(store, EventLog(run_dir / "events.jsonl")).blocked:
         print("history corrupt; blocked", file=sys.stderr)
         return 1, {}
