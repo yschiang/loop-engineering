@@ -170,3 +170,20 @@ def test_evidence_run_never_overwrites_existing_evidence(tmp_path, repo):
     second = run(*args)
     assert second.returncode == 1 and "exists" in second.stderr
     assert (out / "green.json").read_bytes() == first
+
+
+def test_resume_counts_the_crash_gap_of_activities_left_open(tmp_path, repo):
+    import os
+    import time
+
+    run_dir = started(tmp_path, repo)
+    store = Store(run_dir)
+    state = store.load().state
+    state["budget"]["activities"] = {"t1-a1": {"kind": "implementer", "start": time.time() - 600, "end": None}}
+    store.commit(state)
+    past = time.time() - 300
+    os.utime(run_dir / "run.json", (past, past))  # controller died 5 minutes ago
+    run("resume", "--run-dir", run_dir)
+    b = Store(run_dir).load().state["budget"]
+    assert b["unknown_intervals"] and b["unknown_intervals"][0][1] - b["unknown_intervals"][0][0] >= 290
+    assert b["activities"]["t1-a1"]["end"] is not None
