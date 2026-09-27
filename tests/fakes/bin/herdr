@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Scenario-driven fake CLI for herdr (other CLIs reuse it through a symlink; tool = basename).
+
+Env: FAKE_SCENARIO=<tests/fakes/scenarios/<tool>/<name>.json or a derived copy>, FAKE_LOG=<jsonl>.
+
+Scenario format:
+  {"calls": [{"id": "...", "tool": "herdr", "match": ["agent", "start", "*", "**"],
+              "capture": {"var": "regex"}, "stdout": "text" | {json}, "stderr": "", "exit": 0,
+              "effects": [{"write": "path", "text": "..." | "json": {...} | "jsonl": [{...}]}]}]}
+- Calls are matched strictly in order; `match` is fnmatch per argv element, a trailing "**"
+  matches any rest. Anything else is an unexpected call: logged, exit 97.
+- Every invocation is appended to FAKE_LOG as {"tool", "argv", "vars"} (plus "unexpected").
+- `capture` stores a regex match over the space-joined argv (group 1 if present) as a var.
+- "{var}" and "{env:NAME}" inside stdout, effect paths and effect contents are substituted.
+"""
+
+import fnmatch
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+tool = Path(sys.argv[0]).name
+argv = sys.argv[1:]
+calls = json.loads(Path(os.environ["FAKE_SCENARIO"]).read_text())["calls"]
+log = Path(os.environ["FAKE_LOG"])
+done = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+env_vars = {k: v for entry in done for k, v in entry.get("vars", {}).items()}
+
+
+def matches(patterns: list[str], args: list[str]) -> bool:
+    if patterns and patterns[-1] == "**":
+        patterns = patterns[:-1]
+        args = args[: len(patterns)]
+    return len(patterns) == len(args) and all(map(fnmatch.fnmatchcase, args, patterns))
+
+
+def sub(value):
+    if isinstance(value, str):
+        def repl(m: re.Match[str]) -> str:
+            if m.group(1):
+                return os.environ.get(m.group(2), m.group(0))
+            return env_vars.get(m.group(2), m.group(0))
+        return re.sub(r"\{(env:)?(\w+)\}", repl, value)
+    if isinstance(value, list):
+        return [sub(v) for v in value]
+    if isinstance(value, dict):
+        return {k: sub(v) for k, v in value.items()}
+    return value
+
+
+def append(entry: dict) -> None:
+    with log.open("a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+spec = calls[len(done)] if len(done) < len(calls) else None
+if spec is None or spec.get("tool", "herdr") != tool or not matches(spec["match"], argv):
+    append({"tool": tool, "argv": argv, "vars": {}, "unexpected": True})
+    print(f"fake {tool}: unexpected call #{len(done)} {argv}; expected {spec}", file=sys.stderr)
+    sys.exit(97)
+
+captured = {}
+joined = " ".join(argv)
+for name, pattern in spec.get("capture", {}).items():
+    m = re.search(pattern, joined)
+    if m:
+        captured[name] = m.group(1 if m.re.groups else 0)
+env_vars.update(captured)
+append({"tool": tool, "argv": argv, "vars": captured})
+
+for effect in spec.get("effects", []):
+    path = Path(sub(effect["write"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if "text" in effect:
+        path.write_text(sub(effect["text"]))
+    elif "json" in effect:
+        path.write_text(json.dumps(sub(effect["json"])))
+    else:
+        path.write_text("".join(json.dumps(sub(e)) + "\n" for e in effect["jsonl"]))
+
+out = sub(spec.get("stdout", ""))
+sys.stdout.write(out if isinstance(out, str) else json.dumps(out) + "\n")
+sys.stderr.write(sub(spec.get("stderr", "")))
+sys.exit(spec.get("exit", 0))

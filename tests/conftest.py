@@ -5,8 +5,10 @@ produced by `only_on` on a foreign platform; any xfail or xpass; or a CI job's
 LOOPCTL_EXPECT_PLATFORM that differs from the actual platform.
 """
 
+import json
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -65,3 +67,38 @@ def pytest_terminal_summary(terminalreporter, config: pytest.Config) -> None:
         terminalreporter.section("loopctl test policy violations")
         for line in violations:
             terminalreporter.line(line)
+
+
+FAKE_BIN = Path(__file__).parent / "fakes" / "bin" / "herdr"
+
+
+class Fakes:
+    """PATH-injected scenario fakes (tests/fakes/bin/herdr, format in its docstring)."""
+
+    def __init__(self, root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.bin = root / "fakebin"
+        self.bin.mkdir()
+        self.log = root / "fake-log.jsonl"
+        self.scenario = root / "fake-scenario.json"
+        self.use({"calls": []})
+        monkeypatch.setenv("PATH", f"{self.bin}{os.pathsep}{os.environ['PATH']}")
+        monkeypatch.setenv("FAKE_LOG", str(self.log))
+        monkeypatch.setenv("FAKE_SCENARIO", str(self.scenario))
+        self.install("herdr")
+
+    def install(self, *tools: str) -> None:
+        for tool in tools:
+            (self.bin / tool).symlink_to(FAKE_BIN)
+
+    def use(self, scenario: dict) -> None:
+        self.scenario.write_text(json.dumps(scenario))
+
+    def calls(self) -> list[dict]:
+        if not self.log.exists():
+            return []
+        return [json.loads(line) for line in self.log.read_text().splitlines()]
+
+
+@pytest.fixture
+def fakes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fakes:
+    return Fakes(tmp_path, monkeypatch)
