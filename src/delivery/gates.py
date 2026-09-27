@@ -94,4 +94,36 @@ def evaluate_g1(tasks: list[dict[str, Any]], green: dict[str, Any] | None, head:
 def evaluate_g2(review: dict[str, Any] | None, current_vs: dict[str, Any], current_key: str,
                 profile: dict[str, Any], isolation: dict[str, Any] | None, implementer_sessions: set[str],
                 open_blocking_findings: list[str]) -> dict[str, Any]:
-    raise NotImplementedError
+    """G2 passes only for a controller-dispatched, verified-isolated review of the current contract."""
+    out: dict[str, Any] = {"gate": "g2", "version_key": current_key, "reasons": [],
+                           "blocks_feature": False, "opens_correction_round": False}
+
+    def unknown(reason: str) -> dict[str, Any]:
+        out["reasons"].append(reason)
+        return {**out, "status": "unknown"}
+
+    if review is None:
+        return {**out, "status": "missing", "reasons": ["no review for the current version"]}
+    if review.get("dispatched_by") != "controller" or review.get("role") != "reviewer":
+        return unknown("not a controller-dispatched Reviewer assignment")
+    if review["session_id"] in implementer_sessions or review.get("parent_session_id") in implementer_sessions:
+        return unknown("reviewer session is an implementer session or its child")
+    if review["version_key"] != current_key:
+        return {**out, "status": "stale", "reasons": [f"review is for {review['version_key']}"]}
+    if review.get("requested_model") != profile["model"] or review.get("actual_model") != profile["model"]:
+        return unknown(f"model mismatch: requested {review.get('requested_model')}, actual "
+                       f"{review.get('actual_model')}, approved {profile['model']}")
+    if not isolation or isolation.get("status") != "verified":
+        return unknown("reviewer isolation not verified by the negative-probe suite")
+    if isolation.get("profile_digest") != review.get("receipt_profile_digest"):
+        return unknown("dispatch receipt sandbox profile does not match the verified isolation report")
+    expected = {k: current_vs.get(k) for k in ("head_sha", "base_tip", "bindings", "skills")}
+    if review.get("read_contract") != expected:
+        return unknown("review did not read the current contract digests")
+    if review["verdict"] == "blocked":
+        out["blocks_feature"] = True
+        return unknown("reviewer could not decide (verdict blocked)")
+    if review["verdict"] != "clean" or open_blocking_findings:
+        return {**out, "status": "failed",
+                "reasons": [f"verdict {review['verdict']}; open blocking findings {open_blocking_findings}"]}
+    return {**out, "status": "passed"}
