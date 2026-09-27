@@ -81,6 +81,7 @@ class RepoGitHub:
     def __init__(self, ctl, ci=lambda sha, n: "success", required=("test",)):
         self.ctl, self.ci, self.required = ctl, ci, set(required)
         self.prs, self.ensure_calls, self.check_reads = {}, 0, 0
+        self.dependencies = {}
 
     def ensure_pr(self, target, body):
         self.ensure_calls += 1
@@ -95,6 +96,9 @@ class RepoGitHub:
 
     def pr_head(self, number):
         return next(p["head"] for p in self.prs.values() if p["number"] == number)
+
+    def read_dependency(self, feature):
+        return self.dependencies.get(feature, {"merged": False, "merge_commit": None})
 
     def required_checks(self):
         return set(self.required)

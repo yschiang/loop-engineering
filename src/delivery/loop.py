@@ -37,6 +37,10 @@ class Context:
     policy: dict[str, Any]
     isolation: dict[str, Any] | None
     sandbox_profile_digest: str | None
+    authority: Any = None  # delivery.authority.Authority owning this feature
+    implementer_isolation: dict[str, Any] | None = None
+    installed_skills: dict[str, str] | None = None
+    clock: Any = None  # () -> seconds; wall clock when None
 
 
 def _git(cwd: Path | str, *a: str, check: bool = True) -> str:
@@ -63,7 +67,9 @@ def _scope(state: dict[str, Any]) -> list[str]:
 
 
 def start_run(ctx: Context, run_id: str, feature_key: str, tasks: list[dict[str, Any]], plan_version: str,
-              bindings: dict[str, str], approval: dict[str, Any] | None) -> dict[str, Any]:
+              bindings: dict[str, str], approval: dict[str, Any] | None, ticket: str | None = None,
+              dependencies: list[dict[str, Any]] | None = None, skills: dict[str, str] | None = None,
+              carried_active_seconds: float = 0) -> dict[str, Any]:
     tip = _git(ctx.ctl_repo, "rev-parse", f"refs/heads/{ctx.branch}")
     base = _git(ctx.ctl_repo, "rev-parse", "refs/heads/main")
     versions = {"repo_id": str(ctx.ctl_repo), "pr_number": None, "head_sha": tip, "base_ref": "main",

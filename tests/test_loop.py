@@ -5,6 +5,7 @@ import sys
 
 import pytest
 
+from delivery.authority import Authority
 from delivery.loop import Context, run_until_idle, start_run
 from delivery.store import Store
 from delivery.versions import version_key
@@ -44,7 +45,18 @@ def ctl(tmp_path, monkeypatch):
     return r
 
 
-def ctx(tmp_path, ctl, runtime, github, isolation=True):
+class Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        self.t += 1.0
+        return self.t
+
+
+def ctx(tmp_path, ctl, runtime, github, isolation=True, run_id="r1", skills=None, impl_isolation=True):
+    authority = Authority(tmp_path / "home", "repo", "yschiang/orca-delivery#1")
+    authority.start(str(ctl), str(tmp_path / "run"), run_id)
     return Context(run_dir=tmp_path / "run", ctl_repo=ctl, attempts_root=tmp_path / "attempts", branch=BRANCH,
                    runtime=runtime, github=github,
                    policy={"g1_argv": G1, "excludes": [".env*"],
@@ -52,14 +64,19 @@ def ctx(tmp_path, ctl, runtime, github, isolation=True):
                            "ci": {"required": [{"name": "test", "app": "github-actions", "source": "head"}],
                                   "allow_non_success": []}},
                    isolation={"status": "verified", "profile_digest": "P"} if isolation else None,
-                   sandbox_profile_digest="P" if isolation else None)
+                   sandbox_profile_digest="P" if isolation else None, authority=authority,
+                   implementer_isolation={"status": "verified" if impl_isolation else "unverified"},
+                   installed_skills=skills if skills is not None else {"superpowers:test-driven-development": "bf1b"},
+                   clock=Clock())
 
 
-def begin(c, approval=True):
+def begin(c, approval=True, ticket="yschiang/orca-delivery#1", deps=None, carried=0):
     return start_run(c, "r1", "yschiang/orca-delivery#1",
                      [{"task_id": "t1", "ac_ids": ["AC-X01"], "scope": ["src", "tests"], "spec": T1}],
                      "plan-v1", {"plan": "plan-v1", "issue_body": "d1"},
-                     {"decision_id": "DEC-1", "plan_version": "plan-v1"} if approval else None)
+                     {"decision_id": "DEC-1", "plan_version": "plan-v1"} if approval else None, ticket=ticket,
+                     dependencies=deps or [], skills={"superpowers:test-driven-development": "bf1b"},
+                     carried_active_seconds=carried)
 
 
 def test_full_loop_with_review_finding_fix_and_rereview_reaches_pass_across_restarts(tmp_path, ctl):
@@ -161,3 +178,47 @@ def test_invalid_historical_red_blocks_instead_of_rerouting(tmp_path, ctl):
     state = Store(c.run_dir).load().state
     assert state["phase"] == "blocked" and state["blockers"][-1]["kind"] == "g1_not_passed"
     assert len(state["tasks"][0]["attempts"]) == 1
+
+
+@pytest.mark.parametrize("setup,kind", [
+    ("other_owner", "authority_not_held"),
+    ("no_ticket", "no_ticket"),
+    ("skill_drift", "skill_pin_mismatch"),
+    ("impl_sandbox", "implementer_isolation_unverified"),
+    ("budget", "active_budget_exhausted"),
+])
+def test_dispatch_guards_block_before_any_dispatch(tmp_path, ctl, setup, kind):
+    rt = AgentRuntime(reviews=[])
+    c = ctx(tmp_path, ctl, rt, RepoGitHub(ctl), skills={"superpowers:test-driven-development": "CHANGED"}
+            if setup == "skill_drift" else None, impl_isolation=setup != "impl_sandbox")
+    if setup == "other_owner":
+        c.authority.abandon("r1", {"kind": "abandon_run", "actor": "u", "reason": "moved", "evidence": ["x"]})
+        c.authority.start(str(tmp_path / "other"), str(tmp_path / "other-run"), "r-other")
+    begin(c, ticket=None if setup == "no_ticket" else "yschiang/orca-delivery#1",
+          carried=4 * 3600 - 1 if setup == "budget" else 0)
+    run_until_idle(c)
+    state = Store(c.run_dir).load().state
+    assert state["phase"] == "blocked" and state["blockers"][-1]["kind"] == kind
+    assert rt.creates == 0
+
+
+def test_unmerged_dependency_waits_without_dispatch_then_proceeds_when_merged(tmp_path, ctl):
+    rt = AgentRuntime(reviews=[{"verdict": "clean"}])
+    gh = RepoGitHub(ctl)
+    c = ctx(tmp_path, ctl, rt, gh)
+    base = git(ctl, "rev-parse", "main")
+    begin(c, deps=[{"feature": "F0", "version": "v9", "accepted_versions": ["v9"]}])
+    assert run_until_idle(c)[-1] == "waiting_dependency" and rt.creates == 0
+    gh.dependencies["F0"] = {"merged": True, "merge_commit": base}
+    run_until_idle(c)
+    assert Store(c.run_dir).load().state["phase"] == "ready_for_acceptance"
+
+
+def test_active_time_is_accumulated_from_dispatch_to_result(tmp_path, ctl):
+    rt = AgentRuntime(reviews=[{"verdict": "clean"}])
+    c = ctx(tmp_path, ctl, rt, RepoGitHub(ctl))
+    begin(c, carried=100)
+    run_until_idle(c)
+    b = Store(c.run_dir).load().state["budget"]
+    assert b["carried_seconds"] == 100 and b["activities"]
+    assert all(a["end"] is not None for a in b["activities"].values())
