@@ -177,7 +177,7 @@ def _step_implement(ctx: Context, store: Store, state: dict[str, Any]) -> str:
     if task["lease"] is None:
         batch = next((b for b in state["batches"] if b["batch_id"] == task.get("batch_id")), None)
         return _new_attempt(ctx, store, state, task, "implementer",
-                            {"batch": batch["items"] if batch else {}})
+                            {"batch": batch["items"] if batch else {}, "g1_return": task.get("g1_return")})
     att = task["attempts"][-1]
     waiting = _drive_attempt(ctx, store, state, att)
     if waiting is not None:
@@ -198,8 +198,8 @@ def _step_implement(ctx: Context, store: Store, state: dict[str, Any]) -> str:
                     task["scope"], ctx.branch)
     if out["status"] != "succeeded":
         return _block(store, state, "integration_" + out["status"], reason=out.get("reason"))
-    task["red"] = [_verify_red(ctx, store, att, rec, task["scope"]) for rec in result.get("evidence", [])
-                   if rec["kind"] == "red"]
+    task["red"] = task["red"] + [_verify_red(ctx, store, att, rec, task["scope"])
+                                 for rec in result.get("evidence", []) if rec["kind"] == "red"]
     task["status"] = "succeeded"
     state["integration"]["tip"] = out["head"]
     store.commit(state)
@@ -221,6 +221,28 @@ def _green(ctx: Context, store: Store, state: dict[str, Any], head: str) -> tupl
             "passing_ids": list(ev.passing_ids), "failing_ids": list(ev.failing_ids)}, ref
 
 
+NOT_AT_HEAD = "red tests not passing at head"
+
+
+def _g1_fixable(a: dict[str, Any], green: dict[str, Any]) -> bool:
+    """Fixable: the integrated code is wrong (regression, red tests still failing at head).
+    Missing, invalid or unreproducible historical Red cannot be repaired afterwards and blocks (D26)."""
+    bad = [r for r in a["tasks"].values() if r["status"] != "passed"]
+    if any(r["status"] != "failed" or any(NOT_AT_HEAD not in x for x in r["reasons"]) for r in bad):
+        return False
+    return green["status"] == "failed" or bool(bad)
+
+
+def _return_to_producer(store: Store, state: dict[str, Any], a: dict[str, Any]) -> str:
+    """Design §3: a fixable G1 gap goes back to the work unit that produced this head; no correction round."""
+    producer_id = state["integration"]["log"][-1]["task_id"]
+    task = next(t for t in state["tasks"] if t["task_id"] == producer_id)
+    task.update(status="pending", lease=None, g1_return={"reasons": a["reasons"], "version_key": _key(state)})
+    state["phase"] = "correcting" if task.get("batch_id") else "implementing"
+    store.commit(state)
+    return "g1_returned"
+
+
 def _step_validate(ctx: Context, store: Store, state: dict[str, Any]) -> str:
     head = _git(ctx.ctl_repo, "rev-parse", f"refs/heads/{ctx.branch}")
     if state["versions"]["head_sha"] != head:
@@ -232,6 +254,8 @@ def _step_validate(ctx: Context, store: Store, state: dict[str, Any]) -> str:
                                                 capture_output=True, check=False).returncode == 0)
     state["gates"]["g1"] = {**a, "gate": "g1", "version_key": _key(state), "evidence": [ref]}
     if a["status"] != "passed":
+        if _g1_fixable(a, green):
+            return _return_to_producer(store, state, a)
         return _block(store, state, "g1_not_passed", status=a["status"], reasons=a["reasons"])
     op_id = f"op-pr-{head[:12]}"
     if op_id not in state["operations"]:

@@ -149,7 +149,7 @@ def test_fixable_g1_failure_returns_to_producing_task_without_a_correction_round
     assert state["phase"] == "ready_for_acceptance", state["blockers"]
     assert [a["attempt_id"] for a in state["tasks"][0]["attempts"]] == ["t1-a1", "t1-a2"]
     assert state["budget"]["correction_rounds_used"] == 0 and state["batches"] == []
-    second = [a for a in rt.assignments if a["attempt_id"] == "t1-a2"][0]
+    second = next(a for a in rt.assignments if a["attempt_id"] == "t1-a2")
     assert second["g1_return"]["reasons"] and "regression" in " ".join(second["g1_return"]["reasons"])
 
 
