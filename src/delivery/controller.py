@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from delivery.gates import observe_new_version
+from delivery.versions import derive, version_key
+
 
 def route_intake(facts: dict[str, Any]) -> dict[str, Any]:
     """First phase for start/adopt; unsafe or ambiguous inputs block with each gap listed."""
@@ -76,4 +79,21 @@ def mark_cross_feature_impact(state: dict[str, Any], task_ids: list[str], impact
 
 def reassess(state: dict[str, Any], new_vs: dict[str, Any], reevaluate: Any = None,
              base_recheck: dict[str, Any] | None = None) -> dict[str, Any]:
-    raise NotImplementedError
+    """Derive every gate for the new VersionSet (design §5.3) and route the phase from G1."""
+    old = state["versions"]
+    for gate in ("g1", "g2", "g3"):
+        is_g1 = gate == "g1"
+        state["gates"][gate] = derive(state["gates"][gate], old, new_vs, reevaluate if is_g1 else None,
+                                      base_recheck if is_g1 else None)
+    state["versions"] = new_vs
+    observe_new_version(state, version_key(new_vs), now="reassess")
+    g1 = state["gates"]["g1"]
+    if g1["status"] == "passed":
+        state["phase"] = "checking"
+    elif g1["status"] == "failed" and any("base_conflict" in r for r in g1.get("reasons", [])):
+        state["phase"] = "correcting"
+    elif g1["status"] == "missing":
+        state["phase"] = "implementing"
+    else:
+        state["phase"] = "validating"
+    return state
