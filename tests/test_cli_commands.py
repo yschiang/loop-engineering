@@ -187,3 +187,20 @@ def test_resume_counts_the_crash_gap_of_activities_left_open(tmp_path, repo):
     b = Store(run_dir).load().state["budget"]
     assert b["unknown_intervals"] and b["unknown_intervals"][0][1] - b["unknown_intervals"][0][0] >= 290
     assert b["activities"]["t1-a1"]["end"] is not None
+
+
+def test_abandon_run_goes_through_the_authority_and_budget_is_inherited(tmp_path, repo):
+    run_dir = started(tmp_path, repo)
+    home = tmp_path / "home"
+    p = run("decide", "--run-dir", run_dir, "--kind", "abandon_run", "--actor", "user", "--source", "chat:5",
+            "--reason", "clone lost", "--subject", '{"evidence": ["workers stopped: none running"]}',
+            "--state-home", home, "--feature", "o/r#1")
+    assert p.returncode == 0, p.stderr
+    assert Store(run_dir).load().state["phase"] == "abandoned"
+    tasks = tmp_path / "tasks.json"
+    p2 = run("start", "--repo", repo, "--feature", "o/r#1", "--run-id", "r2", "--branch", "delivery/s1",
+             "--tasks", tasks, "--plan-version", "P1", "--state-home", home)
+    assert p2.returncode == 0 and '"created"' in p2.stdout
+    missing = run("decide", "--run-dir", repo / ".delivery" / "runs" / "r2", "--kind", "abandon_run", "--actor", "u",
+                  "--source", "s", "--reason", "r", "--subject", "{}", "--state-home", home, "--feature", "o/r#1")
+    assert missing.returncode == 1
