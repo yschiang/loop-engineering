@@ -1,0 +1,36 @@
+[project]
+name = "orca-delivery"
+version = "0.1.0"
+description = "Delivery harness controller: gates, durable state and recovery"
+requires-python = ">=3.12"
+dependencies = ["pyyaml>=6"]
+
+[project.scripts]
+delivery = "delivery.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "delivery"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["os: real OS sandbox negative tests (no runtime)"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "ruff>=0.16.9",
+    "types-pyyaml>=6.0.12.20260906",
+]

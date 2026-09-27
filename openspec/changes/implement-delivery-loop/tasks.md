@@ -27,9 +27,9 @@ D40 採三個 feature PR。單一 PR／四 PR 為歷史替代方案，未選用�
 
 ## 1. S1-A Durable foundation
 
-- [ ] 1.1 建立 Python 3.12 專案骨架（uv、pytest、`delivery` entry point、CI workflow `test`）；驗法：`uv run pytest` 與 `delivery --help` 成功
+- [x] 1.1 建立 Python 3.12 專案骨架（uv、pytest、`delivery` entry point、CI workflow `test`）；驗法：`uv run pytest` 與 `delivery --help` 成功
   - Red：`test_cli_help_lists_commands`
-- [ ] 1.2 (DR-04) Evidence runner 與 baseline＋overlay Red snapshot（design.md §6.1 v3）；驗法：`tests/test_runner.py` 以真 git tmp repo 通過
+- [x] 1.2 (DR-04) Evidence runner 與 baseline＋overlay Red snapshot（design.md §6.1 v3）；驗法：`tests/test_runner.py` 以真 git tmp repo 通過
   - Interfaces：Produces `run_evidence(kind, task_id, attempt_id, argv, cwd, scope_paths) -> Evidence`、`snapshot_worktree(cwd, t0, scope_paths, excludes) -> Snapshot | Refusal`
   - Red 測試（每案都斷言 worker `.git/index` bytes 與 `git status --porcelain` 前後不變）：
     - 只有 untracked 新測試 → snapshot 含該檔；
@@ -52,9 +52,9 @@ D40 採三個 feature PR。單一 PR／四 PR 為歷史替代方案，未選用�
     - 外部改 gate → `manual_edit_detected`；
     - SIGKILL 隨機中斷 200 次後不變式成立（process 層級）；
     - `strace -f -e trace=fsync,link,rename` 顯示所有 blob fsync 早於 snapshot rename（僅 Linux）
-- [ ] 1.4 events.jsonl pending history、ID 去重、尾筆截斷、中段損壞；驗法：`tests/test_events.py`（AC-D10）
-- [ ] 1.5 Result 匯入：inbox → durable blob、同內容去重、不同內容 conflict、身份不符拒收；驗法：`tests/test_results.py`（AC-D05, D07, D08）
-- [ ] 1.6 (DR-06) Feature authority locator、flock、run lineage 與預算加總（design.md §9.1）；驗法：`tests/test_authority.py` 通過（AC-D03, D17, F07）
+- [x] 1.4 events.jsonl pending history、ID 去重、尾筆截斷、中段損壞；驗法：`tests/test_events.py`（AC-D10）
+- [x] 1.5 Result 匯入：inbox → durable blob、同內容去重、不同內容 conflict、身份不符拒收；驗法：`tests/test_results.py`（AC-D05, D07, D08）
+- [x] 1.6 (DR-06) Feature authority locator、flock、run lineage 與預算加總（design.md §9.1）；驗法：`tests/test_authority.py` 通過（AC-D03, D17, F07）
   - Red 測試：
     - 兩 subprocess 同時 start → 恰一方成功；
     - clone A 的 run 用掉 3 輪後 controller 結束（fake worker 仍活）→ clone B start 同 feature 被拒，輸出 A 的 state_dir；
@@ -62,7 +62,7 @@ D40 採三個 feature PR。單一 PR／四 PR 為歷史替代方案，未選用�
     - `abandon_run` decision 後新 run 繼承已用 rounds/active time；
     - lineage 中任一 run 不可讀 → Blocked；
     - project.json 被刪 → 由 authority 修復
-- [ ] 1.7 (DR-07) Outbox 引擎與 dispatch 分段恢復（design.md §11），以 fake runtime/GitHub 注入故障；驗法：`tests/test_outbox.py`、`tests/test_dispatch_recovery.py` 通過（AC-D06, D12–D14, D16, F14）
+- [x] 1.7 (DR-07) Outbox 引擎與 dispatch 分段恢復（design.md §11），以 fake runtime/GitHub 注入故障；驗法：`tests/test_outbox.py`、`tests/test_dispatch_recovery.py` 通過（AC-D06, D12–D14, D16, F14）
   - Red 測試：故障矩陣每一格斷言最終 stage 與外部呼叫次數
     - crash 在 session create 前 → 恰 1 次 create；
     - create 回應遺失且 lookup 查得 → 不重建；
@@ -72,13 +72,13 @@ D40 採三個 feature PR。單一 PR／四 PR 為歷史替代方案，未選用�
     - stop 無法確認 → Blocked；
     - accepted 後 receipt 未存 → 由 messages 補存；
     - session lookup 得 2 個 → Blocked
-- [ ] 1.8 Budget：active interval 聯集、crash unknown interval、per-op retries；驗法：`tests/test_budget.py`（AC-D16, D17）
-- [ ] 1.9 (DR-01) Sandbox profile 產生器與 OS 負例套件（design.md §10），不需 runtime；驗法：`tests/os/test_sandbox_macos.py -m os` 在 macOS 通過；Linux launcher 未安裝時該測試標 skipped 並在 validation 記未覆蓋
+- [x] 1.8 Budget：active interval 聯集、crash unknown interval、per-op retries；驗法：`tests/test_budget.py`（AC-D16, D17）
+- [x] 1.9 (DR-01) Sandbox profile 產生器與 OS 負例套件（design.md §10），不需 runtime；驗法：`tests/os/test_sandbox_macos.py -m os` 在 macOS 通過；Linux launcher 未安裝時該測試標 skipped 並在 validation 記未覆蓋
   - Red 測試：以 profile 啟動 `sh`／`python` 並分別以直接呼叫與孫程序執行 §10.4 清單，拒絕項須得 EPERM/EACCES、允許項成功；profile 缺規則時 isolation 報告必須為 `unverified`
 
 ## 2. S1-B Gates、findings、整合與狀態機
 
-- [ ] 2.1 (DR-02, DR-03) Bindings/observations、`VersionSet`、gate 完整依賴矩陣與推導規則 R-unaffected／R-base／R-reevaluate／R-reobserve（design.md §5，DR-10）；驗法：`tests/test_versions.py`、`tests/test_assessments.py` 通過（AC-O03, G11, G16, G17, D15）
+- [x] 2.1 (DR-02, DR-03) Bindings/observations、`VersionSet`、gate 完整依賴矩陣與推導規則 R-unaffected／R-base／R-reevaluate／R-reobserve（design.md §5，DR-10）；驗法：`tests/test_versions.py`、`tests/test_assessments.py` 通過（AC-O03, G11, G16, G17, D15）
   - Red 測試：
     - 相同 issue body 輪詢 10 次＋restart → version_key 不變，V1 發出的 review 仍被採用；
     - body 改 1 byte → candidate binding＋awaiting_approval；
@@ -89,19 +89,19 @@ D40 採三個 feature PR。單一 PR／四 PR 為歷史替代方案，未選用�
     - (DR-10) plan binding 改釘新 skill digest → G1 evidence 標 `method_changed`、G2 stale，須新契約 review；
     - (DR-10) controller_version 變更 → 各 gate 經 R-reevaluate／R-reobserve 重算，不直接沿用；新 evaluator 更嚴時原 passed 轉 failed；
     - (DR-10) G3 在任何 key 變更後都重新查詢，不沿用舊 assessment
-- [ ] 2.2 G1 evaluator：Red 有效性、replay、controller Green、lineage（integration.log）、adopt 缺 Red、N/A；驗法：`tests/test_gate_g1.py`（AC-G04–G10）
-- [ ] 2.3 (DR-01) G2 evaluator：profile/actual model、session 獨立、isolation 只依 §10.3 能力報告＋receipt；驗法：`tests/test_gate_g2.py`（AC-G03, G11, G12, D24）
+- [x] 2.2 G1 evaluator：Red 有效性、replay、controller Green、lineage（integration.log）、adopt 缺 Red、N/A；驗法：`tests/test_gate_g1.py`（AC-G04–G10）
+- [x] 2.3 (DR-01) G2 evaluator：profile/actual model、session 獨立、isolation 只依 §10.3 能力報告＋receipt；驗法：`tests/test_gate_g2.py`（AC-G03, G11, G12, D24）
   - Red 測試：
     - clone＋env 清理＋事後 ref 不變但無 verified 報告 → G2 unknown；
     - receipt 的 profile digest 與報告不符 → unknown；
     - (DR-10) review result 回報的 binding digests 與當前 VersionSet 不符或缺漏 → 不支持當前 key；
     - (DR-10) 新契約 review clean 且 digests 相符 → G2 passed
-- [ ] 2.4 (DR-08) G3 evaluator 與 source SHA 選取（head/merge mapping、stale M）；驗法：`tests/test_gate_g3.py` 參數化 7 種非成功狀態＋skipped/neutral＋source 案例（AC-G13–G15）
-- [ ] 2.5 Pass 判定與 re-read；驗法：`tests/test_pass.py`（AC-G01, G02, G18）
-- [ ] 2.6 Finding registry：ID、`matches`、blocking 分類、closure 權限；驗法：`tests/test_findings.py`（AC-F01–F04）
-- [ ] 2.7 Correction batch/rounds（含 base_conflict 項）、一次 dispute、recurrence；驗法：`tests/test_correction.py`（AC-F05–F10, F15, F16）
-- [ ] 2.8 Decisions 與 acceptance（approve_plan、adopt_binding、accept/return、abandon_run、budget_extension）；驗法：`tests/test_decisions.py`（AC-O05–O07, O10, O11, F11, F12, D02）
-- [ ] 2.9 (DR-05) `integrate` operation：fetch、scope 核對、CAS fast-forward、crash 恢復、舊 attempt fencing（design.md §9.2）；驗法：`tests/test_integration.py` 以真 git tmp repo 通過（AC-G08, D04）
+- [x] 2.4 (DR-08) G3 evaluator 與 source SHA 選取（head/merge mapping、stale M）；驗法：`tests/test_gate_g3.py` 參數化 7 種非成功狀態＋skipped/neutral＋source 案例（AC-G13–G15）
+- [x] 2.5 Pass 判定與 re-read；驗法：`tests/test_pass.py`（AC-G01, G02, G18）
+- [x] 2.6 Finding registry：ID、`matches`、blocking 分類、closure 權限；驗法：`tests/test_findings.py`（AC-F01–F04）
+- [x] 2.7 Correction batch/rounds（含 base_conflict 項）、一次 dispute、recurrence；驗法：`tests/test_correction.py`（AC-F05–F10, F15, F16）
+- [x] 2.8 Decisions 與 acceptance（approve_plan、adopt_binding、accept/return、abandon_run、budget_extension）；驗法：`tests/test_decisions.py`（AC-O05–O07, O10, O11, F11, F12, D02）
+- [x] 2.9 (DR-05) `integrate` operation：fetch、scope 核對、CAS fast-forward、crash 恢復、舊 attempt fencing（design.md §9.2）；驗法：`tests/test_integration.py` 以真 git tmp repo 通過（AC-G08, D04）
   - Red 測試：
     - 兩 task 依序整合，task 2 的 T0 = task 1 的 A；
     - 舊 attempt 晚到 → 不整合、ref 不變；
@@ -110,14 +110,14 @@ D40 採三個 feature PR。單一 PR／四 PR 為歷史替代方案，未選用�
     - ref 為第三值 → Blocked；
     - scope 外修改 → 拒絕；
     - 整合後 regression 紅 → G1 failed
-- [ ] 2.10 狀態機、adopt、依賴檢查（D27）、Project Lead 授權；驗法：`tests/test_controller_flow.py` 以 fake runtime/GitHub 跑完整路徑（AC-O01–O04, O08, O09, O12, O13, O18, O19, O22, O23, O26）
+- [x] 2.10 狀態機、adopt、依賴檢查（D27）、Project Lead 授權；驗法：`tests/test_controller_flow.py` 以 fake runtime/GitHub 跑完整路徑（AC-O01–O04, O08, O09, O12, O13, O18, O19, O22, O23, O26）
   - (DR-03) 必含兩個端到端案例：
     - pre-PR G1 → push＋PR 建立 → G2/G3 → Pass；
     - Pass 前 base-only 變更 → R-base 重驗 → 重新收齊三 gates 得 Pass，另一分支為 merge-tree 衝突 → correcting；
   - (DR-10) 另含：契約變更 S1→S2 → awaiting_approval → adopt_binding → planning/implementing 補新 AC → 新契約 review＋G3 重新查詢 → Pass
-- [ ] 2.11 Resume/reconcile：各 crash 點的磁碟 fixture＋fake adapter 以 `os._exit` 中斷的 subprocess 測試（含 dispatch stages、integrate、blob 屏障）；驗法：`tests/test_resume.py`（AC-D07, D09, D14, D15）
-- [ ] 2.12 Publication 內容與 `delivery status`；驗法：`tests/test_publication.py`、`tests/test_status.py`（AC-F13, F14, D01）
-- [ ] 2.13 Retro operation 去重與 P03 guard；驗法：`tests/test_retro.py`（AC-O14, O15）
+- [x] 2.11 Resume/reconcile：各 crash 點的磁碟 fixture＋fake adapter 以 `os._exit` 中斷的 subprocess 測試（含 dispatch stages、integrate、blob 屏障）；驗法：`tests/test_resume.py`（AC-D07, D09, D14, D15）
+- [x] 2.12 Publication 內容與 `delivery status`；驗法：`tests/test_publication.py`、`tests/test_status.py`（AC-F13, F14, D01）
+- [x] 2.13 Retro operation 去重與 P03 guard；驗法：`tests/test_retro.py`（AC-O14, O15）
 - [ ] 2.14 S1 整合驗證：`uv run pytest` 全綠＋CI `test` 綠＋獨立 review；驗法：G1/G2/G3 evidence 由 `docs/validation/implement-delivery-loop.md` 引用
 
 ## 3. S2-A 真實 GitHub adapter

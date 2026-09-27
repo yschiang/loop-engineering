@@ -142,3 +142,38 @@ Pass 標準共通前提：測試由 runner 捕捉且 evidence digest 可核對�
 - Worker 權限邊界（design.md §10）：目前只有本輪 macOS Darwin 27.0 的 tmp probe（非產品測試）；Linux launcher、OpenCode 在 sandbox 下、keychain 與網路未測。未通過負例套件的 profile 一律 unverified。
 - Durability：process 層級（SIGKILL）與 Linux syscall 順序可測；主機斷電／儲存 crash 未覆蓋（需 VM 硬重置），macOS 目錄 `F_FULLFSYNC` 支援待測。
 - G3 merge snapshot 與所有 GH 層案例依 S2 GitHub sandbox 與權限實測。
+
+## S1 實作執行紀錄（bootstrap-s1-20260927／s1-impl-01，進行中）
+
+本段只記錄 S1 worker 在本機實際執行的測試與未執行項目；不是 G1/G2/G3 結論，也不改動上方 AC 對照。原始 Red/Green 證據（命令、cwd、起迄時間、exit、完整 stdout/stderr、HEAD/tree、hash）保存在 run 目錄 `s1-run/evidence/<task>/`，不進 Git。
+
+| 層級 | 已實際執行（本機 macOS 27.0、Python 3.12.13） | 未執行／未覆蓋 |
+| --- | --- | --- |
+| F | tasks 1.1、1.2、1.4–1.9、2.1–2.9、2.11–2.13 與 2.10 的部分行為；全量回歸指向 worker head | CI 尚未執行（未 push）；必要 check `test` 聚合 Linux 與 macOS job，任一失敗或 skipped 即失敗，JUnit 以 artifact 上傳 |
+| F／Linux | — | `test_blob_and_dir_fsync_precede_snapshot_rename`（strace 順序）只在 Linux 執行；本機為 skipped，**不算通過**；CI 以 `DELIVERY_REQUIRE_LINUX_CHECKS=1` 強制執行 |
+| OS | macOS Seatbelt 負例套件（直接與孫程序）：寫 author repo、update-ref、寫 run.json／blobs／authority／他 attempt inbox 與 clone、讀憑證檔、push 均被拒；keychain 項目與 `gh auth token` 以合成憑證＋未受限對照執行驗證被拒（輸出丟棄、只記 exit）；移除 keychain 規則可被偵測；寫自己 clone／inbox 成功 | Linux launcher（bubblewrap／Landlock）未實作亦未安裝：`run_suite` 在 Linux 回 `unverified`／`not_run`，對應 AC 未覆蓋；OpenCode runtime 在 sandbox 下的隔離屬 S2 task 4.3 |
+
+環境觀察：本機 `/usr/local/bin/git` 為 x86_64 build，在 Seatbelt 下 exec 失敗（"Bad CPU type"）；OS 負例改釘 `/usr/bin/git`，使拒絕可歸因於邊界而非 binary。`git push` 被拒時不回報 EPERM 文字，該負例以「remote ref 未產生」的效果核對判定。
+
+待獨立 Reviewer 核對的文字歧義：design.md §5.3 矩陣的 skills×G3 格寫 R-unaffected，但 R-reobserve 定義與 task 2.1（DR-10）驗收要求「G3 在任何 key 變更後重新查詢」。依協調者指示採既有明確驗收（G3 一律 R-reobserve），未修改 spec/design。
+
+### S1 延續（s1-impl-02）
+
+- Task 2.10 主迴圈：`delivery.loop.step()` 每步重讀 run.json，串接真 git clone、outbox 分段派工、fake runtime（fake worker 以真 runner 保存 Red）、inbox 匯入、CAS 整合、controller 自跑 Green＋Red replay、G1／G2／G3、correction batch 與 re-review；`tests/test_loop.py` 驗 finding→fix→re-review→Pass、缺 Red 不放行、隔離未驗證不放行、CI 失敗與 review 同批、未核准不派工、fenced 派工 Blocked。均為 fake adapter（F 層），非真實 runtime／GitHub／E2E。
+- 迴圈揭露並已修正：integrate 讀 design 的 task list（原假設 dict）；Blocked 詳情欄位與 `_block` 參數同名（TypeError）。
+- CLI 接線見 `docs/implementation/cli.md`；需 S2 adapter 的命令 exit 3，不宣稱外部完成。
+- 2.14（真 CI、獨立 review）由協作者執行；1.3 的 Linux strace 仍待 CI。
+
+### S1 完成（s1-impl-03）
+
+主迴圈接線（F 層，fake runtime／GitHub，真 git）：
+- G1 可修缺失（整合回歸、red 測試在 head 未通過）退回原 producing task 新 attempt，不增 round；缺／無效／不可重現歷史 Red → Blocked。
+- 派工 guard：feature authority、ticket、目前 plan binding、skill pin、implementer sandbox 報告、累計 active 預算（activity 區間＋carried）、D27 依賴（未 merge 等待，不派工）；`authorize_dispatch` 以 task list 與實算條件執行。
+- Outbox：integrate 先登記再執行（pending→in_flight→effect→commit），crash 後依 ref 收斂；review 經 outbox 發 PR 全文與 issue 摘要。
+- 版本重讀：checking 前、Pass 前與 ready_for_acceptance 靜止時重讀 head／base／merge-base／bindings；base-only → R-base（merge-tree＋merge 結果 Green）；base 衝突 → correction batch；契約變更 → candidate＋awaiting_approval，`adopt_binding` 後重評 G1 並新契約 review。
+- 決策：各 kind 履行或明確拒絕；accept 登記 retro op；ac_defect return 建 batch 與 fix task；abandon_run 經 authority。start 不重置既存 run；adopt 匯入 plan／tasks／bindings／handoff。
+- 證據：red／green／replay 原始輸出為 durable blob；CLI evidence write-once；N/A eligibility（預篩＋獨立 reviewer，綁 diff digest）在主迴圈。
+- 2.7 recurrence 由真 re-review 計數；D25 爭議一次獨立覆核（accepted 解除、upheld Blocked），不增 round。
+- 每個改變狀態的 step 寫 events.jsonl；resume 對遺留 activity 計入 crash 區間。
+
+仍未覆蓋（S1 範圍外或待協作者）：真實 runtime／GitHub adapter 與 sandbox 下的 runtime 啟動（S2）；G3 `source: merge` 的 M 映射需 GitHub adapter（S2 3.1，現為 unknown 而不放行）；retro op 的執行（S3 orchestrate reference）；Linux launcher；1.3 Linux strace 與 2.14 真 CI／獨立 review。

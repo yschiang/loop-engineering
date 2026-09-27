@@ -1,0 +1,45 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: sudo apt-get update && sudo apt-get install -y strace
+      - run: uv sync --locked
+      - run: uv run ruff check src tests
+      - run: uv run mypy src
+      - run: uv run pytest -q -rs --junitxml=junit-linux.xml
+        env:
+          DELIVERY_REQUIRE_LINUX_CHECKS: "1"
+      - run: uv build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-linux
+          path: junit-linux.xml
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - run: uv run pytest -q -rs -m os tests/os --junitxml=junit-macos.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-macos
+          path: junit-macos.xml
+  # Required check. Fails unless both verification jobs succeeded (failure, cancel or skip all fail it).
+  test:
+    needs: [linux, macos]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "linux=${{ needs.linux.result }} macos=${{ needs.macos.result }}"
+          test "${{ needs.linux.result }}" = success
+          test "${{ needs.macos.result }}" = success
