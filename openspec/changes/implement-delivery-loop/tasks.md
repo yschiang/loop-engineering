@@ -100,7 +100,7 @@ D40 採三個 feature PR。單一 PR／四 PR 為歷史替代方案，未選用�
 - [x] 2.5 Pass 判定與 re-read；驗法：`tests/test_pass.py`（AC-G01, G02, G18）
 - [x] 2.6 Finding registry：ID、`matches`、blocking 分類、closure 權限；驗法：`tests/test_findings.py`（AC-F01–F04）
 - [x] 2.7 Correction batch/rounds（含 base_conflict 項）、一次 dispute、recurrence；驗法：`tests/test_correction.py`（AC-F05–F10, F15, F16）
-- [ ] 2.8 Decisions 與 acceptance（approve_plan、adopt_binding、accept/return、abandon_run、budget_extension）；驗法：`tests/test_decisions.py`（AC-O05–O07, O10, O11, F11, F12, D02）
+- [x] 2.8 Decisions 與 acceptance（approve_plan、adopt_binding、accept/return、abandon_run、budget_extension）；驗法：`tests/test_decisions.py`（AC-O05–O07, O10, O11, F11, F12, D02）
 - [x] 2.9 (DR-05) `integrate` operation：fetch、scope 核對、CAS fast-forward、crash 恢復、舊 attempt fencing（design.md §9.2）；驗法：`tests/test_integration.py` 以真 git tmp repo 通過（AC-G08, D04）
   - Red 測試：
     - 兩 task 依序整合，task 2 的 T0 = task 1 的 A；
@@ -110,7 +110,7 @@ D40 採三個 feature PR。單一 PR／四 PR 為歷史替代方案，未選用�
     - ref 為第三值 → Blocked；
     - scope 外修改 → 拒絕；
     - 整合後 regression 紅 → G1 failed
-- [ ] 2.10 狀態機、adopt、依賴檢查（D27）、Project Lead 授權；驗法：`tests/test_controller_flow.py` 以 fake runtime/GitHub 跑完整路徑（AC-O01–O04, O08, O09, O12, O13, O18, O19, O22, O23, O26）
+- [x] 2.10 狀態機、adopt、依賴檢查（D27）、Project Lead 授權；驗法：`tests/test_controller_flow.py` 以 fake runtime/GitHub 跑完整路徑（AC-O01–O04, O08, O09, O12, O13, O18, O19, O22, O23, O26）
   - (DR-03) 必含兩個端到端案例：
     - pre-PR G1 → push＋PR 建立 → G2/G3 → Pass；
     - Pass 前 base-only 變更 → R-base 重驗 → 重新收齊三 gates 得 Pass，另一分支為 merge-tree 衝突 → correcting；

@@ -163,3 +163,17 @@ Pass 標準共通前提：測試由 runner 捕捉且 evidence digest 可核對�
 - 迴圈揭露並已修正：integrate 讀 design 的 task list（原假設 dict）；Blocked 詳情欄位與 `_block` 參數同名（TypeError）。
 - CLI 接線見 `docs/implementation/cli.md`；需 S2 adapter 的命令 exit 3，不宣稱外部完成。
 - 2.14（真 CI、獨立 review）由協作者執行；1.3 的 Linux strace 仍待 CI。
+
+### S1 完成（s1-impl-03）
+
+主迴圈接線（F 層，fake runtime／GitHub，真 git）：
+- G1 可修缺失（整合回歸、red 測試在 head 未通過）退回原 producing task 新 attempt，不增 round；缺／無效／不可重現歷史 Red → Blocked。
+- 派工 guard：feature authority、ticket、目前 plan binding、skill pin、implementer sandbox 報告、累計 active 預算（activity 區間＋carried）、D27 依賴（未 merge 等待，不派工）；`authorize_dispatch` 以 task list 與實算條件執行。
+- Outbox：integrate 先登記再執行（pending→in_flight→effect→commit），crash 後依 ref 收斂；review 經 outbox 發 PR 全文與 issue 摘要。
+- 版本重讀：checking 前、Pass 前與 ready_for_acceptance 靜止時重讀 head／base／merge-base／bindings；base-only → R-base（merge-tree＋merge 結果 Green）；base 衝突 → correction batch；契約變更 → candidate＋awaiting_approval，`adopt_binding` 後重評 G1 並新契約 review。
+- 決策：各 kind 履行或明確拒絕；accept 登記 retro op；ac_defect return 建 batch 與 fix task；abandon_run 經 authority。start 不重置既存 run；adopt 匯入 plan／tasks／bindings／handoff。
+- 證據：red／green／replay 原始輸出為 durable blob；CLI evidence write-once；N/A eligibility（預篩＋獨立 reviewer，綁 diff digest）在主迴圈。
+- 2.7 recurrence 由真 re-review 計數；D25 爭議一次獨立覆核（accepted 解除、upheld Blocked），不增 round。
+- 每個改變狀態的 step 寫 events.jsonl；resume 對遺留 activity 計入 crash 區間。
+
+仍未覆蓋（S1 範圍外或待協作者）：真實 runtime／GitHub adapter 與 sandbox 下的 runtime 啟動（S2）；G3 `source: merge` 的 M 映射需 GitHub adapter（S2 3.1，現為 unknown 而不放行）；retro op 的執行（S3 orchestrate reference）；Linux launcher；1.3 Linux strace 與 2.14 真 CI／獨立 review。
