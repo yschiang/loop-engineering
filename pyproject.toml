@@ -1,0 +1,25 @@
+[project]
+name = "loopctl"
+version = "0.1.0"
+description = "Thin, skill-driven delivery-loop controller (first slice)"
+requires-python = ">=3.12,<3.13"
+dependencies = ["pyyaml>=6.0"]
+
+[project.scripts]
+loopctl = "loopctl.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.3", "ruff>=0.6", "mypy>=1.11", "types-PyYAML>=6.0"]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+# Test policy (design §11, validation §0): same settings locally and in every CI job.
+[tool.pytest.ini_options]
+addopts = ["--strict-markers"]
+xfail_strict = true
+testpaths = ["tests"]
+markers = [
+  "only_on(platform): run only on this sys.platform (linux, darwin); the only skip the policy accepts",
+]
