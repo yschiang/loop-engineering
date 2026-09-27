@@ -159,3 +159,14 @@ def test_adopt_imports_tasks_versions_and_requires_handoff(tmp_path, repo):
              "--state-home", tmp_path / "home")
     assert p2.returncode == 0
     assert Store(repo / ".delivery" / "runs" / "r4").load().state["phase"] == "blocked"
+
+
+def test_evidence_run_never_overwrites_existing_evidence(tmp_path, repo):
+    out = tmp_path / "ev"
+    args = ["evidence", "run", "--kind", "green", "--task", "t1", "--attempt", "a1", "--cwd", repo, "--t0",
+            git(repo, "rev-parse", "HEAD"), "--scope", "src", "--out", out, "--", sys.executable, "-c", "print(1)"]
+    assert run(*args).returncode == 0
+    first = (out / "green.json").read_bytes()
+    second = run(*args)
+    assert second.returncode == 1 and "exists" in second.stderr
+    assert (out / "green.json").read_bytes() == first

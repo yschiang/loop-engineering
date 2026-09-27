@@ -327,3 +327,21 @@ def test_contract_change_waits_for_adoption_then_needs_new_review(tmp_path, ctl)
     final = Store(c.run_dir).load().state
     assert final["phase"] == "ready_for_acceptance" and final["versions"]["bindings"]["issue_body"] == "d2"
     assert len(final["reviews"]) == 2
+
+
+def test_raw_red_green_and_replay_outputs_are_durable_blobs(tmp_path, ctl):
+    import shutil
+
+    rt = AgentRuntime(reviews=[{"verdict": "clean"}])
+    c = ctx(tmp_path, ctl, rt, RepoGitHub(ctl))
+    begin(c)
+    run_until_idle(c)
+    shutil.rmtree(c.run_dir / "inbox")  # worker area gone; the controller's copies must remain
+    store = Store(c.run_dir)
+    state = store.load().state
+    red = state["tasks"][0]["red"][0]
+    assert b"test_add" in store.blob_path(red["raw"]["stdout"]).read_bytes()
+    assert b"test_add" in store.blob_path(red["replay"]["raw"]["stdout"]).read_bytes()
+    green = json.loads(store.blob_path(state["gates"]["g1"]["evidence"][0]).read_bytes())
+    assert store.blob_path(green["raw"]["stdout"]).exists()
+    assert not store.load().blocked
