@@ -1,0 +1,54 @@
+# loopctl required CI (validation §6.1; D53: the required set is only unit-linux).
+# Structure is checked by tests/test_ci_workflow.py (t7). Any change needs a new
+# policy_change because workflow.yaml binds this file's blob SHA.
+name: loopctl-ci
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unit-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Verify tested SHA is the PR head
+        run: test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+      - name: Write tested-sha.json
+        run: |
+          python3 - <<'EOF'
+          import json, os
+          json.dump({
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "job": os.environ["GITHUB_JOB"],
+              "check_name": os.environ["GITHUB_JOB"],
+              "tested_sha": os.environ["HEAD_SHA"],
+          }, open("tested-sha.json", "w"))
+          EOF
+      - name: Upload tested SHA (before tests)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tested-sha-${{ github.job }}-${{ github.run_attempt }}
+          path: tested-sha.json
+      - name: Install uv and Python 3.12
+        run: |
+          pipx install uv==0.11.24
+          uv python install 3.12
+      - run: uv sync --frozen
+      - run: uv run pytest
+        env:
+          LOOPCTL_EXPECT_PLATFORM: linux
+      - run: uv run ruff check .
+      - run: uv run mypy src
+      - run: scripts/dist-smoke.sh

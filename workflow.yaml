@@ -1,0 +1,30 @@
+schema_version: 1
+repo: yschiang/loop-engineering
+g3:
+  source: head
+  trigger_event: pull_request
+  base_branch: main
+  workflow: .github/workflows/loopctl-ci.yml
+  workflow_blob_sha: 515672328bcf7817d60698fd7fe44c5338ea3a41
+  required_checks:
+    - {name: unit-linux, app: github-actions}   # D53: only unit-linux (validation §6.3)
+  exceptions: []
+evidence:
+  commands:
+    suite: {argv: [uv, run, pytest, "--junitxml={junit_out}"]}   # Red and Green share it; loopctl fills {junit_out}, workers cannot pass arguments
+budget: {active_hours: 4, correction_rounds: 3, infra_extra_retries: 2}   # D13
+timeouts: {worker_attempt_min: 45, review_attempt_min: 30, ci_wait_min: 30, extra_attempts_per_unit: 2}
+limits:
+  read_call_s: 30
+  write_call_s: 60
+  push_call_s: 120
+  pr_ensure_call_s: 120
+  evidence_call_s: 900
+  poll_worker_s: 30
+  poll_github_s: 60
+  readback_max: 3
+  stop_readback_interval_s: 10
+  read_failures_max: 3
+profiles:
+  implementer: {transport: herdr, runtime: claude-code, provider: anthropic, model: claude-opus-5-5, effort: high, settings: profiles/implementer.claude-settings.json}
+  reviewer: {transport: herdr, runtime: opencode, provider: openai, model: gpt-6-astra, effort: xhigh, settings: profiles/reviewer.opencode.json}

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "edit": "allow",
+    "webfetch": "deny",
+    "external_directory": "deny",
+    "bash": {
+      "*": "deny",
+      "git status*": "allow",
+      "git diff*": "allow",
+      "git log*": "allow",
+      "git show*": "allow",
+      "git rev-parse*": "allow",
+      "ls*": "allow",
+      "uv run pytest*": "allow",
+      "git push*": "deny",
+      "gh*": "deny",
+      "herdr*": "deny",
+      "loopctl*": "deny"
+    }
+  }
+}

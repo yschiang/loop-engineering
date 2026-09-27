@@ -1,0 +1,44 @@
+{
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "allow": [
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "Bash(uv run pytest:*)",
+      "Bash(uv run ruff:*)",
+      "Bash(uv run mypy:*)",
+      "Bash(uv sync:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(ls:*)",
+      "Bash(loopctl evidence red:*)"
+    ],
+    "deny": [
+      "Bash(git push:*)",
+      "Bash(gh:*)",
+      "Bash(herdr:*)",
+      "Bash(loopctl init:*)",
+      "Bash(loopctl claim:*)",
+      "Bash(loopctl status:*)",
+      "Bash(loopctl next:*)",
+      "Bash(loopctl register:*)",
+      "Bash(loopctl decide:*)",
+      "Bash(loopctl write:*)",
+      "Bash(loopctl observe:*)",
+      "Bash(loopctl evidence green:*)",
+      "Bash(loopctl result:*)",
+      "Bash(loopctl assess:*)",
+      "Bash(loopctl preflight:*)",
+      "WebFetch",
+      "WebSearch"
+    ]
+  }
+}
