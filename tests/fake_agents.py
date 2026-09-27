@@ -17,8 +17,11 @@ class AgentRuntime(FakeRuntime):
     """Implementer: write test → capture Red with the real runner → implement → commit → result.
     Reviewer: return the scripted verdict for its review number."""
 
-    def __init__(self, reviews, skip_red=False, fix_spec=None):
+    def __init__(self, reviews, skip_red=False, fix_spec=None, attempt_specs=None, tamper_red=False):
         super().__init__()
+        self.attempt_specs = dict(attempt_specs or {})  # attempt_id -> spec overriding the task spec
+        self.tamper_red = tamper_red
+        self.assignments = []
         self.reviews = list(reviews)
         self.skip_red = skip_red
         self.fix_spec = fix_spec  # what the worker decides to change for a correction batch
@@ -33,7 +36,8 @@ class AgentRuntime(FakeRuntime):
         clone, inbox = Path(a["clone_path"]), Path(a["inbox"])
         for k, v in (("user.email", "w@x"), ("user.name", "worker")):
             git(clone, "config", k, v)
-        spec = a["task"].get("spec") or self.fix_spec
+        self.assignments.append(a)
+        spec = self.attempt_specs.get(a["attempt_id"]) or a["task"].get("spec") or self.fix_spec
         for path, body in spec["tests"].items():
             (clone / path).parent.mkdir(parents=True, exist_ok=True)
             (clone / path).write_text(body)
@@ -43,7 +47,7 @@ class AgentRuntime(FakeRuntime):
                                a["scope"]["paths"], a["excludes"])
             rec = evidence_record(red)
             for name in ("stdout", "stderr"):
-                (inbox / f"red.{name}").write_bytes(getattr(red, name))
+                (inbox / f"red.{name}").write_bytes(getattr(red, name) + (b"tampered" if self.tamper_red else b""))
             evidence.append(rec)
         for path, body in spec["impl"].items():
             (clone / path).parent.mkdir(parents=True, exist_ok=True)

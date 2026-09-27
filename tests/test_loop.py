@@ -135,3 +135,29 @@ def test_fenced_dispatch_blocks_with_reason_instead_of_crashing(tmp_path, ctl):
     assert state["phase"] == "blocked"
     assert state["blockers"][-1]["kind"] == "dispatch_failed"
     assert state["blockers"][-1]["op_state"] == "fenced"
+
+
+BUGGY = {"tests": T1["tests"], "impl": {"src/app.py": "def add(a, b):\n    return a - b\n"}}
+
+
+def test_fixable_g1_failure_returns_to_producing_task_without_a_correction_round(tmp_path, ctl):
+    rt = AgentRuntime(reviews=[{"verdict": "clean"}], attempt_specs={"t1-a1": BUGGY})
+    c = ctx(tmp_path, ctl, rt, RepoGitHub(ctl))
+    begin(c)
+    run_until_idle(c)
+    state = Store(c.run_dir).load().state
+    assert state["phase"] == "ready_for_acceptance", state["blockers"]
+    assert [a["attempt_id"] for a in state["tasks"][0]["attempts"]] == ["t1-a1", "t1-a2"]
+    assert state["budget"]["correction_rounds_used"] == 0 and state["batches"] == []
+    second = [a for a in rt.assignments if a["attempt_id"] == "t1-a2"][0]
+    assert second["g1_return"]["reasons"] and "regression" in " ".join(second["g1_return"]["reasons"])
+
+
+def test_invalid_historical_red_blocks_instead_of_rerouting(tmp_path, ctl):
+    rt = AgentRuntime(reviews=[], tamper_red=True)
+    c = ctx(tmp_path, ctl, rt, RepoGitHub(ctl))
+    begin(c)
+    run_until_idle(c)
+    state = Store(c.run_dir).load().state
+    assert state["phase"] == "blocked" and state["blockers"][-1]["kind"] == "g1_not_passed"
+    assert len(state["tasks"][0]["attempts"]) == 1
