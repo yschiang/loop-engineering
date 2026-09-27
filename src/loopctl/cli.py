@@ -7,6 +7,7 @@ Each task adds only its own subcommands here (tasks.md shared-file table).
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,12 @@ def human(blockers: list[str], decision_kinds: list[str] | None = None) -> dict[
     return {"action": "human", "blockers": blockers, "decision_kinds": decision_kinds or []}
 
 
+def _herdr_session(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", value):
+        raise argparse.ArgumentTypeError(f"invalid session name {value!r} (want [A-Za-z0-9._-]+)")
+    return value
+
+
 def _parser() -> _Parser:
     parser = _Parser(prog="loopctl", description="Thin delivery-loop controller.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -54,6 +61,11 @@ def _parser() -> _Parser:
     pf = sub.add_parser("preflight", help="capability probe of a selected profile (design §6)")
     pf.add_argument("--role", required=True, choices=preflight.ROLES)
     pf.add_argument("--out", required=True, type=Path, help="receipt JSON path")
+    pf.add_argument(
+        "--herdr-session",
+        type=_herdr_session,
+        help="named Herdr session for every Herdr control call (default: the caller's session)",
+    )
     return parser
 
 
@@ -65,7 +77,7 @@ def _status(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 
 
 def _preflight(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
-    receipt = preflight.run(args.role, args.out, Path.cwd())
+    receipt = preflight.run(args.role, args.out, Path.cwd(), args.herdr_session)
     result = {"receipt": str(args.out), "verdict": receipt["verdict"]}
     if receipt["verdict"] == "verified":
         return EXIT_OK, envelope(True, result=result)

@@ -46,8 +46,8 @@ def edit_policy(repo: Path, change) -> None:
     (repo / "workflow.yaml").write_text(yaml.safe_dump(policy))
 
 
-def preflight(capsys, role: str, out: Path) -> tuple[int, dict, dict | None]:
-    code = main(["preflight", "--role", role, "--out", str(out)])
+def preflight(capsys, role: str, out: Path, *extra: str) -> tuple[int, dict, dict | None]:
+    code = main(["preflight", "--role", role, "--out", str(out), *extra])
     envelope = json.loads(capsys.readouterr().out)
     receipt = json.loads(out.read_text()) if out.exists() else None
     return code, envelope, receipt
@@ -127,9 +127,9 @@ def opencode_export(s: dict) -> dict:
     return call(s, "export")["stdout"]
 
 
-def run_probe(capsys, fakes, tmp_path, role: str, s: dict) -> tuple[int, dict, dict]:
+def run_probe(capsys, fakes, tmp_path, role: str, s: dict, *extra: str) -> tuple[int, dict, dict]:
     fakes.use(s)
-    code, envelope, receipt = preflight(capsys, role, tmp_path / "out" / f"{role}.json")
+    code, envelope, receipt = preflight(capsys, role, tmp_path / "out" / f"{role}.json", *extra)
     assert receipt is not None
     calls = fakes.calls()
     assert [c for c in calls if c.get("unexpected")] == []
@@ -310,3 +310,45 @@ def test_f6e_only_shell_cwd_matches_is_unverified(probe, fakes, capsys, tmp_path
     assert receipt["location"]["actual"]["cwd"] is None
     assert receipt["location"]["actual"]["shell_cwd"] == str(probe.resolve())
     assert receipt["location"]["items"] == {"repo": False, "worktree": False, "branch": False}
+
+
+# ---- explicit Herdr session selector (T1.1 attempt 2, D53 bootstrap) ----
+
+
+def herdr_argvs(fakes) -> list[list[str]]:
+    return [c["argv"] for c in fakes.calls() if c["tool"] == "herdr"]
+
+
+@pytest.mark.parametrize("role", ROLES)
+def test_herdr_session_a_every_control_call_selects_session(probe, fakes, capsys, tmp_path, role):
+    s = scenario(role)
+    for c in s["calls"]:
+        if c.get("tool", "herdr") == "herdr" and c["match"] != ["--version"]:
+            c["match"] = ["--session", "le-x", *c["match"]]
+    code, envelope, receipt = run_probe(capsys, fakes, tmp_path, role, s, "--herdr-session", "le-x")
+    assert_verified(code, envelope, receipt)
+    argvs = herdr_argvs(fakes)
+    assert ["--version"] in argvs
+    control = [a for a in argvs if a != ["--version"]]
+    assert control and all(a[:2] == ["--session", "le-x"] for a in control)
+    assert receipt["herdr_session"] == "le-x"
+
+
+@pytest.mark.parametrize("role", ROLES)
+def test_herdr_session_b_default_has_no_selector(probe, fakes, capsys, tmp_path, role):
+    code, envelope, receipt = run_probe(capsys, fakes, tmp_path, role, scenario(role))
+    assert_verified(code, envelope, receipt)
+    assert all("--session" not in a for a in herdr_argvs(fakes))
+    assert receipt["herdr_session"] is None
+
+
+@pytest.mark.parametrize("name", ["", "le x", "le/x", "le;x", "le$x"])
+def test_herdr_session_c_invalid_name_is_usage_error(probe, fakes, capsys, tmp_path, name):
+    fakes.use(scenario("implementer"))
+    out = tmp_path / "out" / "implementer.json"
+    code, envelope, receipt = preflight(capsys, "implementer", out, "--herdr-session", name)
+    assert code == 2
+    assert envelope["ok"] is False and envelope["result"]["error"] == "usage"
+    assert envelope["result"]["message"].startswith("argument --herdr-session")
+    assert receipt is None
+    assert fakes.calls() == []

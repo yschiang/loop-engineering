@@ -1,7 +1,7 @@
 """Capability preflight for a selected profile (design §6). Never reads or writes feature state.
 
-Launches one dedicated session through Herdr with the profile's model, effort and permission
-file; asks it to attempt five forbidden actions; then judges only from native records
+Launches one dedicated session through Herdr (the caller's default Herdr session, or the one
+named by `--herdr-session`) with the profile's model, effort and permission file; asks it to attempt five forbidden actions; then judges only from native records
 (Claude Code transcript / OpenCode export), git and resource snapshots, and Herdr
 process-info after stop. Any unproven item makes the receipt `unverified` (Blocked).
 """
@@ -200,7 +200,9 @@ def static_reasons(policy: dict[str, Any], role: str, root: Path) -> list[str]:
     return reasons
 
 
-def _probe(role: str, policy: dict[str, Any], root: Path, receipt: dict[str, Any]) -> list[str]:
+def _probe(
+    role: str, policy: dict[str, Any], root: Path, receipt: dict[str, Any], session: str | None
+) -> list[str]:
     profile = policy["profiles"][role]
     kind, stop_keys = RUNTIMES[profile["runtime"]]
     limits, timeouts = policy["limits"], policy["timeouts"]
@@ -222,19 +224,21 @@ def _probe(role: str, policy: dict[str, Any], root: Path, receipt: dict[str, Any
     shell_cwd: str | None = None
     try:
         receipt["herdr_version"] = herdr.version(read_s)
-        pane_info = herdr.open_worktree(requested["worktree"] or str(root), f"loopctl-preflight-{role}", write_s)
+        pane_info = herdr.open_worktree(
+            requested["worktree"] or str(root), f"loopctl-preflight-{role}", write_s, session=session
+        )
         pane = pane_info["pane_id"]
         if profile["runtime"] == "opencode":
-            herdr.pane_run(pane, f"export OPENCODE_CONFIG={shlex.quote(str(settings))}", write_s)
+            herdr.pane_run(pane, f"export OPENCODE_CONFIG={shlex.quote(str(settings))}", write_s, session=session)
             args = ["--model", f"{profile['provider']}/{profile['model']}", "--variant", profile["effort"]]
             read: Callable[[], Native | None] = lambda: _opencode_native(marker, read_s)
         else:
             session_id = str(uuid.uuid4())
             args = ["--model", profile["model"], "--effort", profile["effort"], "--settings", str(settings), "--session-id", session_id]
             read = lambda: _claude_native(session_id, marker)
-        agent = herdr.start_agent(name, kind, pane, args, write_s)
+        agent = herdr.start_agent(name, kind, pane, args, write_s, session=session)
         shell_cwd = agent.get("cwd")
-        herdr.prompt(name, _prompt(role, marker, negatives), write_s)
+        herdr.prompt(name, _prompt(role, marker, negatives), write_s, session=session)
         deadline = clock.now() + timedelta(minutes=float(timeouts[TIMEOUT_KEY[role]]))
         while True:
             try:
@@ -287,14 +291,14 @@ def _probe(role: str, policy: dict[str, Any], root: Path, receipt: dict[str, Any
     if pane is not None:
         stop = {"keys": stop_keys, "send_error": None, "readbacks": [], "stopped": False}
         try:
-            herdr.send_keys(name, stop_keys, write_s)
+            herdr.send_keys(name, stop_keys, write_s, session=session)
         except herdr.HerdrError as e:
             stop["send_error"] = e.code
         for attempt in range(int(limits["readback_max"])):
             if attempt:
                 time.sleep(float(limits["stop_readback_interval_s"]))
             try:
-                info = herdr.process_info(pane, read_s)
+                info = herdr.process_info(pane, read_s, session=session)
             except herdr.HerdrError as e:
                 stop["readbacks"].append({"error": e.code})
                 continue
@@ -318,8 +322,13 @@ def _probe(role: str, policy: dict[str, Any], root: Path, receipt: dict[str, Any
     return reasons
 
 
-def run(role: str, out: Path, root: Path) -> dict[str, Any]:
-    receipt: dict[str, Any] = {"role": role, "observed_at": clock.now().isoformat()}
+def run(role: str, out: Path, root: Path, herdr_session: str | None = None) -> dict[str, Any]:
+    """`herdr_session` names the Herdr session for every control call; None = the caller's default."""
+    receipt: dict[str, Any] = {
+        "role": role,
+        "observed_at": clock.now().isoformat(),
+        "herdr_session": herdr_session,
+    }
     policy_path = root / "workflow.yaml"
     try:
         policy_bytes = policy_path.read_bytes()
@@ -336,7 +345,7 @@ def run(role: str, out: Path, root: Path) -> dict[str, Any]:
         profile_digest=_sha256(json.dumps(profile, sort_keys=True).encode()),
     )
     if not reasons:
-        reasons = _probe(role, policy, root, receipt)
+        reasons = _probe(role, policy, root, receipt, herdr_session)
     receipt.update(verdict="unverified" if reasons else "verified", reasons=reasons)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(receipt, indent=2) + "\n")
