@@ -264,3 +264,63 @@ def test_review_is_published_to_pr_and_issue_through_the_outbox(tmp_path, ctl):
     assert "https://gh/pr#c1" in gh.comments["issue"][0]
     pubs = [o for o in state["operations"].values() if o["op_id"].startswith("op-pub-")]
     assert len(pubs) == 4 and all(o["state"] == "succeeded" for o in pubs)
+
+
+def advance_main(ctl, path="README.md", text="docs\n"):
+    git(ctl, "checkout", "-q", "main")
+    (ctl / path).write_text(text)
+    git(ctl, "add", "-A")
+    git(ctl, "commit", "-qm", "main moves")
+    git(ctl, "checkout", "-q", "--detach")
+
+
+def test_base_only_change_after_pass_invalidates_and_rechecks_through_the_loop(tmp_path, ctl):
+    rt = AgentRuntime(reviews=[{"verdict": "clean"}, {"verdict": "clean"}])
+    c = ctx(tmp_path, ctl, rt, RepoGitHub(ctl))
+    begin(c)
+    run_until_idle(c)
+    first = Store(c.run_dir).load().state["current_pass"]["version_key"]
+    advance_main(ctl)
+    run_until_idle(c)
+    state = Store(c.run_dir).load().state
+    assert state["phase"] == "ready_for_acceptance"
+    assert state["current_pass"]["version_key"] != first
+    assert state["pass_history"][0]["invalidated_at"]
+    assert state["gates"]["g1"]["derived"]["rule"] == "R-base"
+    assert state["versions"]["base_tip"] == git(ctl, "rev-parse", "main")
+    assert len(state["reviews"]) == 2
+
+
+def test_base_conflict_opens_a_correction_batch(tmp_path, ctl):
+    rt = AgentRuntime(reviews=[{"verdict": "clean"}])
+    c = ctx(tmp_path, ctl, rt, RepoGitHub(ctl))
+    begin(c)
+    run_until_idle(c)
+    advance_main(ctl, "src/app.py", "def add(a, b):\n    return 99\n")
+    run_until_idle(c)
+    state = Store(c.run_dir).load().state
+    assert state["batches"][-1]["items"]["base_conflict"] is True
+    assert state["budget"]["correction_rounds_used"] == 1
+
+
+def test_contract_change_waits_for_adoption_then_needs_new_review(tmp_path, ctl):
+    from delivery.decisions import apply_decision
+
+    rt = AgentRuntime(reviews=[{"verdict": "clean"}, {"verdict": "clean"}])
+    gh = RepoGitHub(ctl)
+    c = ctx(tmp_path, ctl, rt, gh)
+    begin(c)
+    run_until_idle(c)
+    gh.bindings["issue_body"] = "d2"
+    assert run_until_idle(c)[-1] == "awaiting_approval"
+    store = Store(c.run_dir)
+    state = store.load().state
+    assert state["current_pass"] is None and state["candidates"]["issue_body"]["content_digest"] == "d2"
+    apply_decision(state, {"decision_id": "DEC-7", "kind": "adopt_binding", "actor": "user", "actor_kind": "human",
+                           "source": "chat:9", "reason": "new AC wording", "created_at": "t",
+                           "subject": {"role": "issue_body"}})
+    store.commit(state)
+    run_until_idle(c)
+    final = Store(c.run_dir).load().state
+    assert final["phase"] == "ready_for_acceptance" and final["versions"]["bindings"]["issue_body"] == "d2"
+    assert len(final["reviews"]) == 2

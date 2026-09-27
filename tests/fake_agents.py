@@ -83,6 +83,13 @@ class RepoGitHub:
         self.prs, self.ensure_calls, self.check_reads = {}, 0, 0
         self.dependencies = {}
         self.comments = {}
+        self.bindings = {"plan": "plan-v1", "issue_body": "d1"}  # what the ticket/spec sources currently say
+
+    def read_versions(self, branch):
+        head = git(self.ctl, "rev-parse", f"refs/heads/{branch}")
+        base = git(self.ctl, "rev-parse", "refs/heads/main")
+        return {"head_sha": head, "base_tip": base, "merge_base": git(self.ctl, "merge-base", base, head),
+                "bindings": dict(self.bindings)}
 
     def ensure_pr(self, target, body):
         self.ensure_calls += 1
