@@ -156,3 +156,10 @@ Pass 標準共通前提：測試由 runner 捕捉且 evidence digest 可核對�
 環境觀察：本機 `/usr/local/bin/git` 為 x86_64 build，在 Seatbelt 下 exec 失敗（"Bad CPU type"）；OS 負例改釘 `/usr/bin/git`，使拒絕可歸因於邊界而非 binary。`git push` 被拒時不回報 EPERM 文字，該負例以「remote ref 未產生」的效果核對判定。
 
 待獨立 Reviewer 核對的文字歧義：design.md §5.3 矩陣的 skills×G3 格寫 R-unaffected，但 R-reobserve 定義與 task 2.1（DR-10）驗收要求「G3 在任何 key 變更後重新查詢」。依協調者指示採既有明確驗收（G3 一律 R-reobserve），未修改 spec/design。
+
+### S1 延續（s1-impl-02）
+
+- Task 2.10 主迴圈：`delivery.loop.step()` 每步重讀 run.json，串接真 git clone、outbox 分段派工、fake runtime（fake worker 以真 runner 保存 Red）、inbox 匯入、CAS 整合、controller 自跑 Green＋Red replay、G1／G2／G3、correction batch 與 re-review；`tests/test_loop.py` 驗 finding→fix→re-review→Pass、缺 Red 不放行、隔離未驗證不放行、CI 失敗與 review 同批、未核准不派工、fenced 派工 Blocked。均為 fake adapter（F 層），非真實 runtime／GitHub／E2E。
+- 迴圈揭露並已修正：integrate 讀 design 的 task list（原假設 dict）；Blocked 詳情欄位與 `_block` 參數同名（TypeError）。
+- CLI 接線見 `docs/implementation/cli.md`；需 S2 adapter 的命令 exit 3，不宣稱外部完成。
+- 2.14（真 CI、獨立 review）由協作者執行；1.3 的 Linux strace 仍待 CI。
