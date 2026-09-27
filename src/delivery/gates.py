@@ -131,4 +131,52 @@ def evaluate_g2(review: dict[str, Any] | None, current_vs: dict[str, Any], curre
 
 def evaluate_g3(policy: dict[str, Any], repo_rules: set[str] | None, head: str, base_tip: str,
                 merge: dict[str, Any] | None, checks: list[dict[str, Any]]) -> dict[str, Any]:
-    raise NotImplementedError
+    """Only completed success (or an explicitly allowed conclusion) on the right SHA and app passes."""
+    required = policy.get("required", [])
+    if not required:
+        return {"gate": "g3", "status": "failed", "reasons": ["required check set is empty"]}
+    if repo_rules is None:
+        return {"gate": "g3", "status": "unknown", "reasons": ["repository required-check rules unreadable"]}
+    names = {r["name"] for r in required}
+    if names != repo_rules:
+        return {"gate": "g3", "status": "failed",
+                "reasons": [f"policy mismatch: workflow {sorted(names)} vs repo rules {sorted(repo_rules)}"]}
+    statuses: list[str] = []
+    reasons: list[str] = []
+    out: dict[str, Any] = {"gate": "g3"}
+    for req in required:
+        name, app = req["name"], req["app"]
+        sha = head
+        if req.get("source", "head") == "merge":
+            if merge is None:
+                statuses.append("unknown")
+                reasons.append(f"{name}: merge snapshot not computed yet")
+                continue
+            if merge["parents"] != [base_tip, head]:
+                statuses.append("stale")
+                reasons.append(f"{name}: merge snapshot {merge['sha']} is for parents {merge['parents']}")
+                continue
+            sha = merge["sha"]
+            out["merge_mapping"] = merge
+        same = [c for c in checks if c["name"] == name and c["app"] == app]
+        here = [c for c in same if c["head_sha"] == sha]
+        if not here:
+            statuses.append("stale" if same else "missing")
+            reasons.append(f"{name}: {'stale (only other SHAs)' if same else 'missing'}")
+            continue
+        latest = max(here, key=lambda c: (c["started_at"], c["id"]))
+        concl = latest.get("conclusion")
+        allowed = {c for a in policy.get("allow_non_success", []) if a["name"] == name for c in a["conclusions"]}
+        if latest["status"] != "completed":
+            statuses.append("pending")
+            reasons.append(f"{name}: pending ({latest['status']})")
+        elif concl == "success" or concl in allowed:
+            statuses.append("passed")
+        elif concl in ("cancelled", "timed_out", "failure", "action_required", "startup_failure", "skipped",
+                       "neutral", "stale"):
+            statuses.append("failed")
+            reasons.append(f"{name}: conclusion {concl}")
+        else:
+            statuses.append("unknown")
+            reasons.append(f"{name}: unrecognised conclusion {concl}")
+    return {**out, "status": _worst(statuses), "reasons": reasons}
