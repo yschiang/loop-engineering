@@ -147,21 +147,27 @@ def _drifted(cwd: str, snap: Snapshot, scope_paths: list[str], excludes: list[st
             os.unlink(idx)
 
 
-def _classify(exit_code: int, junit: Path) -> tuple[str, tuple[str, ...]]:
-    if exit_code == 0:
-        return "passed", ()
+def _case_ids(junit: Path) -> tuple[list[str], list[str]]:
     failing: list[str] = []
+    passing: list[str] = []
     if junit.exists():
         for case in ET.parse(junit).iter("testcase"):
+            cid = f"{case.get('classname', '')}::{case.get('name')}"
             if case.find("failure") is not None:
-                module = case.get("classname", "").rsplit(".", 1)[-1] if "." in case.get("classname", "") \
-                    else case.get("classname", "")
-                prefix = case.get("classname", "")
-                failing.append(f"{prefix}::{case.get('name')}" if module else str(case.get("name")))
+                failing.append(cid)
+            elif case.find("error") is None and case.find("skipped") is None:
+                passing.append(cid)
+    return sorted(failing), sorted(passing)
+
+
+def _classify(exit_code: int, junit: Path) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    failing, passing = _case_ids(junit)
+    if exit_code == 0:
+        return "passed", (), tuple(passing)
     # pytest exit 1 = tests failed; anything else (2 interrupted/collection, 3-5) is not a behavior Red.
     if exit_code == 1 and failing:
-        return "test_failed", tuple(sorted(failing))
-    return "collection_error", ()
+        return "test_failed", tuple(failing), tuple(passing)
+    return "collection_error", (), ()
 
 
 def _now() -> str:
@@ -180,12 +186,12 @@ def run_evidence(kind: str, task_id: str, attempt_id: str, argv: list[str], cwd:
         junit = Path(tmp) / "junit.xml"
         cmd = [a.replace("{junit}", str(junit)) for a in argv]
         proc = subprocess.run(cmd, cwd=cwd, capture_output=True, check=False)
-        status, failing = _classify(proc.returncode, junit)
+        status, failing, passing = _classify(proc.returncode, junit)
     ended = _now()
     if _drifted(cwd, snap, scope_paths, excludes):
-        status, failing = "snapshot_drift", ()
+        status, failing, passing = "snapshot_drift", (), ()
     digests = {"stdout": hashlib.sha256(proc.stdout).hexdigest(), "stderr": hashlib.sha256(proc.stderr).hexdigest(),
                "env": hashlib.sha256(repr(sorted((k, os.environ.get(k, "")) for k in ENV_ALLOWLIST))
                                      .encode()).hexdigest()}
     return Evidence(task_id, attempt_id, kind, tuple(argv), cwd, status, proc.returncode, started, ended,
-                    proc.stdout, proc.stderr, failing, snap, None, digests)
+                    proc.stdout, proc.stderr, failing, passing, snap, None, digests)
