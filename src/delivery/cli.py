@@ -150,6 +150,8 @@ def cmd_decide(a: argparse.Namespace) -> int:
     decision = {"decision_id": f"DEC-{uuid.uuid4().hex[:8]}", "kind": a.kind, "actor": a.actor,
                 "actor_kind": a.actor_kind, "source": a.source, "reason": a.reason,
                 "created_at": datetime.datetime.now(datetime.UTC).isoformat(), "subject": json.loads(a.subject)}
+    if a.kind == "abandon_run":
+        return _abandon(a, store, loaded.state, decision)
     try:
         state = apply_decision(loaded.state, decision)
     except DecisionInvalid as e:
@@ -157,6 +159,27 @@ def cmd_decide(a: argparse.Namespace) -> int:
         return 1
     store.commit(state)
     print(json.dumps({"decision_id": decision["decision_id"], "phase": state["phase"]}))
+    return 0
+
+
+def _abandon(a: argparse.Namespace, store: Any, state: dict[str, Any], decision: dict[str, Any]) -> int:
+    """abandon_run is recorded in the host authority (with stop/fencing evidence); the run stays as history."""
+    from delivery.authority import Authority
+
+    if not a.state_home or not a.feature or not decision["subject"].get("evidence"):
+        print("abandon_run needs --state-home, --feature and subject.evidence (workers stopped or fenced)",
+              file=sys.stderr)
+        return 1
+    authority = Authority(Path(a.state_home), a.repo_id or os.path.realpath(state["versions"]["repo_id"]), a.feature)
+    try:
+        authority.abandon(state["run_id"], {**decision, "evidence": decision["subject"]["evidence"]})
+    except (ValueError, StopIteration) as e:
+        print(f"abandon rejected: {e}", file=sys.stderr)
+        return 1
+    state["phase"] = "abandoned"
+    state.setdefault("decisions", []).append(decision)
+    store.commit(state)
+    print(json.dumps({"decision_id": decision["decision_id"], "phase": "abandoned"}))
     return 0
 
 
@@ -290,6 +313,8 @@ def build_parser() -> argparse.ArgumentParser:
     for flag in ("--kind", "--actor", "--source", "--reason", "--subject"):
         p["decide"].add_argument(flag, required=True)
     p["decide"].add_argument("--actor-kind", default="human")
+    for flag in ("--state-home", "--feature", "--repo-id"):
+        p["decide"].add_argument(flag)
     p["preflight"].add_argument("--repo", required=True)
     p["preflight"].add_argument("--profile", required=True)
     ev = p["evidence"].add_subparsers(dest="evidence_cmd", required=True).add_parser("run")
