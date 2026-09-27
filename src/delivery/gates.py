@@ -180,3 +180,12 @@ def evaluate_g3(policy: dict[str, Any], repo_rules: set[str] | None, head: str, 
             statuses.append("unknown")
             reasons.append(f"{name}: unrecognised conclusion {concl}")
     return {**out, "status": _worst(statuses), "reasons": reasons}
+
+
+def decide_pass(state: dict[str, Any], current_key: str, open_blocking: list[str],
+                reread: Callable[[], str], now: str) -> dict[str, Any]:
+    raise NotImplementedError
+
+
+def observe_new_version(state: dict[str, Any], new_key: str, now: str) -> dict[str, Any]:
+    raise NotImplementedError
