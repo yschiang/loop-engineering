@@ -421,3 +421,21 @@ def test_every_state_changing_step_is_recorded_once_in_events(tmp_path, ctl):
     assert len({e["id"] for e in events}) == len(events)
     assert len(events) == sum(1 for t in trail if t not in ("waiting_result",))
     assert Store(c.run_dir).load().state["pending_history"] == []
+
+
+@pytest.mark.parametrize("ruling,phase", [("accepted", "ready_for_acceptance"), ("upheld", "blocked")])
+def test_disputed_finding_gets_one_independent_review_without_a_new_round(tmp_path, ctl, ruling, phase):
+    rt = AgentRuntime(reviews=[{"verdict": "changes_required", "findings": [FINDING]},
+                               {"verdict": "clean" if ruling == "accepted" else "changes_required",
+                                "rulings": {"F-0001": ruling}}],
+                      attempt_specs={"fix-b1-a1": {"dispute": ["F-0001"]}})
+    c = ctx(tmp_path, ctl, rt, RepoGitHub(ctl))
+    begin(c)
+    run_until_idle(c)
+    state = Store(c.run_dir).load().state
+    assert state["phase"] == phase, state["blockers"]
+    assert state["budget"]["correction_rounds_used"] == 1
+    assert state["disputes"]["F-0001"]["reviews_used"] == 1
+    assert len(state["reviews"]) == 2 and state["reviews"][1]["dispute_for"] == ["F-0001"]
+    if ruling == "upheld":
+        assert state["blockers"][-1]["kind"] == "dispute_upheld"

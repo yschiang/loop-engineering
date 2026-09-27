@@ -40,6 +40,17 @@ class AgentRuntime(FakeRuntime):
             git(clone, "config", k, v)
         self.assignments.append(a)
         spec = self.attempt_specs.get(a["attempt_id"]) or a["task"].get("spec") or self.fix_spec
+        if "dispute" in spec:  # the worker answers with counter-evidence instead of changing code
+            head = git(clone, "rev-parse", "HEAD")
+            result = {"run_id": a["run_id"], "task_id": a["task_id"], "attempt_id": a["attempt_id"],
+                      "execution_status": "succeeded", "observed": {"cwd": str(clone), "base": a["base_sha"],
+                                                                    "head": head},
+                      "changed_paths": [], "evidence": [],
+                      "responses": {fid: {"kind": "disputed", "evidence": "sub is out of this feature's scope"}
+                                    for fid in spec["dispute"]},
+                      "producer": {"session": session, "actual_model": "impl-model"}}
+            (inbox / "result.json").write_text(json.dumps(result))
+            return
         for path, body in spec["tests"].items():
             (clone / path).parent.mkdir(parents=True, exist_ok=True)
             (clone / path).write_text(body)
@@ -81,6 +92,7 @@ class AgentRuntime(FakeRuntime):
                   "changed_paths": [], "verdict": script["verdict"], "version_key": a["version_key"],
                   "read_contract": a["contract"], "findings": script.get("findings", []),
                   "closures": [{"finding_id": f, "reason": "verified fixed"} for f in script.get("close", [])],
+                  "rulings": script.get("rulings", {}),
                   "producer": {"session": session, "actual_model": script.get("model", "gpt-r")}}
         (Path(a["inbox"]) / "result.json").write_text(json.dumps(result))
 
