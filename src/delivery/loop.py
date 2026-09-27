@@ -14,7 +14,14 @@ from typing import Any
 
 from delivery.budget import ACTIVE_LIMIT_SECONDS, active_seconds, close_activity, open_activity
 from delivery.controller import authorize_dispatch, dependency_ready, reassess
-from delivery.correction import check_result, dispatch_batch, ready_for_batch, record_recheck
+from delivery.correction import (
+    check_result,
+    dispatch_batch,
+    ready_for_batch,
+    record_recheck,
+    request_dispute_review,
+    settle_dispute,
+)
 from delivery.decisions import may_dispatch_implementation
 from delivery.events import EventLog, flush_pending
 from delivery.findings import close, import_review, open_blocking, submit_fix
@@ -268,6 +275,13 @@ def _step_implement(ctx: Context, store: Store, state: dict[str, Any]) -> str:
         for fid, resp in result["responses"].items():
             if resp["kind"] == "fix_submitted":
                 submit_fix(state["registry"], fid, resp["commit"], [state["imported_results"][att["attempt_id"]]])
+            elif resp["kind"] == "disputed":  # D25: one independent re-check, same batch, no new round
+                nxt = request_dispute_review(state, fid, state["imported_results"][att["attempt_id"]],
+                                             new_head=result["observed"]["head"] != att["t0"])
+                if nxt["next"] == "blocked":
+                    state["phase"] = "blocked"
+                    store.commit(state)
+                    return "blocked"
         task["responses_applied"] = True
     op_id = f"op-integrate-{att['attempt_id']}"
     if op_id not in state["operations"]:
@@ -379,8 +393,10 @@ def _step_validate(ctx: Context, store: Store, state: dict[str, Any]) -> str:
     if state["versions"]["head_sha"] != head:
         reassess(state, {**state["versions"], "head_sha": head})
     green, ref = _green(ctx, store, state, head)
+    changed = {e["task_id"] for e in state["integration"]["log"] if e["from"] != e["to"]}
+    # A work unit that changed no code (e.g. a dispute-only correction answer) has no behavior to prove.
     tasks = [{"task_id": t["task_id"], "change_class": t["change_class"], "red": t["red"], "na": t.get("na"),
-              "diff_digest": t.get("diff_digest")} for t in state["tasks"]]
+              "diff_digest": t.get("diff_digest")} for t in state["tasks"] if t["task_id"] in changed]
     a = evaluate_g1(tasks, green, head, _is_ancestor(ctx))
     state["gates"]["g1"] = {**a, "gate": "g1", "version_key": _key(state), "evidence": [ref]}
     if a["status"] != "passed":
@@ -452,21 +468,26 @@ def _step_check(ctx: Context, store: Store, state: dict[str, Any]) -> str:
     if moved is not None:
         return moved
     k, vs = _key(state), state["versions"]
-    review = next((r for r in state["reviews"] if r["version_key"] == k), None)
-    if review is None:
+    pending = sorted(fid for fid, f in state["registry"]["findings"].items() if f["status"] == "disputed")
+    for_key = [r for r in state["reviews"] if r["version_key"] == k]
+    review = for_key[-1] if for_key else None
+    if review is None or (pending and review.get("findings_imported") and review.get("dispute_for") != pending):
         refused = _dispatch_guard(ctx, store, state, {"task_id": "review"}, "reviewer")
         if refused is not None:
             return refused
         review = {"task_id": f"review-{len(state['reviews']) + 1}", "version_key": k, "scope": [], "attempts": [],
                   "lease": None}
         state["reviews"].append(review)
+        review["dispute_for"] = pending or None
         contract = {x: vs[x] for x in ("head_sha", "base_tip", "bindings", "skills")}
-        return _new_attempt(ctx, store, state, review, "reviewer", {"version_key": k, "contract": contract})
+        return _new_attempt(ctx, store, state, review, "reviewer",
+                            {"version_key": k, "contract": contract,
+                             "dispute": {fid: state["disputes"][fid]["counter_evidence"] for fid in pending}})
     att = review["attempts"][-1]
     waiting = _drive_attempt(ctx, store, state, att)
     if waiting is not None:
         return waiting
-    review = next(r for r in state["reviews"] if r["version_key"] == k)
+    review = [r for r in state["reviews"] if r["version_key"] == k][-1]
     ref = state["imported_results"][att["attempt_id"]]
     result = _load_blob(store, ref)
     if not review.get("findings_imported"):
@@ -475,6 +496,9 @@ def _step_check(ctx: Context, store: Store, state: dict[str, Any]) -> str:
             last = state["batches"][-1]
             for fid in last["items"]["findings"]:  # each fixed finding was re-checked by this review
                 record_recheck(state, fid, still_open=fid in reported, batch_id=last["batch_id"], result_id=ref)
+        for fid, ruling in result.get("rulings", {}).items():
+            if fid in (review.get("dispute_for") or []):
+                settle_dispute(state, fid, reviewer_accepts=ruling == "accepted")
         for c in result.get("closures", []):
             close(state["registry"], c["finding_id"], {"actor_kind": "reviewer", "result_id": ref, "version_key": k,
                                                        "reason": c["reason"], "evidence": [ref]}, k)
@@ -498,6 +522,10 @@ def _step_check(ctx: Context, store: Store, state: dict[str, Any]) -> str:
              "verdict": result.get("verdict"), "session_id": op["session_id"], "parent_session_id": None,
              "requested_model": ctx.policy["reviewer"]["model"], "actual_model": result["producer"]["actual_model"],
              "receipt_profile_digest": op.get("sandbox_profile_digest"), "read_contract": result.get("read_contract")}
+    if any(state["registry"]["findings"][f]["status"] == "dispute_upheld" for f in review.get("dispute_for") or []):
+        state["phase"] = "blocked"  # settle_dispute recorded the dispute_upheld blocker for a person to decide
+        store.commit(state)
+        return "blocked"
     blocking = open_blocking(state["registry"])
     g2 = evaluate_g2(g2_in, vs, k, ctx.policy["reviewer"], ctx.isolation, implementer_sessions, blocking)
     g3 = evaluate_g3(ctx.policy["ci"], ctx.github.required_checks(), vs["head_sha"], vs["base_tip"], None,
