@@ -9,12 +9,15 @@ from delivery.sandbox import Boundary, Probe, run_suite
 
 pytestmark = [pytest.mark.os, pytest.mark.skipif(sys.platform != "darwin", reason="macOS Seatbelt launcher")]
 
+# /usr/local/bin/git on this host is an x86_64 build that cannot exec under Seatbelt ("Bad CPU type");
+# probes pin Apple's /usr/bin/git so a denial is attributable to the boundary, not the binary.
+GIT = "/usr/bin/git"
 GRANDCHILD = "import subprocess,sys; sys.exit(subprocess.run(['/bin/sh','-c',sys.argv[1]]).returncode)"
 
 
-def both(name, shell, expect):
-    return [Probe(f"{name}:direct", ("/bin/sh", "-c", shell), expect),
-            Probe(f"{name}:grandchild", (sys.executable, "-c", GRANDCHILD, shell), expect)]
+def both(name, shell, expect, effect_check=None):
+    return [Probe(f"{name}:direct", ("/bin/sh", "-c", shell), expect, effect_check),
+            Probe(f"{name}:grandchild", (sys.executable, "-c", GRANDCHILD, shell), expect, effect_check)]
 
 
 @pytest.fixture
@@ -35,13 +38,14 @@ def layout(tmp_path):
                         deny_write=(ctl, dirs["delivery"], dirs["features"], dirs["other_attempt"]),
                         deny_read=(dirs["cred"],))
     probes = (both("write_author_worktree", f"echo x > {ctl}/f", "denied")
-              + both("update_ref_author", f"git -C {ctl} update-ref refs/heads/evil HEAD", "denied")
+              + both("update_ref_author", f"{GIT} -C {ctl} update-ref refs/heads/evil HEAD", "denied")
               + both("write_run_json", f"echo x > {dirs['delivery']}/run.json", "denied")
               + both("write_authority", f"echo x > {dirs['features']}/authority.json", "denied")
               + both("write_other_attempt", f"echo x > {dirs['other_attempt']}/result.json", "denied")
               + both("read_credential", f"cat {dirs['cred']}/hosts.yml", "denied")
-              + both("push_to_author_remote", f"git -C {dirs['clone']}/w push -q {remote} HEAD:refs/heads/x",
-                     "denied")
+              # git reports "unable to create temporary object directory", not EPERM: judge by effect.
+              + both("push_to_author_remote", f"{GIT} -C {dirs['clone']}/w push -q {remote} HEAD:refs/heads/x",
+                     "denied", (GIT, "-C", str(remote), "rev-parse", "-q", "--verify", "refs/heads/x"))
               + both("write_own_clone", f"echo x > {dirs['clone']}/w/f", "allowed")
               + both("write_own_inbox", f"echo x > {dirs['inbox']}/result.json", "allowed"))
     return boundary, probes
