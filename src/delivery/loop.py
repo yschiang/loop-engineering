@@ -16,6 +16,7 @@ from delivery.budget import ACTIVE_LIMIT_SECONDS, active_seconds, close_activity
 from delivery.controller import authorize_dispatch, dependency_ready, reassess
 from delivery.correction import check_result, dispatch_batch, ready_for_batch, record_recheck
 from delivery.decisions import may_dispatch_implementation
+from delivery.events import EventLog, flush_pending
 from delivery.findings import close, import_review, open_blocking, submit_fix
 from delivery.gates import decide_pass, evaluate_g1, evaluate_g2, evaluate_g3, observe_new_version
 from delivery.integration import integrate
@@ -530,6 +531,23 @@ def _step_check(ctx: Context, store: Store, state: dict[str, Any]) -> str:
 
 
 def step(ctx: Context) -> str:
+    """One transition, then its audit event (pending history → events.jsonl, deduplicated by ID)."""
+    store = Store(ctx.run_dir)
+    before = store.load().state.get("revision")
+    result = _transition(ctx)
+    after = store.load()
+    if after.blocked or after.state.get("revision") == before:
+        return result  # nothing changed: resting steps leave no history
+    state = after.state
+    state["pending_history"] = [*state.get("pending_history", []),
+                                {"id": f"ev-{state['revision']}-{result}", "step": result, "phase": state["phase"],
+                                 "at": _now()}]
+    store.commit(state)
+    flush_pending(store, EventLog(ctx.run_dir / "events.jsonl"))
+    return result
+
+
+def _transition(ctx: Context) -> str:
     """Load the persisted run, perform at most one transition, persist it; safe to call after any crash."""
     store = Store(ctx.run_dir)
     loaded = store.load()
