@@ -106,7 +106,7 @@ def test_changes_outside_scope_are_rejected(tmp_path, ctl):
 
 def test_integrated_head_regression_fails_g1(tmp_path, ctl):
     s = st("t1", "a1")
-    c1, t0, a1 = attempt(tmp_path, ctl, "a1")
+    c1, t0, _ = attempt(tmp_path, ctl, "a1")
     integrate(str(ctl), s, "t1", "a1", str(c1), t0, SCOPE, BRANCH)
     green = {"head": tip(ctl), "status": "failed", "producer": {"tool": "controller-runner"},
              "failing_ids": ["tests.test_y::test_other"], "passing_ids": []}
