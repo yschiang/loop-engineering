@@ -72,3 +72,8 @@ def mark_cross_feature_impact(state: dict[str, Any], task_ids: list[str], impact
         state["tasks"][tid]["status"] = "blocked"
     state["blockers"].append({"kind": "cross_feature_impact", "tasks": task_ids, "impact": impact,
                               "route": "project_lead_and_user"})
+
+
+def reassess(state: dict[str, Any], new_vs: dict[str, Any], reevaluate: Any = None,
+             base_recheck: dict[str, Any] | None = None) -> dict[str, Any]:
+    raise NotImplementedError
