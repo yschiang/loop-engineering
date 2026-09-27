@@ -128,3 +128,34 @@ def test_resume_reconcile_and_preflight_report_missing_s2_adapters(tmp_path, rep
     assert pf.returncode == 3
     report = json.loads(pf.stdout)
     assert report["runtime"]["status"] == "unavailable" and report["isolation"]["status"] in ("verified", "unverified")
+
+
+def test_start_again_resumes_without_resetting_the_run(tmp_path, repo):
+    run_dir = started(tmp_path, repo)
+    rev = Store(run_dir).load().state["revision"]
+    p = run("start", "--repo", repo, "--feature", "o/r#1", "--run-id", "r1", "--branch", "delivery/s1",
+            "--tasks", tmp_path / "tasks.json", "--plan-version", "P1", "--state-home", tmp_path / "home")
+    assert p.returncode == 0 and '"resume"' in p.stdout
+    assert Store(run_dir).load().state["revision"] == rev
+
+
+def test_adopt_imports_tasks_versions_and_requires_handoff(tmp_path, repo):
+    facts = {"kind": "adopt", "owner_handoff": True, "unknown_writers": [], "sources": {"conflicts": [],
+             "unreadable": []}, "has_plan": True, "d11": True, "tasks_done": False, "g1_verified": False,
+             "fixed_base": True, "historical_red": True, "plan_version": "P7", "branch": "main",
+             "approval": {"decision_id": "DEC-3", "plan_version": "P7"},
+             "tasks": [{"task_id": "t9", "ac_ids": ["AC-X9"], "scope": ["src"]}]}
+    f = tmp_path / "facts.json"
+    f.write_text(json.dumps(facts))
+    run("init", "--repo", repo)
+    p = run("adopt", "--repo", repo, "--feature", "o/r#3", "--run-id", "r3", "--facts", f,
+            "--state-home", tmp_path / "home")
+    assert p.returncode == 0, p.stderr
+    state = Store(repo / ".delivery" / "runs" / "r3").load().state
+    assert state["phase"] == "implementing" and [t["task_id"] for t in state["tasks"]] == ["t9"]
+    assert state["plan_version"] == "P7" and state["versions"]["bindings"]["plan"] == "P7"
+    f.write_text(json.dumps({**facts, "owner_handoff": False}))
+    p2 = run("adopt", "--repo", repo, "--feature", "o/r#4", "--run-id", "r4", "--facts", f,
+             "--state-home", tmp_path / "home")
+    assert p2.returncode == 0
+    assert Store(repo / ".delivery" / "runs" / "r4").load().state["phase"] == "blocked"

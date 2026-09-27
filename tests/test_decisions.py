@@ -94,3 +94,73 @@ def test_gate_edits_and_incomplete_decisions_are_rejected():
 def test_budget_extension_is_recorded_as_decision():
     s = apply_decision(st(), d("budget_extension", subject={"seconds": 1800}))
     assert s["budget"]["extensions"] == [{"decision_id": "DEC-budget_extension", "seconds": 1800}]
+
+
+def loop_state(**over):
+    from delivery.versions import version_key
+
+    vs = {"repo_id": "r", "pr_number": 3, "head_sha": "H", "base_ref": "main", "base_tip": "B", "merge_base": "B",
+          "bindings": {"plan": "P2", "policy": "pol1"}, "skills": {}, "controller_version": "0.1.0"}
+    k = version_key(vs)
+    s = st(versions=vs, tasks=[{"task_id": "t1", "scope": ["src"], "status": "succeeded"}], batches=[],
+           gates={g: {"gate": g, "status": "passed", "version_key": k, "evidence": []} for g in ("g1", "g2", "g3")},
+           integration={"log": []})
+    s.update(over)
+    return s, k
+
+
+def test_revise_clears_approval_and_returns_to_planning():
+    s = apply_decision(st(approval={"plan_version": "sha256:plan2", "plan_producer": "implementer"},
+                          phase="implementing"), d("revise"))
+    assert s["phase"] == "planning" and s["approval"] is None
+
+
+def test_unblock_requires_a_matching_blocker_and_valid_resume_phase():
+    s = st(phase="blocked", blockers=[{"kind": "dispute_upheld", "finding_id": "F-1"}])
+    with pytest.raises(DecisionInvalid):
+        apply_decision(s, d("unblock", subject={"blocker_kind": "other", "resume_to": "checking"}))
+    with pytest.raises(DecisionInvalid):
+        apply_decision(s, d("unblock", subject={"blocker_kind": "dispute_upheld", "resume_to": "ready_for_acceptance"}))
+    apply_decision(s, d("unblock", subject={"blocker_kind": "dispute_upheld", "resume_to": "checking"}))
+    assert s["phase"] == "checking" and s["blockers"] == []
+
+
+def test_resolve_and_waive_close_the_named_finding_for_the_current_version():
+    s, k = loop_state()
+    s["registry"] = {"seq": 2, "findings": {f"F-000{i}": {"id": f"F-000{i}", "blocking": True, "status": "open"}
+                                           for i in (1, 2)}}
+    apply_decision(s, d("resolve_finding", subject={"finding_id": "F-0001", "version_key": k}))
+    apply_decision(s, d("waive_finding", subject={"finding_id": "F-0002", "version_key": k}))
+    assert [f["status"] for f in s["registry"]["findings"].values()] == ["resolved", "waived"]
+    with pytest.raises(DecisionInvalid):
+        apply_decision(s, d("waive_finding", subject={"finding_id": "F-0002", "version_key": "vk:old"}))
+
+
+def test_policy_change_needs_a_policy_digest_and_reassesses_gates():
+    s, _ = loop_state()
+    with pytest.raises(DecisionInvalid):
+        apply_decision(s, d("policy_change", subject={}))
+    apply_decision(s, d("policy_change", subject={"policy_digest": "pol2"}))
+    assert s["versions"]["bindings"]["policy"] == "pol2" and s["gates"]["g3"]["status"] == "pending"
+
+
+def test_abandon_run_is_not_silently_accepted_here():
+    with pytest.raises(DecisionInvalid, match="authority"):
+        apply_decision(st(), d("abandon_run", subject={"run_id": "r1"}))
+
+
+def test_accept_registers_one_retro_operation():
+    s = st(phase="ready_for_acceptance", current_pass={"version_key": "sha256:v1"}, feature_key="o/r#1")
+    apply_decision(s, d("accept", subject={"version_key": "sha256:v1"}))
+    retro = [o for o in s["operations"].values() if o["kind"] == "retro"]
+    assert len(retro) == 1 and retro[0]["state"] == "pending"
+
+
+def test_ac_defect_return_creates_real_fix_work():
+    s, k = loop_state(phase="ready_for_acceptance", current_pass={"version_key": "vk:x"})
+    s["current_pass"] = {"version_key": k}
+    apply_decision(s, d("return", subject={"version_key": k, "category": "ac_defect", "ac_id": "AC-X1",
+                                           "difference": "wrong sum", "feedback_id": "fb-9"}))
+    assert s["phase"] == "correcting"
+    assert s["batches"][-1]["items"]["findings"] == ["F-0001"]
+    assert s["tasks"][-1]["batch_id"] == s["batches"][-1]["batch_id"] and s["tasks"][-1]["status"] == "pending"
