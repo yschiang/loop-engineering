@@ -27,7 +27,7 @@ D40 採三個 feature PR。單一 PR／四 PR 為歷史替代方案，未選用�
 
 ## 1. S1-A Durable foundation
 
-- [ ] 1.1 建立 Python 3.12 專案骨架（uv、pytest、`delivery` entry point、CI workflow `test`）；驗法：`uv run pytest` 與 `delivery --help` 成功
+- [x] 1.1 建立 Python 3.12 專案骨架（uv、pytest、`delivery` entry point、CI workflow `test`）；驗法：`uv run pytest` 與 `delivery --help` 成功
   - Red：`test_cli_help_lists_commands`
 - [ ] 1.2 (DR-04) Evidence runner 與 baseline＋overlay Red snapshot（design.md §6.1 v3）；驗法：`tests/test_runner.py` 以真 git tmp repo 通過
   - Interfaces：Produces `run_evidence(kind, task_id, attempt_id, argv, cwd, scope_paths) -> Evidence`、`snapshot_worktree(cwd, t0, scope_paths, excludes) -> Snapshot | Refusal`
