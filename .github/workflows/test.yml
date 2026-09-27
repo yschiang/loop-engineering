@@ -8,8 +8,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
+      - run: sudo apt-get update && sudo apt-get install -y strace
       - run: uv sync --locked
       - run: uv run ruff check src tests
       - run: uv run mypy src
-      - run: uv run pytest -q
+      - run: uv run pytest -q -rs
+        env:
+          DELIVERY_REQUIRE_LINUX_CHECKS: "1"
       - run: uv build

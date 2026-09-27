@@ -44,9 +44,11 @@ def test_sigkill_at_random_points_keeps_invariants(tmp_path):
     assert kills > 150  # most iterations were really interrupted mid-write
 
 
-@pytest.mark.skipif(sys.platform != "linux" or shutil.which("strace") is None,
+@pytest.mark.skipif((sys.platform != "linux" or shutil.which("strace") is None)
+                    and not os.environ.get("DELIVERY_REQUIRE_LINUX_CHECKS"),
                     reason="syscall ordering is verified with strace on Linux CI only")
 def test_blob_and_dir_fsync_precede_snapshot_rename(tmp_path):
+    # CI sets DELIVERY_REQUIRE_LINUX_CHECKS so a missing strace fails instead of silently skipping.
     script = ("import sys; from pathlib import Path; from delivery.store import Store; s=Store(Path(sys.argv[1]));"
               "h=s.put_blob(b'x'); s.commit({'schema_version': 1, 'r': [h.ref]})")
     log = tmp_path / "trace.log"
