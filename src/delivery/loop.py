@@ -211,6 +211,9 @@ def _verify_red(ctx: Context, store: Store, att: dict[str, Any], rec: dict[str, 
     inbox = ctx.run_dir / "inbox" / att["attempt_id"]
     raw = inbox / "red.stdout"
     digest_ok = raw.exists() and hashlib.sha256(raw.read_bytes()).hexdigest() == rec["digests"].get("stdout")
+    # Copy the worker's raw output into controller-owned durable blobs before anything references it.
+    raw_refs = {name: store.put_blob((inbox / f"red.{name}").read_bytes()).ref
+                for name in ("stdout", "stderr") if (inbox / f"red.{name}").exists()}
     snap = rec.get("snapshot") or {}
     replay: dict[str, Any] = {"status": "not_run", "failing_ids": []}
     if snap.get("ref"):
@@ -220,13 +223,14 @@ def _verify_red(ctx: Context, store: Store, att: dict[str, Any], rec: dict[str, 
         try:
             again = run_evidence("replay_check", rec["task_id"], rec["attempt_id"], list(rec["argv"]), str(wt),
                                  snap["commit"], scope, ctx.policy["excludes"])
-            replay = {"status": again.status, "failing_ids": list(again.failing_ids)}
+            replay = {"status": again.status, "failing_ids": list(again.failing_ids),
+                      "raw": {"stdout": store.put_blob(again.stdout).ref, "stderr": store.put_blob(again.stderr).ref}}
         finally:
             _git(ctx.ctl_repo, "worktree", "remove", "--force", str(wt), check=False)
     ref = store.put_blob(json.dumps(rec, sort_keys=True).encode()).ref
     return {"kind": rec["kind"], "status": rec["status"], "producer": rec["producer"], "digest_ok": digest_ok,
             "failing_ids": rec["failing_ids"], "snapshot": {"commit": snap.get("commit"), "parent": snap.get("parent")},
-            "replay": replay, "record": ref}
+            "replay": replay, "record": ref, "raw": raw_refs}
 
 
 def _step_implement(ctx: Context, store: Store, state: dict[str, Any]) -> str:
@@ -298,7 +302,8 @@ def _green(ctx: Context, store: Store, state: dict[str, Any], head: str) -> tupl
                           ctx.policy["excludes"])
     finally:
         _git(ctx.ctl_repo, "worktree", "remove", "--force", str(wt), check=False)
-    rec = evidence_record(ev)
+    rec: dict[str, Any] = {**evidence_record(ev),
+                           "raw": {"stdout": store.put_blob(ev.stdout).ref, "stderr": store.put_blob(ev.stderr).ref}}
     ref = store.put_blob(json.dumps(rec, sort_keys=True).encode()).ref
     status = "passed" if ev.status == "passed" else "failed"
     return {"head": head, "status": status, "producer": {"tool": "controller-runner"},

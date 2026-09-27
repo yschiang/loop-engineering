@@ -164,12 +164,18 @@ def cmd_evidence(a: argparse.Namespace) -> int:
     from delivery.runner import evidence_record, run_evidence
 
     argv = a.argv[1:] if a.argv and a.argv[0] == "--" else a.argv
-    ev = run_evidence(a.kind, a.task, a.attempt, argv, str(a.cwd), a.t0, a.scope.split(","), a.exclude)
     out = Path(a.out)
+    names = [out / f"{a.kind}.{ext}" for ext in ("json", "stdout", "stderr")]
+    existing = [str(n) for n in names if n.exists()]
+    if existing:
+        print(f"evidence exists; history is never overwritten: {existing}", file=sys.stderr)
+        return 1
+    ev = run_evidence(a.kind, a.task, a.attempt, argv, str(a.cwd), a.t0, a.scope.split(","), a.exclude)
     out.mkdir(parents=True, exist_ok=True)
-    (out / f"{a.kind}.stdout").write_bytes(ev.stdout)
-    (out / f"{a.kind}.stderr").write_bytes(ev.stderr)
-    (out / f"{a.kind}.json").write_text(json.dumps(evidence_record(ev), indent=2))
+    for path, data in zip(names, (json.dumps(evidence_record(ev), indent=2).encode(), ev.stdout, ev.stderr),
+                          strict=True):
+        with open(path, "xb") as f:  # exclusive create: a concurrent writer cannot replace it either
+            f.write(data)
     print(json.dumps({"status": ev.status, "record": str(out / f"{a.kind}.json")}))
     return 1 if ev.status == "snapshot_refused" else 0
 
