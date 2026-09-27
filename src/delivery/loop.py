@@ -14,7 +14,7 @@ from typing import Any
 
 from delivery.budget import ACTIVE_LIMIT_SECONDS, active_seconds, close_activity, open_activity
 from delivery.controller import authorize_dispatch, dependency_ready, reassess
-from delivery.correction import check_result, dispatch_batch, ready_for_batch
+from delivery.correction import check_result, dispatch_batch, ready_for_batch, record_recheck
 from delivery.decisions import may_dispatch_implementation
 from delivery.findings import close, import_review, open_blocking, submit_fix
 from delivery.gates import decide_pass, evaluate_g1, evaluate_g2, evaluate_g3, observe_new_version
@@ -469,7 +469,11 @@ def _step_check(ctx: Context, store: Store, state: dict[str, Any]) -> str:
     ref = state["imported_results"][att["attempt_id"]]
     result = _load_blob(store, ref)
     if not review.get("findings_imported"):
-        import_review(state["registry"], {"result_id": ref, "findings": result.get("findings", [])}, k)
+        reported = import_review(state["registry"], {"result_id": ref, "findings": result.get("findings", [])}, k)
+        if state["batches"]:
+            last = state["batches"][-1]
+            for fid in last["items"]["findings"]:  # each fixed finding was re-checked by this review
+                record_recheck(state, fid, still_open=fid in reported, batch_id=last["batch_id"], result_id=ref)
         for c in result.get("closures", []):
             close(state["registry"], c["finding_id"], {"actor_kind": "reviewer", "result_id": ref, "version_key": k,
                                                        "reason": c["reason"], "evidence": [ref]}, k)
