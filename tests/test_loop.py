@@ -385,3 +385,25 @@ def test_na_request_touching_code_is_rejected_without_eligibility_review(tmp_pat
     assert state["phase"] == "blocked" and state["tasks"][1]["na"]["status"] == "rejected"
     assert "prefilter" in state["tasks"][1]["na"]["reason"]
     assert rt.creates == 2  # two implementer dispatches, no eligibility review
+
+
+def fix_spec(n):
+    return {"tests": {f"tests/test_fix{n}.py": "import sys\nsys.path.insert(0, 'src')\nimport app\n\n\n"
+                      f"def test_fix{n}():\n    assert app.f{n}() == {n}\n"},
+            "impl": {f"src/f{n}.py": "", "src/app.py": "def add(a, b):\n    return a + b\n\n\n"
+                     + "".join(f"def f{i}():\n    return {i}\n\n\n" for i in range(1, n + 1))}}
+
+
+def test_finding_that_survives_two_rechecks_blocks_before_a_third_round(tmp_path, ctl):
+    again = {**FINDING, "matches": "F-0001"}
+    rt = AgentRuntime(reviews=[{"verdict": "changes_required", "findings": [FINDING]},
+                               {"verdict": "changes_required", "findings": [again]},
+                               {"verdict": "changes_required", "findings": [again]}],
+                      attempt_specs={"fix-b1-a1": fix_spec(1), "fix-b2-a1": fix_spec(2)})
+    c = ctx(tmp_path, ctl, rt, RepoGitHub(ctl))
+    begin(c)
+    run_until_idle(c)
+    state = Store(c.run_dir).load().state
+    assert state["phase"] == "blocked" and state["blockers"][-1]["kind"] == "recurrence"
+    assert state["registry"]["findings"]["F-0001"]["failed_rechecks"] == 2
+    assert state["budget"]["correction_rounds_used"] == 2
