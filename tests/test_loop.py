@@ -1,5 +1,6 @@
 """Task 2.10: the controller main loop across persisted state, outbox, fake runtime/GitHub, import, integrate, gates."""
 
+import json
 import subprocess
 import sys
 
