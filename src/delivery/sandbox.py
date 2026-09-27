@@ -14,6 +14,7 @@ class Boundary:
     allow_write: tuple[Path, ...]
     deny_write: tuple[Path, ...]
     deny_read: tuple[Path, ...]
+    deny_services: tuple[str, ...] = ()  # mach services (e.g. keychain daemons)
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,8 @@ class Probe:
     expect: str  # "denied" | "allowed"
     # Run outside the sandbox; exit 0 means the forbidden effect happened. For tools that hide EPERM.
     effect_check: tuple[str, ...] | None = None
+    # Run once unsandboxed first: a denial only counts if the same probe succeeds outside the boundary.
+    control: bool = False
 
 
 @dataclass
