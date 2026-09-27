@@ -19,6 +19,7 @@ from delivery.findings import close, import_review, open_blocking, submit_fix
 from delivery.gates import decide_pass, evaluate_g1, evaluate_g2, evaluate_g3
 from delivery.integration import integrate
 from delivery.outbox import advance, new_dispatch_op, new_pr_op
+from delivery.publication import register_publication
 from delivery.results import import_result
 from delivery.runner import evidence_record, run_evidence
 from delivery.store import Store
@@ -253,7 +254,7 @@ def _step_implement(ctx: Context, store: Store, state: dict[str, Any]) -> str:
     result = _load_blob(store, state["imported_results"][att["attempt_id"]])
     if result["execution_status"] != "succeeded":
         return _block(store, state, "task_failed", task_id=task["task_id"])
-    if task.get("batch_id"):
+    if task.get("batch_id") and not task.get("responses_applied"):
         batch = next(b for b in state["batches"] if b["batch_id"] == task["batch_id"])
         missing = check_result(batch, result)
         if missing:
@@ -261,14 +262,30 @@ def _step_implement(ctx: Context, store: Store, state: dict[str, Any]) -> str:
         for fid, resp in result["responses"].items():
             if resp["kind"] == "fix_submitted":
                 submit_fix(state["registry"], fid, resp["commit"], [state["imported_results"][att["attempt_id"]]])
-    out = integrate(str(ctx.ctl_repo), state, task["task_id"], att["attempt_id"], att["clone"], att["t0"],
-                    task["scope"], ctx.branch)
-    if out["status"] != "succeeded":
-        return _block(store, state, "integration_" + out["status"], reason=out.get("reason"))
+        task["responses_applied"] = True
+    op_id = f"op-integrate-{att['attempt_id']}"
+    if op_id not in state["operations"]:
+        # Persist the intended effect first (design §11); the ref move happens in the next step.
+        state["operations"][op_id] = {"op_id": op_id, "kind": "integrate", "state": "pending",
+                                      "task_id": task["task_id"], "attempt_id": att["attempt_id"],
+                                      "clone": att["clone"], "t0": att["t0"], "scope": task["scope"]}
+        store.commit(state)
+        return "integrate_registered"
+    op = state["operations"][op_id]
+    if op["state"] in ("pending", "in_flight"):
+        op["state"] = "in_flight"
+        store.commit(state)
+        out = integrate(str(ctx.ctl_repo), state, task["task_id"], att["attempt_id"], att["clone"], att["t0"],
+                        task["scope"], ctx.branch)  # idempotent: re-run after a crash converges on the ref
+        op.update(state="succeeded" if out["status"] == "succeeded" else "blocked", result=out)
+        if out["status"] != "succeeded":
+            return _block(store, state, "integration_" + out["status"], reason=out.get("reason"))
+        store.commit(state)
+        return "integrate_applied"
     task["red"] = task["red"] + [_verify_red(ctx, store, att, rec, task["scope"])
                                  for rec in result.get("evidence", []) if rec["kind"] == "red"]
     task["status"] = "succeeded"
-    state["integration"]["tip"] = out["head"]
+    state["integration"]["tip"] = op["result"]["head"]
     store.commit(state)
     return "integrated"
 
@@ -362,6 +379,18 @@ def _step_check(ctx: Context, store: Store, state: dict[str, Any]) -> str:
             close(state["registry"], c["finding_id"], {"actor_kind": "reviewer", "result_id": ref, "version_key": k,
                                                        "reason": c["reason"], "evidence": [ref]}, k)
         review["findings_imported"] = True
+        review["publication"] = register_publication(
+            state, state["run_id"], {"result_id": ref, "review_id": review["task_id"], "verdict": result.get("verdict"),
+                                     "version_key": k, "head": vs["head_sha"], "base": vs["base_tip"],
+                                     "spec": vs["bindings"].get("plan", ""),
+                                     "findings": [{**state["registry"]["findings"][fid], "id": fid}
+                                                  for fid in state["registry"]["findings"]
+                                                  if any(h["result_id"] == ref for h in
+                                                         state["registry"]["findings"][fid].get("history", []))]})
+        store.commit(state)
+    for pub in review.get("publication", []):
+        if state["operations"][pub]["state"] not in ("succeeded", "blocked"):
+            advance(store, state, pub, github=ctx.github)  # publication state never changes the verdict
     op = state["operations"][att["op_id"]]
     implementer_sessions = {o["session_id"] for o in state["operations"].values()
                             if o["kind"] == "dispatch" and o.get("role") == "implementer" and o["session_id"]}
