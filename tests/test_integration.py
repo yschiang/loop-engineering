@@ -44,7 +44,7 @@ def attempt(tmp_path, ctl, name, path="src/app.py", text="x = 1\n"):
 
 
 def st(task, lease):
-    return {"tasks": {task: {"lease": lease}}, "integration": {"branch": BRANCH, "log": []}, "blockers": []}
+    return {"tasks": [{"task_id": task, "lease": lease}], "integration": {"branch": BRANCH, "log": []}, "blockers": []}
 
 
 def tip(ctl):
@@ -55,7 +55,7 @@ def test_two_tasks_integrate_in_order_and_second_starts_from_first(tmp_path, ctl
     s = st("t1", "a1")
     c1, t0_1, a1 = attempt(tmp_path, ctl, "a1")
     assert integrate(str(ctl), s, "t1", "a1", str(c1), t0_1, SCOPE, BRANCH)["status"] == "succeeded"
-    s["tasks"]["t2"] = {"lease": "a2"}
+    s["tasks"].append({"task_id": "t2", "lease": "a2"})
     c2, t0_2, a2 = attempt(tmp_path, ctl, "a2", "src/b.py", "y = 2\n")
     assert t0_2 == a1
     assert integrate(str(ctl), s, "t2", "a2", str(c2), t0_2, SCOPE, BRANCH)["status"] == "succeeded"

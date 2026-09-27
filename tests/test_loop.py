@@ -16,8 +16,10 @@ G1 = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--junitxm
 T1 = {"tests": {"tests/test_add.py": "import sys\nsys.path.insert(0, 'src')\nfrom app import add\n\n\n"
                                      "def test_add():\n    assert add(1, 2) == 3\n"},
       "impl": {"src/app.py": "def add(a, b):\n    return a + b\n"}}
-FIX = {"tests": {"tests/test_sub.py": "import sys\nsys.path.insert(0, 'src')\nfrom app import sub\n\n\n"
-                                     "def test_sub():\n    assert sub(3, 1) == 2\n"},
+# The fix's test fails inside the test body (AttributeError), a behavior Red; an import-time failure would be a
+# collection error and the controller rightly refuses it as Red.
+FIX = {"tests": {"tests/test_sub.py": "import sys\nsys.path.insert(0, 'src')\nimport app\n\n\n"
+                                     "def test_sub():\n    assert app.sub(3, 1) == 2\n"},
        "impl": {"src/app.py": "def add(a, b):\n    return a + b\n\n\ndef sub(a, b):\n    return a - b\n"}}
 FINDING = {"category": "spec_ac", "problem": "sub() missing for AC-X02", "basis": "AC-X02", "expected": "sub exists"}
 

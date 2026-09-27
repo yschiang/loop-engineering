@@ -17,7 +17,8 @@ def _in_scope(path: str, scope: list[str]) -> bool:
 def integrate(ctl_repo: str, state: dict[str, Any], task_id: str, attempt_id: str, clone_path: str,
               t0: str, scope: list[str], branch: str) -> dict[str, Any]:
     """Idempotent: re-running after any crash converges by reading the branch ref (T0 redo, A done)."""
-    if state["tasks"][task_id].get("lease") != attempt_id:
+    task = next((t for t in state["tasks"] if t["task_id"] == task_id), None)  # design §4: ordered task list
+    if task is None or task.get("lease") != attempt_id:
         return {"status": "rejected", "reason": f"attempt {attempt_id} does not hold the task lease (fenced)"}
     attempt_ref = f"refs/delivery/attempts/{attempt_id}"
     _git(ctl_repo, "fetch", "-q", "--no-tags", clone_path, f"+HEAD:{attempt_ref}")
