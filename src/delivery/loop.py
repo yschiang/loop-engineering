@@ -388,12 +388,12 @@ def _reread(ctx: Context, store: Store, state: dict[str, Any]) -> str | None:
         if not out["dispatched"]:
             state["phase"] = "blocked"
         else:
-            _add_fix_task(state, out["batch"])
+            add_fix_task(state, out["batch"])
     store.commit(state)
     return "versions_changed"
 
 
-def _add_fix_task(state: dict[str, Any], batch: dict[str, Any]) -> None:
+def add_fix_task(state: dict[str, Any], batch: dict[str, Any]) -> None:
     state["tasks"].append({"task_id": f"fix-{batch['batch_id']}", "batch_id": batch["batch_id"],
                            "scope": _scope(state), "ac_ids": [], "spec": None, "status": "pending", "lease": None,
                            "attempts": [], "change_class": "behavior", "red": []})
@@ -472,7 +472,7 @@ def _step_check(ctx: Context, store: Store, state: dict[str, Any]) -> str:
         state["phase"] = "blocked"
         store.commit(state)
         return "blocked"
-    _add_fix_task(state, out["batch"])
+    add_fix_task(state, out["batch"])
     state["phase"] = "correcting"
     store.commit(state)
     return "correction_dispatched"

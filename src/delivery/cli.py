@@ -63,7 +63,8 @@ def cmd_init(a: argparse.Namespace) -> int:
     return 0
 
 
-def _claim(a: argparse.Namespace, run_dir: Path) -> int | None:
+def _claim(a: argparse.Namespace, run_dir: Path) -> tuple[int | None, str]:
+    """(exit code or None, authority status). An existing active run is resumed, never recreated."""
     from delivery.authority import Authority
 
     repo_id = a.repo_id or os.path.realpath(a.repo)
@@ -72,8 +73,11 @@ def _claim(a: argparse.Namespace, run_dir: Path) -> int | None:
     if out.status not in ("created", "resume"):
         print(json.dumps(out.__dict__), file=sys.stdout)
         print(f"start refused: {out.status}", file=sys.stderr)
-        return 1
-    return None
+        return 1, out.status
+    if out.status == "resume":
+        print(json.dumps({"status": "resume", "run_id": out.run_id, "run_dir": out.state_dir}))
+        return 0, out.status
+    return None, out.status
 
 
 def cmd_start(a: argparse.Namespace) -> int:
@@ -81,36 +85,42 @@ def cmd_start(a: argparse.Namespace) -> int:
 
     repo = Path(a.repo).resolve()
     run_dir = repo / ".delivery" / "runs" / a.run_id
-    refused = _claim(a, run_dir)
-    if refused is not None:
-        return refused
+    code, _ = _claim(a, run_dir)
+    if code is not None:
+        return code
     if subprocess.run(["git", "rev-parse", "-q", "--verify", f"refs/heads/{a.branch}"], cwd=repo,
                       capture_output=True, check=False).returncode != 0:
         _git(repo, "branch", a.branch, "main")
     tasks = json.loads(Path(a.tasks).read_text())
     start_run(_ctx(repo, run_dir, a.branch, Path(a.state_home) / "attempts" / a.run_id), a.run_id, a.feature, tasks,
-              a.plan_version, {"plan": a.plan_version}, None)
-    print(json.dumps({"run_dir": str(run_dir), "phase": "awaiting_approval"}))
+              a.plan_version, {"plan": a.plan_version}, None, ticket=a.feature)
+    print(json.dumps({"status": "created", "run_dir": str(run_dir), "phase": "awaiting_approval"}))
     return 0
 
 
 def cmd_adopt(a: argparse.Namespace) -> int:
+    """Adopt imports the handed-over plan, tasks and versions, then routes by the facts (AC-O08/O09)."""
     from delivery.controller import route_intake
     from delivery.loop import start_run
     from delivery.store import Store
 
     repo = Path(a.repo).resolve()
     run_dir = repo / ".delivery" / "runs" / a.run_id
-    refused = _claim(a, run_dir)
-    if refused is not None:
-        return refused
-    routed = route_intake(json.loads(Path(a.facts).read_text()))
-    branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    code, _ = _claim(a, run_dir)
+    if code is not None:
+        return code
+    facts = json.loads(Path(a.facts).read_text())
+    routed = route_intake(facts)
+    branch = facts.get("branch") or _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    plan = facts.get("plan_version", "")
+    approval = facts.get("approval") if facts.get("d11") else None
     state = start_run(_ctx(repo, run_dir, branch, Path(a.state_home) / "attempts" / a.run_id), a.run_id,
-                      a.feature, [], "adopted", {}, None)
+                      a.feature, facts.get("tasks", []), plan, {"plan": plan, **facts.get("bindings", {})},
+                      approval, ticket=a.feature)
     store = Store(run_dir)
     store.load()
-    state.update(phase=routed["phase"], blockers=routed["blockers"])
+    state.update(phase=routed["phase"], blockers=routed["blockers"],
+                 adopted_from={"owner_handoff": facts["owner_handoff"], "facts_file": str(a.facts)})
     store.commit(state)
     print(json.dumps({"run_dir": str(run_dir), "phase": routed["phase"], "blockers": routed["blockers"]}))
     return 0
