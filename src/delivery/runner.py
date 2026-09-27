@@ -46,6 +46,7 @@ class Evidence:
     stdout: bytes = b""
     stderr: bytes = b""
     failing_ids: tuple[str, ...] = ()
+    passing_ids: tuple[str, ...] = ()
     snapshot: Snapshot | None = None
     refusal: Refusal | None = None
     digests: dict[str, str] = field(default_factory=dict)

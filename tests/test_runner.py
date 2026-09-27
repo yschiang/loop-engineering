@@ -185,3 +185,11 @@ def test_env_does_not_leak_unlisted_variables(repo, monkeypatch):
     ev = run_evidence("red", "t", "a", PYTEST, str(repo), t0(repo), SCOPE, EXCL)
     assert "must-not-leak" not in repr(ev.digests)
     assert os.environ["GH_TOKEN"] == "must-not-leak"
+
+
+def test_green_run_records_passing_ids_for_red_lineage(repo):
+    base = t0(repo)
+    (repo / "tests" / "test_new.py").write_text("def test_ok():\n    assert True\n\n\ndef test_ok2():\n    assert 1\n")
+    ev = run_evidence("green", "t", "a", PYTEST, str(repo), base, SCOPE, EXCL)
+    assert ev.status == "passed"
+    assert ev.passing_ids == ("tests.test_new::test_ok", "tests.test_new::test_ok2")
