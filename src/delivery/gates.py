@@ -89,3 +89,9 @@ def evaluate_g1(tasks: list[dict[str, Any]], green: dict[str, Any] | None, head:
         statuses.append(r["status"])
         reasons += [f"{tid}: {x}" for x in r["reasons"]]
     return {"status": _worst(statuses), "reasons": reasons, "tasks": per_task}
+
+
+def evaluate_g2(review: dict[str, Any] | None, current_vs: dict[str, Any], current_key: str,
+                profile: dict[str, Any], isolation: dict[str, Any] | None, implementer_sessions: set[str],
+                open_blocking_findings: list[str]) -> dict[str, Any]:
+    raise NotImplementedError
