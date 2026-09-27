@@ -123,3 +123,15 @@ def test_no_approval_means_no_dispatch(tmp_path, ctl):
     run_until_idle(c)
     assert Store(c.run_dir).load().state["phase"] == "awaiting_approval"
     assert rt.creates == 0
+
+
+def test_fenced_dispatch_blocks_with_reason_instead_of_crashing(tmp_path, ctl):
+    rt = AgentRuntime(reviews=[])
+    rt.faults = {"send": "drop"}  # prompt never reaches the runtime; the attempt is fenced
+    c = ctx(tmp_path, ctl, rt, RepoGitHub(ctl))
+    begin(c)
+    run_until_idle(c)
+    state = Store(c.run_dir).load().state
+    assert state["phase"] == "blocked"
+    assert state["blockers"][-1]["kind"] == "dispatch_failed"
+    assert state["blockers"][-1]["op_state"] == "fenced"
