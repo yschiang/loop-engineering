@@ -99,7 +99,7 @@ D40 採三個 feature PR。單一 PR／四 PR 為歷史替代方案，未選用�
 - [x] 2.4 (DR-08) G3 evaluator 與 source SHA 選取（head/merge mapping、stale M）；驗法：`tests/test_gate_g3.py` 參數化 7 種非成功狀態＋skipped/neutral＋source 案例（AC-G13–G15）
 - [x] 2.5 Pass 判定與 re-read；驗法：`tests/test_pass.py`（AC-G01, G02, G18）
 - [x] 2.6 Finding registry：ID、`matches`、blocking 分類、closure 權限；驗法：`tests/test_findings.py`（AC-F01–F04）
-- [ ] 2.7 Correction batch/rounds（含 base_conflict 項）、一次 dispute、recurrence；驗法：`tests/test_correction.py`（AC-F05–F10, F15, F16）
+- [x] 2.7 Correction batch/rounds（含 base_conflict 項）、一次 dispute、recurrence；驗法：`tests/test_correction.py`（AC-F05–F10, F15, F16）
 - [ ] 2.8 Decisions 與 acceptance（approve_plan、adopt_binding、accept/return、abandon_run、budget_extension）；驗法：`tests/test_decisions.py`（AC-O05–O07, O10, O11, F11, F12, D02）
 - [ ] 2.9 (DR-05) `integrate` operation：fetch、scope 核對、CAS fast-forward、crash 恢復、舊 attempt fencing（design.md §9.2）；驗法：`tests/test_integration.py` 以真 git tmp repo 通過（AC-G08, D04）
   - Red 測試：
