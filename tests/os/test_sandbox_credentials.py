@@ -60,3 +60,12 @@ def test_probe_is_inconclusive_when_control_cannot_reach_the_credential(tmp_path
     report = run_suite(Boundary((), (), (), ()), p, required=["keychain_item:direct"])
     assert report.results[0]["outcome"] == "inconclusive"
     assert report.status == "unverified"
+
+
+def test_missing_keychain_rule_is_detected(creds, tmp_path):
+    kc, gh_dir = creds
+    weak = Boundary(allow_write=(tmp_path / "clone",), deny_write=(), deny_read=(gh_dir,), deny_services=())
+    p = probes(kc, gh_dir)[:1]
+    report = run_suite(weak, p, required=[x.name for x in p])
+    assert report.results[0]["outcome"] == "allowed"
+    assert report.status == "unverified"

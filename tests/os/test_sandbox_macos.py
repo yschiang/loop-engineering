@@ -41,7 +41,11 @@ def layout(tmp_path):
               + both("update_ref_author", f"{GIT} -C {ctl} update-ref refs/heads/evil HEAD", "denied")
               + both("write_run_json", f"echo x > {dirs['delivery']}/run.json", "denied")
               + both("write_authority", f"echo x > {dirs['features']}/authority.json", "denied")
+              + both("write_blobs", f"mkdir -p {dirs['delivery']}/blobs && echo x > {dirs['delivery']}/blobs/x",
+                     "denied")
               + both("write_other_attempt", f"echo x > {dirs['other_attempt']}/result.json", "denied")
+              + both("write_other_attempt_clone", f"mkdir -p {dirs['other_attempt']}/clone && "
+                     f"echo x > {dirs['other_attempt']}/clone/f", "denied")
               + both("read_credential", f"cat {dirs['cred']}/hosts.yml", "denied")
               # git reports "unable to create temporary object directory", not EPERM: judge by effect.
               + both("push_to_author_remote", f"{GIT} -C {dirs['clone']}/w push -q {remote} HEAD:refs/heads/x",

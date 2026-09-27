@@ -54,6 +54,8 @@ def seatbelt_profile(b: Boundary) -> str:
     lines += [f"(deny file-write* (subpath {_q(p)}))" for p in b.deny_write]
     lines += [f"(allow file-write* (subpath {_q(p)}))" for p in b.allow_write]
     lines += [f"(deny file-read* (subpath {_q(p)}))" for p in b.deny_read]
+    # Keychain reads happen in securityd, outside the client: the client must be denied the IPC itself.
+    lines += [f'(deny mach-lookup (global-name "{svc}"))' for svc in b.deny_services]
     return "\n".join(lines)
 
 
@@ -73,9 +75,15 @@ def run_suite(b: Boundary, probes: list[Probe], required: list[str]) -> Isolatio
                                                           for n in required])
     results: list[dict[str, str]] = []
     for probe in probes:
+        if probe.control and subprocess.run(list(probe.argv), capture_output=True, check=False).returncode != 0:
+            results.append({"name": probe.name, "expect": probe.expect, "outcome": "inconclusive",
+                            "exit_code": "", "stderr_tail": "control run outside the sandbox did not succeed"})
+            continue
         proc = subprocess.run(launch_argv(b, list(probe.argv)), capture_output=True, text=True, check=False)
         if proc.returncode == 0:
             outcome = "allowed"
+        elif probe.control:
+            outcome = "denied"  # same probe succeeded unsandboxed; the boundary is the only difference
         elif probe.effect_check is not None:
             happened = subprocess.run(list(probe.effect_check), capture_output=True, check=False).returncode == 0
             outcome = "allowed" if happened else "denied"
