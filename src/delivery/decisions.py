@@ -54,6 +54,21 @@ def _return(state: dict[str, Any], decision: dict[str, Any]) -> None:
         state["phase"] = "correcting"
 
 
+def _adopt_binding(state: dict[str, Any], decision: dict[str, Any]) -> None:
+    from delivery.controller import reassess
+
+    role = decision["subject"].get("role")
+    cand = state.get("candidates", {}).get(role)
+    if cand is None:
+        raise DecisionInvalid(f"no candidate binding for role {role!r} to adopt")
+    new_vs = {**state["versions"], "bindings": {**state["versions"]["bindings"], role: cand["content_digest"]}}
+    del state["candidates"][role]
+    reassess(state, new_vs)
+    if not state["candidates"]:
+        state["phase"] = "awaiting_approval"
+        state["contract_adopted"] = True
+
+
 def apply_decision(state: dict[str, Any], decision: dict[str, Any]) -> dict[str, Any]:
     _validate(decision)
     kind, sub = decision["kind"], decision["subject"]
@@ -72,6 +87,8 @@ def apply_decision(state: dict[str, Any], decision: dict[str, Any]) -> dict[str,
                                                "decision_id": decision["decision_id"]})
     elif kind == "return":
         _return(state, decision)
+    elif kind == "adopt_binding":
+        _adopt_binding(state, decision)
     elif kind == "budget_extension":
         state["budget"]["extensions"].append({"decision_id": decision["decision_id"], "seconds": sub["seconds"]})
     state.setdefault("decisions", []).append(decision)

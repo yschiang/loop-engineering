@@ -297,8 +297,11 @@ def test_base_conflict_opens_a_correction_batch(tmp_path, ctl):
     begin(c)
     run_until_idle(c)
     advance_main(ctl, "src/app.py", "def add(a, b):\n    return 99\n")
-    run_until_idle(c)
+    from delivery.loop import step
+
+    assert step(c) == "versions_changed"  # the fix dispatch that follows is ordinary correction work
     state = Store(c.run_dir).load().state
+    assert state["phase"] == "correcting" and state["tasks"][-1]["batch_id"] == state["batches"][-1]["batch_id"]
     assert state["batches"][-1]["items"]["base_conflict"] is True
     assert state["budget"]["correction_rounds_used"] == 1
 

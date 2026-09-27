@@ -16,7 +16,7 @@ from delivery.controller import authorize_dispatch, dependency_ready, reassess
 from delivery.correction import check_result, dispatch_batch, ready_for_batch
 from delivery.decisions import may_dispatch_implementation
 from delivery.findings import close, import_review, open_blocking, submit_fix
-from delivery.gates import decide_pass, evaluate_g1, evaluate_g2, evaluate_g3
+from delivery.gates import decide_pass, evaluate_g1, evaluate_g2, evaluate_g3, observe_new_version
 from delivery.integration import integrate
 from delivery.outbox import advance, new_dispatch_op, new_pr_op
 from delivery.publication import register_publication
@@ -354,7 +354,55 @@ def _step_validate(ctx: Context, store: Store, state: dict[str, Any]) -> str:
     return "g1_passed"
 
 
+def _base_recheck(ctx: Context, store: Store, state: dict[str, Any], new_vs: dict[str, Any]) -> dict[str, Any]:
+    """R-base: merge the unchanged head onto the new base and rerun the G1 commands on the merge result."""
+    head, base = new_vs["head_sha"], new_vs["base_tip"]
+    merged = subprocess.run(["git", "merge-tree", "--write-tree", base, head], cwd=ctx.ctl_repo,
+                            capture_output=True, text=True, check=False)
+    if merged.returncode != 0:
+        return {"status": "failed", "reason": "base_conflict"}
+    tree = merged.stdout.split()[0]
+    merge = _git(ctx.ctl_repo, "commit-tree", tree, "-p", head, "-p", base, "-m", "delivery base recheck")
+    green, ref = _green(ctx, store, state, merge)
+    return {"status": green["status"], "evidence": [ref]}
+
+
+def _reread(ctx: Context, store: Store, state: dict[str, Any]) -> str | None:
+    """Re-read head/base/merge-base and every binding; any difference is handled before gates are trusted."""
+    ext = ctx.github.read_versions(ctx.branch)
+    vs = state["versions"]
+    changed = {r: d for r, d in ext["bindings"].items() if vs["bindings"].get(r) != d}
+    if changed:
+        state["candidates"] = {r: {"content_digest": d, "observed_at": _now()} for r, d in changed.items()}
+        observe_new_version(state, "contract-candidate", _now())
+        state["phase"] = "awaiting_approval"
+        store.commit(state)
+        return "awaiting_approval"
+    new_vs = {**vs, "head_sha": ext["head_sha"], "base_tip": ext["base_tip"], "merge_base": ext["merge_base"]}
+    if version_key(new_vs) == version_key(vs):
+        return None
+    recheck = _base_recheck(ctx, store, state, new_vs) if new_vs["head_sha"] == vs["head_sha"] else None
+    reassess(state, new_vs, base_recheck=recheck)
+    if state["phase"] == "correcting":
+        out = dispatch_batch(state, version_key(new_vs), open_blocking(state["registry"]), [], base_conflict=True)
+        if not out["dispatched"]:
+            state["phase"] = "blocked"
+        else:
+            _add_fix_task(state, out["batch"])
+    store.commit(state)
+    return "versions_changed"
+
+
+def _add_fix_task(state: dict[str, Any], batch: dict[str, Any]) -> None:
+    state["tasks"].append({"task_id": f"fix-{batch['batch_id']}", "batch_id": batch["batch_id"],
+                           "scope": _scope(state), "ac_ids": [], "spec": None, "status": "pending", "lease": None,
+                           "attempts": [], "change_class": "behavior", "red": []})
+
+
 def _step_check(ctx: Context, store: Store, state: dict[str, Any]) -> str:
+    moved = _reread(ctx, store, state)
+    if moved is not None:
+        return moved
     k, vs = _key(state), state["versions"]
     review = next((r for r in state["reviews"] if r["version_key"] == k), None)
     if review is None:
@@ -410,9 +458,12 @@ def _step_check(ctx: Context, store: Store, state: dict[str, Any]) -> str:
         store.commit(state)
         return "waiting_ci"
     if g2["status"] == g3["status"] == "passed":
-        pr = vs["pr_number"]
-        decide_pass(state, k, blocking,
-                    reread=lambda: version_key({**vs, "head_sha": ctx.github.pr_head(pr)}), now=_now())
+        def reread() -> str:
+            ext = ctx.github.read_versions(ctx.branch)
+            return version_key({**vs, "head_sha": ext["head_sha"], "base_tip": ext["base_tip"],
+                                "merge_base": ext["merge_base"], "bindings": ext["bindings"]})
+
+        decide_pass(state, k, blocking, reread=reread, now=_now())
         store.commit(state)
         return "pass" if state["current_pass"] else "reconcile"
     ci = g3["reasons"] if g3["status"] != "passed" else []
@@ -421,10 +472,7 @@ def _step_check(ctx: Context, store: Store, state: dict[str, Any]) -> str:
         state["phase"] = "blocked"
         store.commit(state)
         return "blocked"
-    batch = out["batch"]
-    state["tasks"].append({"task_id": f"fix-{batch['batch_id']}", "batch_id": batch["batch_id"],
-                           "scope": _scope(state), "ac_ids": [], "spec": None, "status": "pending", "lease": None,
-                           "attempts": [], "change_class": "behavior", "red": []})
+    _add_fix_task(state, out["batch"])
     state["phase"] = "correcting"
     store.commit(state)
     return "correction_dispatched"
@@ -439,6 +487,11 @@ def step(ctx: Context) -> str:
     state = loaded.state
     phase = state["phase"]
     if phase == "awaiting_approval":
+        if state.get("contract_adopted"):
+            state.pop("contract_adopted")
+            state["phase"] = "validating"  # G1 is re-evaluated under the new contract, then a new review
+            store.commit(state)
+            return "contract_adopted"
         if may_dispatch_implementation(state):
             state["phase"] = "implementing"
             store.commit(state)
@@ -452,7 +505,9 @@ def step(ctx: Context) -> str:
         return _step_check(ctx, store, state)
     if phase == "blocked":
         return "blocked"
-    return "pass" if phase == "ready_for_acceptance" else "idle"
+    if phase == "ready_for_acceptance":
+        return _reread(ctx, store, state) or "pass"  # a later change invalidates the Pass (AC-G18)
+    return "idle"
 
 
 def run_until_idle(ctx: Context, max_steps: int = 200) -> list[str]:
