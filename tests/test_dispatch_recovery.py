@@ -40,11 +40,25 @@ def test_lost_create_response_is_found_by_marker_not_recreated(tmp_path):
 
 
 def test_crash_after_session_created_sends_prompt_once(tmp_path):
+    # Disk fixture: the controller died after committing stage session_created and before prompt_sending.
+    rt = FakeRuntime()
+    rt.sessions["s1"] = {"title": "orca-delivery attempt=a1", "messages": []}
+    store = Store(tmp_path)
+    state = new_dispatch_op({"schema_version": 1, "operations": {}}, "op-d", "a1", PROMPT)
+    state["operations"]["op-d"].update(stage="session_created", session_id="s1", state="in_flight",
+                                       create_started=True)
+    store.commit(state)
+    op = run(tmp_path, rt)
+    assert op["stage"] == "prompt_accepted"
+    assert (rt.creates, rt.sends) == (0, 1)
+
+
+def test_crash_inside_prompt_send_before_delivery_is_fenced_not_resent(tmp_path):
     rt = FakeRuntime(faults={"send": "crash_before"})
     run(tmp_path, rt, crash_expected=True)
     op = run(tmp_path, rt)
-    assert op["stage"] == "prompt_accepted"
-    assert (rt.creates, rt.sends) == (1, 1)
+    assert op["state"] == "fenced"
+    assert rt.sends == 0 and rt.stops == 1
 
 
 def test_lost_prompt_response_with_marker_message_is_accepted_without_resend(tmp_path):
