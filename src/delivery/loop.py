@@ -122,7 +122,7 @@ def _drive_attempt(ctx: Context, store: Store, state: dict[str, Any], att: dict[
     """Advance dispatch and import the result; None once the result is imported."""
     op = state["operations"][att["op_id"]]
     if op["state"] in ("blocked", "fenced"):
-        return _block(store, state, "dispatch_failed", op_id=op["op_id"], state=op["state"])
+        return _block(store, state, "dispatch_failed", op_id=op["op_id"], op_state=op["state"])
     if op["stage"] != "prompt_accepted":
         advance(store, state, op["op_id"], runtime=ctx.runtime)
         return "dispatch_advanced"
@@ -240,7 +240,7 @@ def _step_validate(ctx: Context, store: Store, state: dict[str, Any]) -> str:
     advance(store, state, op_id, github=ctx.github)
     op = state["operations"][op_id]
     if op["state"] != "succeeded":
-        return _block(store, state, "pr_publication", op_id=op_id, state=op["state"])
+        return _block(store, state, "pr_publication", op_id=op_id, op_state=op["state"])
     if state["versions"]["pr_number"] != op["result"]["number"]:
         reassess(state, {**state["versions"], "pr_number": op["result"]["number"]})
     state["phase"] = "checking"
