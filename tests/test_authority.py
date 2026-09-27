@@ -72,6 +72,7 @@ def test_abandoned_run_budget_is_inherited_by_replacement(tmp_path):
 def test_abandon_requires_an_abandon_run_decision_with_evidence(tmp_path):
     home = tmp_path / "home"
     auth(home).start(str(tmp_path / "a"), str(tmp_path / "a" / "state"), "rA")
+    make_run(tmp_path / "a" / "state", 0, 0)
     for bad in ({"kind": "unblock", "actor": "u", "reason": "r", "evidence": ["x"]},
                 {"kind": "abandon_run", "actor": "u", "reason": "r", "evidence": []}):
         try:
