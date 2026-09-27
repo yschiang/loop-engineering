@@ -65,6 +65,13 @@ def _block(store: Any, state: dict[str, Any], op: dict[str, Any], reason: str) -
 
 
 def _advance_comment(store: Any, state: dict[str, Any], op: dict[str, Any], gh: GitHubPort) -> dict[str, Any]:
+    dep = state["operations"].get(op.get("depends_on") or "")
+    if dep is not None:
+        if dep["state"] != "succeeded":
+            return state  # e.g. the issue summary waits for the PR review URL
+        if "{pr_url}" in op["body"]:
+            op["body"] = op["body"].replace("{pr_url}", dep["result_url"])
+            op["payload_digest"] = hashlib.sha256(op["body"].encode()).hexdigest()
     if op["state"] == "in_flight":  # resumed: the previous call may or may not have happened
         op["state"] = "outcome_unknown"
     while op["state"] not in TERMINAL:
@@ -78,7 +85,7 @@ def _advance_comment(store: Any, state: dict[str, Any], op: dict[str, Any], gh: 
                 store.commit(state)
                 continue
             if found is not None:
-                op.update(state="succeeded", receipt=_receipt(store, found))
+                op.update(state="succeeded", receipt=_receipt(store, found), result_url=found.get("url"))
                 store.commit(state)
                 break
             op["state"] = "pending"  # proven absent: a retry cannot duplicate
@@ -96,7 +103,7 @@ def _advance_comment(store: Any, state: dict[str, Any], op: dict[str, Any], gh: 
             store.commit(state)
             continue
         op["attempts"].append({"outcome": "ok"})
-        op.update(state="succeeded", receipt=_receipt(store, receipt))
+        op.update(state="succeeded", receipt=_receipt(store, receipt), result_url=receipt.get("url"))
         store.commit(state)
     return state
 
