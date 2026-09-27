@@ -195,3 +195,7 @@ def run_evidence(kind: str, task_id: str, attempt_id: str, argv: list[str], cwd:
                                      .encode()).hexdigest()}
     return Evidence(task_id, attempt_id, kind, tuple(argv), cwd, status, proc.returncode, started, ended,
                     proc.stdout, proc.stderr, failing, passing, snap, None, digests)
+
+
+def evidence_record(ev: Evidence) -> dict[str, object]:
+    raise NotImplementedError
