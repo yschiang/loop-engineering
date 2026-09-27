@@ -17,8 +17,10 @@ class AgentRuntime(FakeRuntime):
     """Implementer: write test → capture Red with the real runner → implement → commit → result.
     Reviewer: return the scripted verdict for its review number."""
 
-    def __init__(self, reviews, skip_red=False, fix_spec=None, attempt_specs=None, tamper_red=False):
+    def __init__(self, reviews, skip_red=False, fix_spec=None, attempt_specs=None, tamper_red=False,
+                 na_verdicts=()):
         super().__init__()
+        self.na_verdicts = list(na_verdicts)
         self.attempt_specs = dict(attempt_specs or {})  # attempt_id -> spec overriding the task spec
         self.tamper_red = tamper_red
         self.assignments = []
@@ -29,7 +31,7 @@ class AgentRuntime(FakeRuntime):
     def send_prompt(self, session, text):
         mid = super().send_prompt(session, text)
         a = json.loads(text.split("\n", 1)[1])
-        (self._implement if a["role"] == "implementer" else self._review)(session, a)
+        {"implementer": self._implement, "reviewer": self._review, "na_reviewer": self._na}[a["role"]](session, a)
         return mid
 
     def _implement(self, session, a):
@@ -42,7 +44,7 @@ class AgentRuntime(FakeRuntime):
             (clone / path).parent.mkdir(parents=True, exist_ok=True)
             (clone / path).write_text(body)
         evidence = []
-        if not self.skip_red:
+        if spec["tests"] and not self.skip_red:
             red = run_evidence("red", a["task_id"], a["attempt_id"], a["g1_argv"], str(clone), a["base_sha"],
                                a["scope"]["paths"], a["excludes"])
             rec = evidence_record(red)
@@ -62,6 +64,14 @@ class AgentRuntime(FakeRuntime):
                   "changed_paths": changed, "evidence": evidence, "responses": responses,
                   "producer": {"session": session, "actual_model": "impl-model"}}
         (inbox / "result.json").write_text(json.dumps(result))
+
+    def _na(self, session, a):
+        result = {"run_id": a["run_id"], "task_id": a["task_id"], "attempt_id": a["attempt_id"],
+                  "execution_status": "succeeded", "observed": {"cwd": a["clone_path"], "base": a["base_sha"],
+                                                                "head": a["base_sha"]},
+                  "changed_paths": [], "eligibility": self.na_verdicts.pop(0), "diff_digest": a["diff_digest"],
+                  "producer": {"session": session, "actual_model": "gpt-r"}}
+        (Path(a["inbox"]) / "result.json").write_text(json.dumps(result))
 
     def _review(self, session, a):
         script = self.reviews.pop(0)

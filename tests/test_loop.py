@@ -346,3 +346,42 @@ def test_raw_red_green_and_replay_outputs_are_durable_blobs(tmp_path, ctl):
     green = json.loads(store.blob_path(state["gates"]["g1"]["evidence"][0]).read_bytes())
     assert store.blob_path(green["raw"]["stdout"]).exists()
     assert not store.load().blocked
+
+
+DOCS = {"tests": {}, "impl": {"README.md": "usage\n"}}
+
+
+def begin_na(c, spec):
+    return start_run(c, "r1", "yschiang/orca-delivery#1",
+                     [{"task_id": "t1", "ac_ids": ["AC-X01"], "scope": ["src", "tests"], "spec": T1},
+                      {"task_id": "d1", "ac_ids": [], "scope": ["README.md", "src"], "spec": spec,
+                       "change_class": "na_requested", "na_reason": "docs only"}],
+                     "plan-v1", {"plan": "plan-v1", "issue_body": "d1"},
+                     {"decision_id": "DEC-1", "plan_version": "plan-v1"}, ticket="yschiang/orca-delivery#1",
+                     skills={"superpowers:test-driven-development": "bf1b"})
+
+
+def test_docs_only_task_gets_independent_na_eligibility_before_g1(tmp_path, ctl):
+    rt = AgentRuntime(reviews=[{"verdict": "clean"}], na_verdicts=["accepted"])
+    c = ctx(tmp_path, ctl, rt, RepoGitHub(ctl))
+    c.policy["na_doc_globs"] = ["docs/**", "*.md", "**/*.md"]
+    begin_na(c, DOCS)
+    run_until_idle(c)
+    state = Store(c.run_dir).load().state
+    assert state["phase"] == "ready_for_acceptance", state["blockers"]
+    d1 = state["tasks"][1]
+    assert d1["na"]["status"] == "accepted" and d1["na"]["diff_digest"] == d1["diff_digest"]
+    assert state["gates"]["g1"]["tasks"]["d1"]["na"] == "accepted"
+    assert any(a["role"] == "na_reviewer" for a in rt.assignments) is False  # reviewer is not an implementer
+
+
+def test_na_request_touching_code_is_rejected_without_eligibility_review(tmp_path, ctl):
+    rt = AgentRuntime(reviews=[], na_verdicts=[])
+    c = ctx(tmp_path, ctl, rt, RepoGitHub(ctl))
+    c.policy["na_doc_globs"] = ["docs/**", "*.md", "**/*.md"]
+    begin_na(c, {"tests": {}, "impl": {"src/extra.py": "X = 1\n"}})
+    run_until_idle(c)
+    state = Store(c.run_dir).load().state
+    assert state["phase"] == "blocked" and state["tasks"][1]["na"]["status"] == "rejected"
+    assert "prefilter" in state["tasks"][1]["na"]["reason"]
+    assert rt.creates == 2  # two implementer dispatches, no eligibility review
