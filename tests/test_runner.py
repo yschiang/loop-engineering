@@ -4,7 +4,6 @@ import hashlib
 import os
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
@@ -42,7 +41,8 @@ def t0(r):
 
 
 def worker_state(r):
-    return hashlib.sha256((r / ".git" / "index").read_bytes()).hexdigest(), git(r, "status", "--porcelain", "-uall")
+    status = git(r, "--no-optional-locks", "status", "--porcelain", "-uall")  # read-only: must not refresh index
+    return hashlib.sha256((r / ".git" / "index").read_bytes()).hexdigest(), status
 
 
 def files(r, commit):
