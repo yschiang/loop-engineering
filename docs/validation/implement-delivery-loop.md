@@ -149,7 +149,7 @@ Pass 標準共通前提：測試由 runner 捕捉且 evidence digest 可核對�
 
 | 層級 | 已實際執行（本機 macOS 27.0、Python 3.12.13） | 未執行／未覆蓋 |
 | --- | --- | --- |
-| F | tasks 1.1、1.2、1.4–1.9、2.1–2.9、2.11 與 2.10 的部分行為；全量回歸指向 worker head | CI 尚未執行（未 push）；必要 check `test` 聚合 Linux 與 macOS job，任一失敗或 skipped 即失敗，JUnit 以 artifact 上傳 |
+| F | tasks 1.1、1.2、1.4–1.9、2.1–2.9、2.11–2.13 與 2.10 的部分行為；全量回歸指向 worker head | CI 尚未執行（未 push）；必要 check `test` 聚合 Linux 與 macOS job，任一失敗或 skipped 即失敗，JUnit 以 artifact 上傳 |
 | F／Linux | — | `test_blob_and_dir_fsync_precede_snapshot_rename`（strace 順序）只在 Linux 執行；本機為 skipped，**不算通過**；CI 以 `DELIVERY_REQUIRE_LINUX_CHECKS=1` 強制執行 |
 | OS | macOS Seatbelt 負例套件（直接與孫程序）：寫 author repo、update-ref、寫 run.json／blobs／authority／他 attempt inbox 與 clone、讀憑證檔、push 均被拒；keychain 項目與 `gh auth token` 以合成憑證＋未受限對照執行驗證被拒（輸出丟棄、只記 exit）；移除 keychain 規則可被偵測；寫自己 clone／inbox 成功 | Linux launcher（bubblewrap／Landlock）未實作亦未安裝：`run_suite` 在 Linux 回 `unverified`／`not_run`，對應 AC 未覆蓋；OpenCode runtime 在 sandbox 下的隔離屬 S2 task 4.3 |
 
