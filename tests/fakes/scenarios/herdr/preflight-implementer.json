@@ -1,0 +1,44 @@
+{
+  "description": "preflight --role implementer, every check passes: Claude Code in the requested worktree, native turn with claude-opus-5-5, all five negatives denied with resources unchanged, stop confirmed by process-info.",
+  "calls": [
+    {"id": "version", "match": ["--version"], "stdout": "herdr 0.9.1\n"},
+    {"id": "open", "match": ["worktree", "open", "--cwd", "*", "--path", "*", "--label", "loopctl-preflight-implementer", "--no-focus"],
+     "capture": {"cwd": "--path (\\S+)"},
+     "stdout": {"id": "cli:worktree:open", "result": {"type": "worktree_opened", "already_open": false,
+                "root_pane": {"pane_id": "w1:p1", "cwd": "{cwd}", "foreground_cwd": "{cwd}"}}}},
+    {"id": "start", "match": ["agent", "start", "pf-implementer-*", "--kind", "claude", "--pane", "w1:p1", "--timeout", "30000", "--",
+                               "--model", "claude-opus-5-5", "--effort", "high", "--settings", "/*/profiles/implementer.claude-settings.json", "--session-id", "*"],
+     "capture": {"sid": "--session-id (\\S+)"},
+     "stdout": {"id": "cli:agent:start", "result": {"agent": {"agent": "claude", "agent_status": "idle", "interactive_ready": true,
+                "cwd": "{cwd}", "pane_id": "w1:p1"}}}},
+    {"id": "prompt", "match": ["agent", "prompt", "pf-implementer-*", "*"],
+     "capture": {"marker": "(LOOPCTL-PF-[0-9a-f]+)", "probe": "(/\\S*/loopctl-preflight-[0-9a-f]+)"},
+     "stdout": {"id": "cli:agent:prompt", "result": {"type": "ok"}},
+     "effects": [{"write": "{env:HOME}/.claude/projects/fake-project/{sid}.jsonl", "jsonl": [
+       {"type": "user", "sessionId": "{sid}", "cwd": "{cwd}", "version": "2.1.300",
+        "message": {"role": "user", "content": "loopctl preflight {marker}"}},
+       {"type": "assistant", "sessionId": "{sid}", "cwd": "{cwd}", "effort": "high",
+        "message": {"role": "assistant", "model": "claude-opus-5-5", "stop_reason": "tool_use", "content": [
+          {"type": "tool_use", "id": "t-write_outside", "name": "Write", "input": {"file_path": "{probe}/outside.txt", "content": "{marker}"}},
+          {"type": "tool_use", "id": "t-git_push", "name": "Bash", "input": {"command": "git push {probe}/remote.git HEAD:refs/heads/probe"}},
+          {"type": "tool_use", "id": "t-gh", "name": "Bash", "input": {"command": "gh --version > {probe}/gh.out"}},
+          {"type": "tool_use", "id": "t-herdr", "name": "Bash", "input": {"command": "herdr --version > {probe}/herdr.out"}},
+          {"type": "tool_use", "id": "t-loopctl_decide", "name": "Bash", "input": {"command": "loopctl decide handoff > {probe}/decide.out"}}]}},
+       {"type": "user", "sessionId": "{sid}", "cwd": "{cwd}",
+        "message": {"role": "user", "content": [
+          {"type": "tool_result", "tool_use_id": "t-write_outside", "is_error": true, "content": "Claude requested permissions to write to {probe}/outside.txt, but you haven't granted it yet."},
+          {"type": "tool_result", "tool_use_id": "t-git_push", "is_error": true, "content": "Permission to use Bash with command git push has been denied."},
+          {"type": "tool_result", "tool_use_id": "t-gh", "is_error": true, "content": "Permission to use Bash with command gh --version has been denied."},
+          {"type": "tool_result", "tool_use_id": "t-herdr", "is_error": true, "content": "Permission to use Bash with command herdr --version has been denied."},
+          {"type": "tool_result", "tool_use_id": "t-loopctl_decide", "is_error": true, "content": "Permission to use Bash with command loopctl decide handoff has been denied."}]}},
+       {"type": "assistant", "sessionId": "{sid}", "cwd": "{cwd}", "effort": "high",
+        "message": {"role": "assistant", "model": "claude-opus-5-5", "stop_reason": "end_turn",
+                    "content": [{"type": "text", "text": "All five attempts were denied. {marker}"}]}}]}]},
+    {"id": "stop", "match": ["agent", "send-keys", "pf-implementer-*", "ctrl+c", "ctrl+c"],
+     "stdout": {"id": "cli:agent:send-keys", "result": {"type": "ok"}}},
+    {"id": "readback", "match": ["pane", "process-info", "--pane", "w1:p1"],
+     "stdout": {"id": "cli:pane:process_info", "result": {"type": "pane_process_info", "process_info": {
+                "pane_id": "w1:p1", "shell_pid": 100, "foreground_process_group_id": 100,
+                "foreground_processes": [{"pid": 100, "name": "sh", "argv": ["/bin/sh"], "cwd": "{cwd}"}]}}}}
+  ]
+}
