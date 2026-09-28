@@ -912,7 +912,7 @@ def test_w6_mismatching_results_are_rejected_kept_and_listed(h, mismatch):
     assert h.revision() == rev + 1  # only the rejection record
 
 
-@pytest.mark.parametrize("left", ["modified", "staged", "untracked"])
+@pytest.mark.parametrize("left", ["modified", "staged", "untracked", "staged_only", "staged_removal"])
 def test_w6_out_of_scope_changes_left_in_the_worktree_are_rejected(h, left):
     h.dispatch()
     h.work()  # the committed part is in scope
@@ -920,11 +920,17 @@ def test_w6_out_of_scope_changes_left_in_the_worktree_are_rejected(h, left):
         (h.wt / "docs").mkdir(exist_ok=True)
         (h.wt / "docs" / "unrelated.md").write_text("not in T1 scope\n")
         path = "docs/unrelated.md"
+    elif left == "staged_removal":  # removed from the index only; the file is still on disk
+        git(h.wt, "rm", "-q", "--cached", SPEC)
+        path = SPEC
     else:
+        original = (h.wt / SPEC).read_text()
         (h.wt / SPEC).write_text("# Ingest spec, edited by the worker\n")
         path = SPEC
-        if left == "staged":
+        if left in ("staged", "staged_only"):
             git(h.wt, "add", SPEC)
+        if left == "staged_only":  # the edit stays staged for the next worker; the file is back to HEAD
+            (h.wt / SPEC).write_text(original)
     h.put_result(h.envelope())
 
     code, out = h.import_result()

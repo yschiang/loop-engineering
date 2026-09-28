@@ -127,11 +127,21 @@ def worktree_tree(worktree: str, timeout_s: float) -> tuple[str, str]:
             os.unlink(index)
 
 
+def staged(worktree: str, timeout_s: float) -> list[str]:
+    """Paths the worktree's own index holds differently from HEAD (`.loopctl/` excluded): a
+    staged edit stays there even when the working file is back to HEAD."""
+    out = _git(worktree, ["diff", "--cached", "--no-renames", "--name-only", "-z", "HEAD", "--", ".",
+                          ":(exclude).loopctl"], timeout_s)[1]
+    return sorted(p for p in out.split("\0") if p)
+
+
 def worktree_changes(worktree: str, since: str, timeout_s: float) -> tuple[str, list[str]]:
     """(HEAD, paths changed since `since`): the commits since then plus what `worktree_tree`
-    records on top of HEAD — the same change set G1 scope-checks (snapshot and range)."""
+    records on top of HEAD — the same change set G1 scope-checks (snapshot and range) — plus
+    what the worktree's own index stages on top of HEAD."""
     head, tree = worktree_tree(worktree, timeout_s)
-    return head, sorted(set(changed(worktree, since, head, timeout_s)) | set(changed(worktree, since, tree, timeout_s)))
+    found = set(changed(worktree, since, head, timeout_s)) | set(changed(worktree, since, tree, timeout_s))
+    return head, sorted(found | set(staged(worktree, timeout_s)))
 
 
 def snapshot(worktree: str, ref: str, message: str, timeout_s: float) -> dict[str, str]:
