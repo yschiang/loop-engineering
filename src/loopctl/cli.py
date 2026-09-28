@@ -12,7 +12,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from loopctl import clock, decisions, preflight, state, store
+from loopctl import (
+    clock,
+    decisions,
+    observe,
+    preflight,
+    state,
+    store,
+    writes,
+)
 from loopctl import next as next_step
 
 EXIT_OK, EXIT_REJECTED, EXIT_USAGE, EXIT_BLOCKED, EXIT_UNTRUSTED = 0, 1, 2, 3, 5
@@ -101,6 +109,26 @@ def _parser() -> _Parser:
     dc.add_argument("--bind", help="resolve_operation: the observed result to bind")
     dc.add_argument("--not-delivered", action="store_true", help="resolve_operation")
     dc.add_argument("--category", help="reclassify_finding")
+    wr = sub.add_parser("write", help="one external write op with a fixed argv (design §4)")
+    wr.add_argument("op", help=f"op kind: {', '.join(writes.KINDS)}")
+    wr.add_argument("--feature", required=True, type=_feature_id)
+    wr.add_argument("--token")
+    wr.add_argument("--id", required=True, dest="op_id", help="op id, as given by next/safety")
+    rs = sub.add_parser("result", help="import a worker result (design §8 envelope)")
+    rs_sub = rs.add_subparsers(dest="result_command", required=True)
+    ri = rs_sub.add_parser("import", help="import the result of one attempt")
+    ri.add_argument("--feature", required=True, type=_feature_id)
+    ri.add_argument("--token")
+    ri.add_argument("--attempt", required=True)
+    ri.add_argument("--file", help="result file (default: the assignment's result location)")
+    sf = sub.add_parser("safety", help="read-only: actions that must come first (design §2, §10)")
+    sf.add_argument("--feature", required=True, type=_feature_id)
+    ob = sub.add_parser("observe", help="bounded read-only fetch (design §5)")
+    ob.add_argument("source", help=f"source: {', '.join(observe.SOURCES)}")
+    ob.add_argument("--feature", required=True, type=_feature_id)
+    ob.add_argument("--token")
+    ob.add_argument("--attempt", required=True)
+    ob.add_argument("--purpose", help="default: the source's general purpose")
     pf = sub.add_parser("preflight", help="capability probe of a selected profile (design §6)")
     pf.add_argument("--role", required=True, choices=preflight.ROLES)
     pf.add_argument("--out", required=True, type=Path, help="receipt JSON path")
@@ -353,6 +381,10 @@ def _decide(args: argparse.Namespace) -> Outcome:
     return _after(args.feature, {"decision": decided, "duplicate": False})
 
 
+def _not_implemented(args: argparse.Namespace) -> Outcome:
+    return _rejected("not_implemented", feature=args.feature)  # stub (T2.3 interface)
+
+
 def _preflight(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     receipt = preflight.run(args.role, args.out, Path.cwd(), args.herdr_session)
     result = {"receipt": str(args.out), "verdict": receipt["verdict"]}
@@ -380,6 +412,10 @@ def main(argv: list[str] | None = None) -> int:
             "next": _read,
             "register": _register,
             "decide": _decide,
+            "write": _not_implemented,
+            "result": _not_implemented,
+            "safety": _not_implemented,
+            "observe": _not_implemented,
         }[args.command](args)
     sys.stdout.write(json.dumps(out) + "\n")
     return code

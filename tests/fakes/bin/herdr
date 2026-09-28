@@ -6,7 +6,10 @@ Env: FAKE_SCENARIO=<tests/fakes/scenarios/<tool>/<name>.json or a derived copy>,
 Scenario format:
   {"calls": [{"id": "...", "tool": "herdr", "match": ["agent", "start", "*", "**"],
               "capture": {"var": "regex"}, "stdout": "text" | {json}, "stderr": "", "exit": 0,
+              "sleep": 0.0,
               "effects": [{"write": "path", "text": "..." | "json": {...} | "jsonl": [{...}]}]}]}
+- `sleep` (seconds, T2.3) delays everything after the log entry: a caller that kills the call
+  at its time limit leaves no effects and no output.
 - Calls are matched strictly in order; `match` is fnmatch per argv element, a trailing "**"
   matches any rest. Anything else is an unexpected call: logged, exit 97.
 - Every invocation is appended to FAKE_LOG as {"tool", "argv", "vars"} (plus "unexpected").
@@ -19,6 +22,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 tool = Path(sys.argv[0]).name
@@ -69,6 +73,7 @@ for name, pattern in spec.get("capture", {}).items():
         captured[name] = m.group(1 if m.re.groups else 0)
 env_vars.update(captured)
 append({"tool": tool, "argv": argv, "vars": captured})
+time.sleep(float(spec.get("sleep", 0)))
 
 for effect in spec.get("effects", []):
     path = Path(sub(effect["write"]))
