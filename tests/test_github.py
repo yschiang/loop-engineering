@@ -979,6 +979,47 @@ def test_h9_pending_polls_do_not_count_as_failures_and_follow_the_poll_interval(
     assert env.next() == {"action": "human", "blockers": ["g3_passed"], "decision_kinds": []}
 
 
+def ci_wait_ends(env: GhEnv) -> list[str | None]:
+    return [a["end"] for a in env.state()["activities"] if a["kind"] == "ci_wait"]
+
+
+def test_h9_a_policy_unknown_before_the_checks_are_terminal_does_not_end_the_ci_wait(env):
+    """Design §10: the CI wait ends when every required check is terminal and mergeable is
+    known (or its window ends, T7.1); a G3 that is unknown for its policy says neither."""
+    started(env, approve_policy=False)
+    env.open_pr()
+    env.ci([run(env, status="in_progress", jobs=[job(status="in_progress")])])
+    assert env.observe("ci")[0] == 0
+    assert env.g3()["status"] == "unknown" and "g3_policy:policy_not_approved" in env.blockers()
+    assert ci_wait_ends(env) == [None]
+    env.approve_policy("pc-late")
+    assert env.safety() == {"action": "observe", "source": "ci", "purpose": "ci", "read_key": env.ci_key}
+    assert env.observe("ci")[0] == 0
+    assert env.g3()["status"] == "pending" and ci_wait_ends(env) == [None]  # the same wait goes on
+    env.ci([run(env)])
+    env.clock.advance(seconds=60)
+    assert env.observe("ci")[0] == 0
+    assert env.g3()["status"] == "passed" and ci_wait_ends(env) == [env.clock().isoformat()]
+
+
+@pytest.mark.parametrize("case", ["tested_sha_missing", "conflict_without_a_run"])
+def test_h9_a_terminal_g3_unknown_ends_the_ci_wait(env, case):
+    started(env)
+    env.open_pr(mergeable=case != "conflict_without_a_run")
+    env.ci([run(env, tested={})] if case == "tested_sha_missing" else [])
+    assert env.observe("ci")[0] == 0  # a conflict routes to integration; the read is still possible
+    g3 = env.g3()
+    assert g3["status"] == "unknown", g3
+    assert ci_wait_ends(env) == [env.clock().isoformat()]  # every required check terminal: nothing to wait for
+
+
+def test_h9_mergeable_null_keeps_the_ci_wait_open_after_the_checks_end(env):
+    started(env)
+    env.open_pr(mergeable=None)
+    assert env.to_g3([run(env)])["status"] == "pending"
+    assert ci_wait_ends(env) == [None]
+
+
 # --- h10: the PR positive path and pr_ensure -----------------------------------------------------
 
 

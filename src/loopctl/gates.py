@@ -758,7 +758,7 @@ def _check(name: str, runs: list[dict[str, Any]], ci: dict[str, Any], head: str,
         return {"status": "pending", "reasons": [f"missing:{name}"], "runs": []}
     marks: list[tuple[str, str]] = []
     records = []
-    for r in sorted(runs, key=lambda r: r["run_number"]):
+    for r in sorted(runs, key=lambda r: (r["run_number"] is None, r["run_number"] or 0)):
         jobs = [j for j in r.get("jobs") or [] if j["name"] == name]
         if len(jobs) != 1:
             if jobs:
@@ -811,6 +811,8 @@ def evaluate_g3(state: State, at: str) -> dict[str, Any]:
         "status": "pending", "reasons": [], "head": head, "base": None, "source": prev.get("source") if same else None,
         "checks": {}, "ignored": [], "applicability": list(prev.get("applicability") or []) if same else [],
         "pr_seq": None, "ci_seq": None, "contract": contract(state), "policy_blockers": [], "evaluated_at": at,
+        # every required check terminal and mergeable known: the CI wait is over (design §10)
+        "ci_terminal": False,
         "decisions_seen": max((d["seq"] for d in (state.get("decisions") or {}).values()), default=0),
         # the policy digest G3 was judged under; another digest needs its own policy_change
         "policy_accepted": prev.get("policy_accepted"),
@@ -855,6 +857,14 @@ def evaluate_g3(state: State, at: str) -> dict[str, Any]:
                       if r["path"] != wf and r["head_sha"] == head]
     out["ignored"] += [{"name": c["name"], "app": c["app"]} for c in ci.get("check_runs") or []
                        if c["name"] in required and c["app"] != ACTIONS_APP]
+    exceptions = {(e["check"], e["conclusion"]): str(e["decision"]) for e in g3p.get("exceptions") or []
+                  if _valid_exception(state, e)}
+    results = {name: _check(name, runs, ci, head, exceptions) for name in required}
+    mergeable = pf.get("mergeable") if pf is not None else None
+    # a conflicting PR without a run gets no pull_request run: there is nothing to wait for
+    out["ci_terminal"] = (not runs and mergeable is False) or (
+        pf is not None and pf["head"]["sha"] == head and mergeable is not None
+        and all(c["status"] != "pending" for c in results.values()))
     unknown = [f"run_identity_missing:{r['id']}" for r in runs
                if r["id"] is None or r["run_number"] is None or r["run_attempt"] is None]
     numbers = [r["run_number"] for r in runs if r["run_number"] is not None]
@@ -863,14 +873,10 @@ def evaluate_g3(state: State, at: str) -> dict[str, Any]:
                 if r["event"] != "pull_request" or r["pull_requests"] != [pr["number"]]]
     if unknown:
         return done("unknown", unknown)
-    mergeable = pf.get("mergeable") if pf is not None else None
     if not runs and mergeable is False:
         return done("unknown", ["ci_unavailable_conflict"])  # a conflicting PR gets no pull_request run
-    exceptions = {(e["check"], e["conclusion"]): str(e["decision"]) for e in g3p.get("exceptions") or []
-                  if _valid_exception(state, e)}
     statuses, reasons = [], []
-    for name in required:
-        result = _check(name, runs, ci, head, exceptions)
+    for name, result in results.items():
         out["checks"][name] = result
         statuses.append(result["status"])
         reasons += result["reasons"]
@@ -993,7 +999,9 @@ def after_github(source: str) -> Any:
         st["blockers"] = [b for b in st.get("blockers", []) if not b.startswith("g3_policy:")]
         for reason in g3["policy_blockers"]:
             block(st, reason)
-        if g3["status"] != "pending":  # every required check terminal: the CI wait ends
+        # only a terminal CI ends the wait: a G3 unknown for its policy has not judged the checks
+        # yet (its window still bounds it, T7.1)
+        if g3["ci_terminal"]:
             for a in st.get("activities") or []:
                 if a.get("kind") == "ci_wait" and a.get("head") == head and not a["end"]:
                     a["end"] = at
