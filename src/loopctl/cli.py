@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from loopctl import (
+    assignments,
     clock,
     decisions,
     observe,
@@ -381,8 +382,68 @@ def _decide(args: argparse.Namespace) -> Outcome:
     return _after(args.feature, {"decision": decided, "duplicate": False})
 
 
-def _not_implemented(args: argparse.Namespace) -> Outcome:
-    return _rejected("not_implemented", feature=args.feature)  # stub (T2.3 interface)
+def _effect_failure(feature: str, e: observe.Rejected) -> Outcome:
+    """A refused or blocked write/observe/import: the error, plus the state's own next."""
+    revision, blocked, next_ = None, None, human([e.error])
+    if e.code not in (EXIT_USAGE, EXIT_NOT_OWNER):
+        try:
+            revision, st = store.load(feature)
+            reasons = state.blockers(st, store.conflicts(feature))
+            blocked = {"reasons": reasons} if reasons else None
+            next_ = next_step.next_action(st, reasons)
+        except store.StoreError:
+            pass
+    return e.code, envelope(
+        False, result={"error": e.error, **e.detail}, revision=revision, blocked=blocked, next_=next_
+    )
+
+
+def _effect(feature: str, run: Any) -> Outcome:
+    try:
+        result = run()
+    except observe.Rejected as e:
+        return _effect_failure(feature, e)
+    except store.StoreError as e:
+        return _store_failure(feature, e)
+    return _after(feature, result)
+
+
+def _write(args: argparse.Namespace) -> Outcome:
+    return _effect(
+        args.feature,
+        lambda: writes.write(args.feature, args.token, args.op, args.op_id, assignments.op_spec),
+    )
+
+
+def _result(args: argparse.Namespace) -> Outcome:
+    return _effect(
+        args.feature,
+        lambda: assignments.import_result(args.feature, args.token, args.attempt, args.file),
+    )
+
+
+def _observe(args: argparse.Namespace) -> Outcome:
+    return _effect(
+        args.feature,
+        lambda: observe.observe(args.feature, args.token, args.source, args.attempt, args.purpose),
+    )
+
+
+def _safety(args: argparse.Namespace) -> Outcome:
+    """Read-only: the action that must come before any other (readback, recovery), or null."""
+    try:
+        revision, st = store.load(args.feature)
+        blocked = state.blockers(st, store.conflicts(args.feature))
+    except store.StoreError as e:
+        return _store_failure(args.feature, e)
+    first = next_step.safety_action(st, blocked)
+    return (EXIT_BLOCKED if blocked else EXIT_OK), envelope(
+        not blocked,
+        result={"feature": args.feature, "phase": st["phase"]},
+        revision=revision,
+        blocked={"reasons": blocked} if blocked else None,
+        safety=first,
+    )
 
 
 def _preflight(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
@@ -412,10 +473,10 @@ def main(argv: list[str] | None = None) -> int:
             "next": _read,
             "register": _register,
             "decide": _decide,
-            "write": _not_implemented,
-            "result": _not_implemented,
-            "safety": _not_implemented,
-            "observe": _not_implemented,
+            "write": _write,
+            "result": _result,
+            "safety": _safety,
+            "observe": _observe,
         }[args.command](args)
     sys.stdout.write(json.dumps(out) + "\n")
     return code

@@ -1,22 +1,360 @@
 """External writes (design §4): the op state machine, retry and readback rules (T2.3).
 
 T6.1 / T6.2 only add op kinds and their tool functions; the state machine stays.
+
+  writes[op_id] = {kind, status: prepared|in_flight|succeeded|failed|unknown,
+                   prepared: {argv: {$object}, argv_digest, marker, expected, session,
+                              call_limit_s, read_limit_s, readback_max, readback_interval_s,
+                              max_attempts},
+                   attempts: [{n, started_at, ended_at, outcome, reason, receipt}],
+                   readbacks: [{seq, at, attempt, result, detail, observation, [decision]}],
+                   facts, resolved_by: readback|human|None, resolutions: {decision id: …},
+                   blocked: write_unknown|readback_exhausted|retry_exhausted|None}
+
+`write <op> --id` consumes the op once in the lock, runs its fixed argv once, and records the
+receipt. A call past its time limit is unknown, never failed. Retries: only after a recorded
+not-delivered outcome, at most `infra_extra_retries` more calls. An unknown op is only read
+back (at most `readback_max` per call attempt, every read counts) or resolved by a human
+`resolve_operation`; nothing is ever resent on a guess.
 """
 
-from datetime import datetime
+import json
+import secrets
+from collections.abc import Callable
+from datetime import datetime, timedelta
 from typing import Any
 
-from loopctl.observe import Rejected
+from loopctl import clock, store
+from loopctl.observe import (
+    Rejected,
+    allocate,
+    block,
+    commit,
+    limit,
+    now_iso,
+    owned,
+    policy,
+    settle,
+    unblock,
+)
 
 State = dict[str, Any]
 KINDS = ("worktree_create", "agent_start", "prompt", "stop")
+BLOCKED_REASONS = ("write_unknown", "readback_exhausted", "retry_exhausted")
+RECOVERY_KINDS = {"write_unknown": "resolve_operation", "readback_exhausted": "resolve_operation"}
+STATUS = {"succeeded": "succeeded", "failed_not_delivered": "failed", "unknown": "unknown"}
+STALE_GRACE_S = 30.0  # an in_flight op older than its call limit + this lost its process
+# (state, kind, op_id, policy, feature) -> spec {argv, expected, marker?, session?, on_prepare?}
+Prepare = Callable[[State, str, str, dict[str, Any], str], dict[str, Any]]
 
 
+class _Skip(Exception):
+    """The transition no longer applies (another process got there first)."""
 
 
-def write(feature: str, token: str | None, kind: str, op_id: str) -> dict[str, Any]:
-    raise Rejected("not_implemented")  # stub (T2.3 interface)
+def _herdr() -> Any:
+    from loopctl.tools import herdr
+
+    return herdr
+
+
+def view(op_id: str, op: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": op_id, "kind": op["kind"], "status": op["status"], "attempts": len(op["attempts"]),
+        "readbacks": len(op["readbacks"]), "blocked": op.get("blocked"), "resolved_by": op.get("resolved_by"),
+    }
+
+
+def _set_blocked(st: State, op_id: str, reason: str) -> None:
+    st["writes"][op_id]["blocked"] = reason
+    block(st, f"{reason}:{op_id}")
+
+
+def _blocking(op_id: str, reason: str) -> Callable[[State], State]:
+    def mutate(st: State) -> State:
+        _set_blocked(st, op_id, reason)
+        return st
+
+    return mutate
+
+
+def _clear_blocked(st: State, op_id: str) -> None:
+    st["writes"][op_id]["blocked"] = None
+    unblock(st, *(f"{r}:{op_id}" for r in BLOCKED_REASONS))
+
+
+def stale_at(op: dict[str, Any]) -> datetime:
+    started = datetime.fromisoformat(op["attempts"][-1]["started_at"])
+    return started + timedelta(seconds=float(op["prepared"]["call_limit_s"]) + STALE_GRACE_S)
+
+
+def _call_readbacks(op: dict[str, Any]) -> list[dict[str, Any]]:
+    """Readbacks of the latest call attempt (a human-authorized read is not counted)."""
+    n = len(op["attempts"])
+    return [r for r in op["readbacks"] if r["attempt"] == n and not r.get("decision")]
+
+
+def pending_resolution(st: State, op_id: str) -> dict[str, Any] | None:
+    done = st["writes"][op_id].get("resolutions", {})
+    for d in sorted((st.get("decisions") or {}).values(), key=lambda d: d["seq"]):
+        if d["kind"] == "resolve_operation" and d["target"] == op_id and d["id"] not in done:
+            return dict(d)
+    return None
+
+
+def _settle_op(st: State, op_id: str, at: str) -> None:
+    if st["writes"][op_id]["kind"] == "stop":
+        settle(st, op_id.removesuffix(".stop"), at)
+
+
+def _report(feature: str, op_id: str, performed: str) -> dict[str, Any]:
+    op = store.load(feature)[1]["writes"][op_id]
+    if op.get("blocked"):
+        raise Rejected(op["blocked"], 3, op=view(op_id, op), performed=performed)
+    return {"op": view(op_id, op), "performed": performed}
+
+
+def write(feature: str, token: str | None, kind: str, op_id: str, prepare: Prepare) -> dict[str, Any]:
+    if kind not in KINDS:
+        raise Rejected("unsupported", 2, op=kind)
+    _, st = owned(feature, token)
+    pol = policy(st)
+    if op_id not in (st.get("writes") or {}):
+        _prepare(feature, kind, op_id, prepare(st, kind, op_id, pol, feature), pol)
+        st = store.load(feature)[1]
+    op = st["writes"][op_id]
+    if op["kind"] != kind:
+        raise Rejected("op_kind_mismatch", op=op_id, kind=op["kind"])
+    if (decision := pending_resolution(st, op_id)) is not None:
+        return _resolve(feature, op_id, decision)
+    if op.get("blocked"):
+        raise Rejected(op["blocked"], 3, op=view(op_id, op), performed="none")
+    status = op["status"]
+    if status == "succeeded":
+        return {"op": view(op_id, op), "performed": "none"}
+    if status == "in_flight":
+        if clock.now() < stale_at(op):
+            raise Rejected("op_in_flight", 1, op=view(op_id, op))
+        _interrupted(feature, op_id, len(op["attempts"]))
+        status = "unknown"
+    if status == "unknown":
+        return _readback(feature, op_id)
+    return _call(feature, op_id)
+
+
+def _prepare(feature: str, kind: str, op_id: str, spec: dict[str, Any], pol: dict[str, Any]) -> None:
+    """Persist the op (fixed argv, marker, expected identity) before any external call."""
+    at = now_iso()
+    argv_ref = store.put_object(json.dumps(spec["argv"]).encode())
+    extra = int((pol.get("budget") or {}).get("infra_extra_retries", 2))
+    prepared = {
+        "argv": store.object_ref(argv_ref),
+        "argv_digest": argv_ref,
+        "marker": spec.get("marker"),
+        "expected": spec["expected"],
+        "session": spec.get("session"),
+        "call_limit_s": spec.get("call_limit_s", limit(pol, "write_call_s", 60)),
+        "read_limit_s": limit(pol, "read_call_s", 30),
+        "readback_max": int(limit(pol, "readback_max", 3)),
+        "readback_interval_s": limit(pol, "stop_readback_interval_s", 10),
+        "max_attempts": 1 + extra,
+    }
+    on_prepare = spec.get("on_prepare")
+
+    def mutate(st: State) -> State:
+        if op_id in st.setdefault("writes", {}):
+            raise _Skip
+        st["writes"][op_id] = {
+            "kind": kind, "status": "prepared", "prepared": prepared, "prepared_at": at, "attempts": [],
+            "readbacks": [], "facts": {}, "resolved_by": None, "resolutions": {}, "blocked": None,
+        }
+        if st.get("phase") == "approved":
+            st["phase"] = "implementing"
+        if on_prepare is not None:
+            on_prepare(st, at)
+        return st
+
+    try:
+        commit(feature, f"write:{op_id}:prepare@{at}:{secrets.token_hex(6)}", mutate)
+    except _Skip:
+        pass  # prepared concurrently: the first prepared op is the op
+
+
+def _interrupted(feature: str, op_id: str, n: int) -> None:
+    """The calling process vanished mid-call: the request may have gone out → unknown."""
+    at = now_iso()
+
+    def mutate(st: State) -> State:
+        op = st["writes"][op_id]
+        if op["status"] != "in_flight" or len(op["attempts"]) != n:
+            raise _Skip
+        op["attempts"][-1].update(ended_at=at, outcome="unknown", reason="interrupted")
+        op["status"] = "unknown"
+        return st
+
+    try:
+        commit(feature, f"write:{op_id}:interrupted:{n}", mutate)
+    except _Skip:
+        pass
+
+
+def _call(feature: str, op_id: str) -> dict[str, Any]:
+    op = store.load(feature)[1]["writes"][op_id]
+    prepared = op["prepared"]
+    n = len(op["attempts"]) + 1
+    if n > prepared["max_attempts"]:
+        commit(feature, f"write:{op_id}:retry_exhausted:{n}", _blocking(op_id, "retry_exhausted"))
+        return _report(feature, op_id, "none")
+    started = now_iso()
+
+    def consume(st: State) -> State:
+        o = st["writes"][op_id]
+        if o["status"] not in ("prepared", "failed") or len(o["attempts"]) != n - 1 or o.get("blocked"):
+            raise _Skip
+        o["status"] = "in_flight"
+        o["attempts"].append(
+            {"n": n, "started_at": started, "ended_at": None, "outcome": None, "reason": None, "receipt": None}
+        )
+        return st
+
+    try:
+        commit(feature, f"write:{op_id}:consume:{n}:{secrets.token_hex(6)}", consume)
+    except _Skip:
+        op = store.load(feature)[1]["writes"][op_id]
+        if op["status"] == "succeeded":
+            return {"op": view(op_id, op), "performed": "none"}
+        raise Rejected("op_in_flight" if op["status"] == "in_flight" else "op_state_changed", 1, op=view(op_id, op)) from None
+
+    argv = json.loads(store.get_object(prepared["argv"][store.OBJECT_KEY]))
+    result = _herdr().op_call(op["kind"], argv, float(prepared["call_limit_s"]))  # the one call
+    ended = now_iso()
+    receipt = store.put_object(result["receipt"].encode())
+
+    def record(st: State) -> State:
+        o = st["writes"][op_id]
+        o["attempts"][-1].update(
+            ended_at=ended, outcome=result["outcome"], reason=result["reason"], receipt=store.object_ref(receipt)
+        )
+        o["status"] = STATUS[result["outcome"]]
+        if o["status"] == "succeeded":
+            o["facts"] = {**o["facts"], **result["facts"]}
+        if o["status"] == "failed" and n >= prepared["max_attempts"]:
+            _set_blocked(st, op_id, "retry_exhausted")
+        _settle_op(st, op_id, ended)
+        return st
+
+    commit(feature, f"write:{op_id}:outcome:{n}", record)
+    return _report(feature, op_id, "call")
+
+
+def _observation(read: dict[str, Any]) -> str:
+    return store.put_object(json.dumps({k: read[k] for k in ("result", "detail", "raw")}, sort_keys=True).encode())
+
+
+def _readback(feature: str, op_id: str) -> dict[str, Any]:
+    op = store.load(feature)[1]["writes"][op_id]
+    prepared = op["prepared"]
+    if len(_call_readbacks(op)) >= prepared["readback_max"]:
+        commit(feature, f"write:{op_id}:readback_exhausted:{len(op['attempts'])}", _blocking(op_id, "readback_exhausted"))
+        return _report(feature, op_id, "none")
+    seq = allocate(feature, f"op:{op_id}", "op", "readback")
+    read = _herdr().readback(op["kind"], prepared["session"], prepared["expected"], float(prepared["read_limit_s"]))
+    at, ref, n = now_iso(), _observation(read), len(op["attempts"])
+
+    def mutate(st: State) -> State:
+        o = st["writes"][op_id]
+        o["readbacks"].append({"seq": seq, "at": at, "attempt": n, "result": read["result"],
+                               "detail": read["detail"], "observation": store.object_ref(ref)})
+        if read["result"] == "confirmed":
+            o.update(status="succeeded", resolved_by="readback")
+            o["facts"] = {**o["facts"], **read["facts"]}
+            _clear_blocked(st, op_id)
+        elif read["result"] in ("absent", "mismatch"):  # not proof of either outcome
+            _set_blocked(st, op_id, "write_unknown")
+        elif len(_call_readbacks(o)) >= prepared["readback_max"]:
+            _set_blocked(st, op_id, "readback_exhausted")
+        _settle_op(st, op_id, at)
+        return st
+
+    commit(feature, f"write:{op_id}:readback:{seq}", mutate)
+    return _report(feature, op_id, "readback")
+
+
+def _resolve(feature: str, op_id: str, decision: dict[str, Any]) -> dict[str, Any]:
+    """Apply a human resolve_operation (design §4): --bind needs one fresh matching read;
+    --not-delivered needs evidence that is not the controller's own not-found observation."""
+    op = store.load(feature)[1]["writes"][op_id]
+    prepared, mode = op["prepared"], decision["resolution"]["mode"]
+    read: dict[str, Any] | None = None
+    reason = None
+    if op["status"] != "unknown":
+        reason = f"op_not_unknown:{op['status']}"
+    elif mode == "bind":
+        if decision["resolution"]["observed"] != prepared["expected"]["bind"]:
+            reason = "bind_differs_from_expected"
+        else:
+            seq = allocate(feature, f"op:{op_id}", "op", "resolve_operation")
+            read = _herdr().readback(op["kind"], prepared["session"], prepared["expected"], float(prepared["read_limit_s"]))
+            read = {**read, "seq": seq, "observation": _observation(read)}
+            if read["result"] != "confirmed":
+                reason = f"read_{read['result']}:{read['detail']}"
+    else:
+        own = {r["observation"][store.OBJECT_KEY] for r in op["readbacks"]}
+        own |= {a["receipt"][store.OBJECT_KEY] for a in op["attempts"] if a.get("receipt")}
+        if decision["evidence"][store.OBJECT_KEY] in own:
+            reason = "not_found_is_not_evidence"
+    at = now_iso()
+
+    def mutate(st: State) -> State:
+        o = st["writes"][op_id]
+        if read is not None:
+            o["readbacks"].append({
+                "seq": read["seq"], "at": at, "attempt": len(o["attempts"]), "decision": decision["id"],
+                "result": read["result"], "detail": read["detail"], "observation": store.object_ref(read["observation"]),
+            })
+        o["resolutions"][decision["id"]] = {"status": "rejected" if reason else "applied", "mode": mode,
+                                            "reason": reason, "at": at}
+        if reason:
+            if o["status"] == "unknown":
+                _set_blocked(st, op_id, o.get("blocked") or "write_unknown")
+            return st
+        _clear_blocked(st, op_id)
+        o["resolved_by"] = "human"
+        if mode == "bind":
+            o["status"] = "succeeded"
+            o["facts"] = {**o["facts"], **(read or {}).get("facts", {})}
+        else:
+            o["status"] = "failed"  # not delivered: retries stay within the op's limit
+            if len(o["attempts"]) >= prepared["max_attempts"]:
+                _set_blocked(st, op_id, "retry_exhausted")
+        _settle_op(st, op_id, at)
+        return st
+
+    commit(feature, f"write:{op_id}:resolve:{decision['id']}", mutate)
+    if reason:
+        op = store.load(feature)[1]["writes"][op_id]
+        raise Rejected("resolution_rejected", 3, decision=decision["id"], reason=reason, op=view(op_id, op))
+    return _report(feature, op_id, "resolution")
 
 
 def safety(state: State, now: datetime) -> dict[str, Any] | None:
-    return None  # stub (T2.3 interface)
+    """Readbacks and pending human resolutions come before any other action."""
+    for op_id in sorted(state.get("writes") or {}):
+        op = state["writes"][op_id]
+        if op.get("kind") not in KINDS or "prepared" not in op:
+            continue  # not an op of this state machine (e.g. a later task's kind): no action
+        action = {"action": "write", "op": op["kind"], "id": op_id}
+        if pending_resolution(state, op_id) is not None:
+            return action
+        if op.get("blocked"):
+            continue
+        if op["status"] == "in_flight" and now >= stale_at(op):
+            return action
+        if op["status"] == "unknown":
+            reads = _call_readbacks(op)
+            if reads and reads[-1]["result"] in ("pending", "transport_error"):
+                due = datetime.fromisoformat(reads[-1]["at"]) + timedelta(seconds=float(op["prepared"]["readback_interval_s"]))
+                if now < due:
+                    return {"action": "wait", "poll_after_s": (due - now).total_seconds(), "reason": f"readback:{op_id}"}
+            return action
+    return None
