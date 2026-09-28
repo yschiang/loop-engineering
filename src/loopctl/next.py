@@ -6,15 +6,20 @@ T2.3 adds `safety` (readbacks and pending recovery decisions, which come before 
 action, design §2/§10) and worker dispatch for approved / implementing.
 T3.1 hands over to G1 (`evidence_green` / `assess`) where dispatch has no task left.
 T6.1 continues where G1 passed: push → pr_ensure → observe pr / ci (G3).
+T7.1 puts the budget first (design §10): the stop of every running attempt once the active
+budget is used up, or of an attempt past its role timeout, comes before any other safety
+action or blocker; then the budget blockers (active_budget_exhausted,
+attempt_timeout_exhausted:<unit>, ci_timeout:<H>) join the recorded ones.
 Anything not decided here stops and hands over to a human.
 """
 
+from datetime import datetime
 from typing import Any
 
-from loopctl import assignments, clock, decisions, gates, observe, writes
+from loopctl import assignments, budget, clock, decisions, gates, observe, writes
 
 State = dict[str, Any]
-RECOVERY_KINDS = {**writes.RECOVERY_KINDS, **observe.RECOVERY_KINDS, **gates.RECOVERY_KINDS}
+RECOVERY_KINDS = {**writes.RECOVERY_KINDS, **observe.RECOVERY_KINDS, **gates.RECOVERY_KINDS, **budget.RECOVERY_KINDS}
 
 
 def human(blockers: list[str], decision_kinds: list[str] | None = None) -> dict[str, Any]:
@@ -27,15 +32,45 @@ def recovery_kinds(blocked: list[str]) -> list[str]:
     return sorted(kinds)
 
 
+def budget_blockers(state: State) -> list[str]:
+    return budget.blockers(state, clock.now())
+
+
+def blockers(state: State, blocked: list[str]) -> list[str]:
+    """The recorded blockers plus the budget's (derived from the state and the clock)."""
+    return [*blocked, *(b for b in budget_blockers(state) if b not in blocked)]
+
+
+def _stop_step(state: State, attempt: str, now: datetime) -> dict[str, Any] | None:
+    """The one step of an attempt's stop op: send it, or run the same op again (prepared,
+    not delivered), or read it back; nothing once it is confirmed or Blocked."""
+    op_id = f"{attempt}.stop"
+    op = (state.get("writes") or {}).get(op_id)
+    action = {"action": "write", "op": "stop", "id": op_id}
+    if op is None or (op["status"] in ("prepared", "failed") and not op.get("blocked")):
+        return action
+    if op.get("blocked") or op["status"] == "succeeded":
+        return None
+    if op["status"] == "in_flight" and now < writes.stale_at(op):
+        wait = max(1.0, (writes.stale_at(op) - now).total_seconds())
+        return {"action": "wait", "poll_after_s": wait, "reason": f"write_in_flight:{op_id}"}
+    return writes.safety({**state, "writes": {op_id: op}}, now)
+
+
 def safety_action(state: State, blocked: list[str]) -> dict[str, Any] | None:
     if any(b.startswith("transition_conflict:") for b in blocked):
         return None
-    return writes.safety(state, clock.now()) or observe.safety(state)
+    now = clock.now()
+    for attempt in budget.due_stops(state, now):  # T7.1: expiry and role-timeout stops first
+        if (step := _stop_step(state, attempt, now)) is not None:
+            return step
+    return writes.safety(state, now) or observe.safety(state)
 
 
 def next_action(state: State, blocked: list[str]) -> dict[str, Any]:
     if (first := safety_action(state, blocked)) is not None:
         return first
+    blocked = blockers(state, blocked)
     if blocked:
         return human(blocked, recovery_kinds(blocked))
     if not state.get("owner"):

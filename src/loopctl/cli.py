@@ -14,6 +14,7 @@ from typing import Any
 
 from loopctl import (
     assignments,
+    budget,
     clock,
     decisions,
     evidence,
@@ -201,11 +202,12 @@ def _read(args: argparse.Namespace) -> Outcome:
     """status/next for one feature: read-only, never creates or repairs state."""
     try:
         revision, st = store.load(args.feature)
-        blocked = state.blockers(st, store.conflicts(args.feature))
+        blocked = next_step.blockers(st, state.blockers(st, store.conflicts(args.feature)))
     except store.StoreError as e:
         return _store_failure(args.feature, e)
     action = next_step.next_action(st, blocked)
     result = state.view(st, blocked)
+    result["budget"] = budget.summary(st, clock.now())  # T7.1: active limit, used, over
     if getattr(args, "human", False):
         result["human"] = state.render_human(result, revision, action)
     if args.command == "next":
@@ -424,10 +426,18 @@ def _effect(feature: str, run: Any) -> Outcome:
 
 
 def _write(args: argparse.Namespace) -> Outcome:
-    return _effect(
-        args.feature,
-        lambda: writes.write(args.feature, args.token, args.op, args.op_id, assignments.op_spec),
-    )
+    def run() -> dict[str, Any]:
+        # T7.1: while the budget blocks the feature, only a stop, or a readback of an op
+        # already sent, may run; no new external call (design §10, D47).
+        if args.op in writes.KINDS and args.op != "stop":
+            _, st = observe.owned(args.feature, args.token)
+            op = (st.get("writes") or {}).get(args.op_id)
+            fresh = op is None or op["status"] in ("prepared", "failed")
+            if fresh and (found := next_step.budget_blockers(st)):
+                raise observe.Rejected("feature_blocked", EXIT_BLOCKED, blockers=found)
+        return writes.write(args.feature, args.token, args.op, args.op_id, assignments.op_spec)
+
+    return _effect(args.feature, run)
 
 
 def _result(args: argparse.Namespace) -> Outcome:
@@ -464,7 +474,7 @@ def _safety(args: argparse.Namespace) -> Outcome:
     """Read-only: the action that must come before any other (readback, recovery), or null."""
     try:
         revision, st = store.load(args.feature)
-        blocked = state.blockers(st, store.conflicts(args.feature))
+        blocked = next_step.blockers(st, state.blockers(st, store.conflicts(args.feature)))
     except store.StoreError as e:
         return _store_failure(args.feature, e)
     first = next_step.safety_action(st, blocked)
