@@ -40,6 +40,56 @@ def test_unsupported_command_is_usage_error_with_zero_external_calls(capsys, fak
     assert fakes.calls() == []
 
 
+@pytest.fixture
+def no_feature(tmp_path, monkeypatch, fakes):
+    monkeypatch.setenv("LOOPCTL_HOME", str(tmp_path / "home"))
+    return fakes
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["observe", "--feature", "F-1", "worker", "--attempt", "T1-a1"],
+        ["observe", "--feature", "F-1", "--attempt", "T1-a1", "native"],
+        ["observe", "worker", "--feature", "F-1", "--attempt", "T1-a1"],
+        ["observe", "--feature", "F-1", "pr"],
+        ["observe", "ci", "--feature", "F-1"],
+    ],
+)
+def test_observe_options_may_come_before_or_after_the_source(capsys, no_feature, argv):
+    code, out = run(capsys, *argv)
+    assert (code, out["result"]["error"]) == (1, "feature_not_found"), out  # parsed, then read
+    assert no_feature.calls() == []
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["observe", "frobnicate", "--feature", "F-1", "--attempt", "T1-a1"],
+        ["observe", "--feature", "F-1", "--attempt", "T1-a1", "frobnicate"],
+    ],
+)
+def test_observe_an_unknown_source_is_unsupported(capsys, no_feature, argv):
+    code, out = run(capsys, *argv)
+    assert (code, out["result"]["error"], out["result"]["source"]) == (2, "unsupported", "frobnicate"), out
+    assert no_feature.calls() == []
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["observe", "worker", "--feature", "F-1"],
+        ["observe", "--feature", "F-1", "native"],
+        ["observe", "--feature", "F-1", "frobnicate"],
+    ],
+)
+def test_observe_attempt_is_required_by_the_parser_unless_the_source_is_pr_or_ci(capsys, no_feature, argv):
+    code, out = run(capsys, *argv)
+    assert (code, out["result"]["error"]) == (2, "usage"), out
+    assert out["result"]["message"] == "the following arguments are required: --attempt"
+    assert no_feature.calls() == []
+
+
 def test_help_exits_zero(capsys):
     assert main(["--help"]) == 0
     assert "status" in capsys.readouterr().out

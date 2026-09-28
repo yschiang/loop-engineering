@@ -1701,7 +1701,7 @@ def parse(capsys, *argv: str) -> tuple[int, str]:
 def test_observe_worker_and_native_still_require_attempt_in_the_parser(capsys, source):
     code, text = parse(capsys, "observe", source, "--help")
     usage = " ".join(text.split("\n\n", 1)[0].split())
-    assert code == 0 and f"usage: loopctl observe {source} " in usage, text
+    assert code == 0 and usage.startswith("usage: loopctl observe "), text
     assert " --attempt ATTEMPT" in usage and "[--attempt" not in usage, usage  # required, as before T6.1
     code, text = parse(capsys, "observe", source, "--feature", FEATURE)
     out = json.loads(text)
@@ -1712,7 +1712,7 @@ def test_observe_worker_and_native_still_require_attempt_in_the_parser(capsys, s
 @pytest.mark.parametrize("source", ["pr", "ci"])
 def test_observe_pr_and_ci_take_no_attempt(capsys, source):
     code, text = parse(capsys, "observe", source, "--help")
-    assert code == 0 and f"usage: loopctl observe {source} " in text and "--attempt" not in text, text
+    assert code == 0 and text.startswith("usage: loopctl observe ") and "--attempt" not in text, text
     code, text = parse(capsys, "observe", source, "--feature", FEATURE, "--attempt", "T1-a1")
     out = json.loads(text)
     assert (code, out["result"]["error"]) == (2, "usage"), out

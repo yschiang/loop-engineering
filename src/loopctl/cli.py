@@ -9,6 +9,7 @@ import argparse
 import json
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -36,8 +37,17 @@ class _UsageError(Exception):
 
 
 class _Parser(argparse.ArgumentParser):
+    # observe: the parser a source's arguments are parsed with (see _observe_parser)
+    by_source: Callable[[list[str]], "_Parser"] | None = None
+
     def error(self, message: str) -> Any:
         raise _UsageError(message)
+
+    def parse_known_args(self, args: Any = None, namespace: Any = None) -> Any:
+        chosen = self.by_source(list(args or [])) if self.by_source else self
+        if chosen is not self:
+            return chosen.parse_known_args(args, namespace)
+        return super().parse_known_args(args, namespace)
 
 
 def envelope(
@@ -72,6 +82,33 @@ def _feature_id(value: str) -> str:
     if not store.FEATURE_ID_RE.fullmatch(value):
         raise argparse.ArgumentTypeError(f"invalid feature id {value!r}")
     return value
+
+
+def _observe_parser(ob: _Parser) -> None:
+    """`observe source --feature … --attempt …` as before T6.1: options before or after the
+    source, `--attempt` required by the parser, an unknown source answered `unsupported`. Only
+    pr / ci (T6.1) are parsed without `--attempt`, by a parser of their own."""
+    github = _Parser(prog=ob.prog, description="pr: read key pr:<number>; ci: read key ci:<repo>:<H> (T6.1)")
+    lenient = _Parser(prog=ob.prog, add_help=False)  # only to find the source
+    helps = {ob: f"source: {', '.join(observe.SOURCES)}; pr, ci (T6.1) take no attempt",
+             github: f"source: {', '.join(observe.GITHUB_SOURCES)}", lenient: None}
+    for p, attempt in ((ob, "required"), (github, None), (lenient, "optional")):
+        p.add_argument("source", nargs="?" if p is lenient else None, help=helps[p])
+        p.add_argument("--feature", required=p is not lenient, type=str if p is lenient else _feature_id)
+        p.add_argument("--token")
+        if attempt:
+            p.add_argument("--attempt", required=attempt == "required")
+        p.add_argument("--purpose", help="default: the source's general purpose")
+    github.set_defaults(attempt=None)
+
+    def by_source(args: list[str]) -> _Parser:
+        try:
+            found = lenient.parse_known_args(args)[0].source
+        except _UsageError:
+            return ob
+        return github if found in observe.GITHUB_SOURCES else ob
+
+    ob.by_source = by_source
 
 
 def _parser() -> _Parser:
@@ -129,18 +166,7 @@ def _parser() -> _Parser:
     ri.add_argument("--file", help="result file (default: the assignment's result location)")
     sf = sub.add_parser("safety", help="read-only: actions that must come first (design §2, §10)")
     sf.add_argument("--feature", required=True, type=_feature_id)
-    ob = sub.add_parser("observe", help="bounded read-only fetch (design §5)")
-    ob_sub = ob.add_subparsers(dest="source", required=True, metavar="source")
-    for source in (*observe.SOURCES, *observe.GITHUB_SOURCES):
-        os_ = ob_sub.add_parser(source, help=f"read key {source}:<attempt>" if source in observe.SOURCES
-                                else f"read key {'pr:<number>' if source == 'pr' else 'ci:<repo>:<H>'} (T6.1)")
-        os_.add_argument("--feature", required=True, type=_feature_id)
-        os_.add_argument("--token")
-        if source in observe.SOURCES:
-            os_.add_argument("--attempt", required=True)
-        else:
-            os_.set_defaults(attempt=None)
-        os_.add_argument("--purpose", help="default: the source's general purpose")
+    _observe_parser(sub.add_parser("observe", help="bounded read-only fetch (design §5)"))
     ev = sub.add_parser("evidence", help="run a policy evidence command (design §7)")
     ev_sub = ev.add_subparsers(dest="evidence_command", required=True)
     er = ev_sub.add_parser("red", help="worker: capture a Red in the attempt's worktree")
