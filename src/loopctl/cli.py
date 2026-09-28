@@ -435,13 +435,13 @@ def _effect(feature: str, run: Any) -> Outcome:
 
 def _write(args: argparse.Namespace) -> Outcome:
     def run() -> dict[str, Any]:
-        # T7.1: while the budget blocks the feature, only a stop, or a readback of an op
-        # already sent, may run; no new external call (design §10, D47).
+        # T7.1: while the budget blocks the feature or a stop is due, only a stop, or a
+        # readback of an op already sent, may run; no new op or external call (design §10, D47).
         if args.op in writes.KINDS and args.op != "stop":
             _, st = observe.owned(args.feature, args.token)
             op = (st.get("writes") or {}).get(args.op_id)
             fresh = op is None or op["status"] in ("prepared", "failed")
-            if fresh and (found := next_step.budget_blockers(st)):
+            if fresh and (found := next_step.write_blockers(st)):
                 raise observe.Rejected("feature_blocked", EXIT_BLOCKED, blockers=found)
         return writes.write(args.feature, args.token, args.op, args.op_id, assignments.op_spec)
 

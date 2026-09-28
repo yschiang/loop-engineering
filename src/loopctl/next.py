@@ -36,6 +36,13 @@ def budget_blockers(state: State) -> list[str]:
     return budget.blockers(state, clock.now())
 
 
+def write_blockers(state: State) -> list[str]:
+    """What refuses a new non-stop write (design §10): the budget blockers, and every stop
+    that is due, since that stop comes before any other action."""
+    now = clock.now()
+    return [*budget.blockers(state, now), *(f"stop_due:{a}" for a in budget.due_stops(state, now))]
+
+
 def blockers(state: State, blocked: list[str]) -> list[str]:
     """The recorded blockers plus the budget's (derived from the state and the clock). The
     blocker of an op of an earlier approval is obsolete: routing supersedes that op."""

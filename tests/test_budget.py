@@ -269,6 +269,20 @@ def test_b2_a_a_worker_past_45_minutes_is_stopped_and_timed_out_and_a_new_attemp
     assert st["batches"] == {} and not any(d["kind"] == "budget_extension" for d in st["decisions"].values())
 
 
+def test_b2_a_a_direct_write_at_the_role_deadline_is_refused_until_the_stop_is_confirmed(h):
+    h.dispatch(until="agent_start")  # the agent runs, its prompt not sent yet
+    h.clock.advance(minutes=45)
+    assert h.next() == stop() and h.safety() == stop()
+    calls = len(h.fakes.calls())
+    code, out = h.write("prompt", "T1-a1.prompt")
+    assert len(h.fakes.calls()) == calls
+    assert "T1-a1.prompt" not in h.state()["writes"]  # refused before an op is prepared
+    assert code == 3 and out["result"]["error"] == "feature_blocked", out
+    assert out["result"]["blockers"] == ["stop_due:T1-a1"] and out["next"] == stop(), out
+    confirm_stop(h)
+    assert h.next() == {"action": "write", "op": "agent_start", "id": "T1-a2.agent_start"}
+
+
 def test_b2_b_the_third_timeout_of_a_unit_blocks_with_zero_new_attempts(h):
     for n in (1, 2, 3):
         time_out(h, f"T1-a{n}")
