@@ -130,11 +130,17 @@ def _parser() -> _Parser:
     sf = sub.add_parser("safety", help="read-only: actions that must come first (design §2, §10)")
     sf.add_argument("--feature", required=True, type=_feature_id)
     ob = sub.add_parser("observe", help="bounded read-only fetch (design §5)")
-    ob.add_argument("source", help=f"source: {', '.join(observe.SOURCES)}")
-    ob.add_argument("--feature", required=True, type=_feature_id)
-    ob.add_argument("--token")
-    ob.add_argument("--attempt", help="worker|native: the attempt (pr|ci take none)")
-    ob.add_argument("--purpose", help="default: the source's general purpose")
+    ob_sub = ob.add_subparsers(dest="source", required=True, metavar="source")
+    for source in (*observe.SOURCES, *observe.GITHUB_SOURCES):
+        os_ = ob_sub.add_parser(source, help=f"read key {source}:<attempt>" if source in observe.SOURCES
+                                else f"read key {'pr:<number>' if source == 'pr' else 'ci:<repo>:<H>'} (T6.1)")
+        os_.add_argument("--feature", required=True, type=_feature_id)
+        os_.add_argument("--token")
+        if source in observe.SOURCES:
+            os_.add_argument("--attempt", required=True)
+        else:
+            os_.set_defaults(attempt=None)
+        os_.add_argument("--purpose", help="default: the source's general purpose")
     ev = sub.add_parser("evidence", help="run a policy evidence command (design §7)")
     ev_sub = ev.add_subparsers(dest="evidence_command", required=True)
     er = ev_sub.add_parser("red", help="worker: capture a Red in the attempt's worktree")
@@ -450,9 +456,6 @@ def _result(args: argparse.Namespace) -> Outcome:
 
 
 def _observe(args: argparse.Namespace) -> Outcome:
-    if args.source not in observe.GITHUB_SOURCES and args.attempt is None:  # as before T6.1
-        message = "the following arguments are required: --attempt"
-        return EXIT_USAGE, envelope(False, result={"error": "usage", "message": message})
     return _effect(
         args.feature,
         lambda: observe.observe(args.feature, args.token, args.source, args.attempt, args.purpose),
