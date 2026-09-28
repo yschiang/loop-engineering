@@ -919,7 +919,7 @@ def test_w11_a_prompt_past_its_time_limit_is_killed_and_unknown_not_failed(h):
 # --- unsupported ops ------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("op", ["merge", "close", "release", "deploy", "push", "pr_ensure", "publish_pr"])
+@pytest.mark.parametrize("op", ["merge", "close", "release", "deploy", "publish_pr"])
 def test_ops_outside_the_first_slice_kinds_are_unsupported_with_zero_calls(h, op):
     h.start()
     rev = h.revision()
