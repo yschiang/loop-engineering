@@ -100,6 +100,23 @@ def test_o1_a_successful_fetch_resets_the_consecutive_count(h):
     assert f"read_exhausted:{READ}" not in h.state()["blockers"]
 
 
+def test_limits_come_from_the_registered_policy_not_the_working_directory(h):
+    h.limits(read_failures_max=2)
+    h.start()
+    code, out = h.cli(
+        "register", "policy", "--feature", FEATURE, f"--token={h.token}", "--locator", "workflow.yaml",
+        "--version", "p-test",
+    )
+    assert code == 0, out
+    h.limits(read_failures_max=5)  # edits after registration do not count
+    h.dispatch()
+    h.expect(failing_read(), failing_read())
+    assert h.observe("worker")[1]["result"]["error"] == "read_failed"
+    code, out = h.observe("worker")
+    assert (code, out["result"]["error"]) == (3, "read_exhausted"), out
+    assert h.state()["read_budget"][READ]["allowance"] == 2
+
+
 def test_o2_an_older_native_read_arriving_late_only_goes_to_history(h, monkeypatch):
     h.dispatch()
     h.work()
