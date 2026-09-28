@@ -7,6 +7,8 @@ Anything not decided here stops and hands over to a human.
 
 from typing import Any
 
+from loopctl import decisions
+
 State = dict[str, Any]
 
 
@@ -20,8 +22,10 @@ def next_action(state: State, blocked: list[str]) -> dict[str, Any]:
     if not state.get("owner"):
         return human(["unclaimed"])
     phase = state["phase"]
-    if phase == "planning" and state.get("plan") is None:
+    if phase in ("planning", "awaiting_approval") and state.get("plan") is None:
         return human(["plan_not_registered"])
+    if phase in ("planning", "awaiting_approval") and not decisions.plan_approvable(state["plan"]):
+        return human(["plan_not_calibrated"])  # T2.2: a draft is registered, not approvable
     if phase in ("planning", "awaiting_approval"):
         return human(["plan_not_approved"], ["approve_plan"])
     if phase == "pass":
