@@ -988,8 +988,23 @@ def _correction(env: Env, attempt: str, batch: str, findings: tuple[str, ...], k
     return eid
 
 
+RED_TRIPLE = "\n\ndef test_triple():\n    from calc import triple\n\n    assert triple(2) == 6\n"
+
+
+def _later_fix(env: Env, attempt: str, red: bool) -> str | None:
+    """Another behaviour-changing attempt for F-1 of B1, on top of B1-a1's."""
+    env.dispatch(attempt, batch="B1", findings=("F-1",), scope=FIX_SCOPE)
+    env.write("tests/test_double.py", env.wt.joinpath("tests/test_double.py").read_text() + RED_TRIPLE)
+    eid = env.captured(attempt, "--finding=F-1") if red else None
+    env.write("src/calc.py", env.wt.joinpath("src/calc.py").read_text().replace("    return x\n", "    return 3 * x\n"))
+    env.commit(f"{attempt}: triple")
+    env.complete(attempt)
+    return eid
+
+
 @pytest.mark.parametrize("kind", ["pre_review_g1", "g2_fix"])
-@pytest.mark.parametrize("variant", ["a", "b", "c_other_batch", "c_other_finding", "d", "e"])
+@pytest.mark.parametrize("variant", ["a", "b", "c_other_batch", "c_other_finding", "d", "e",
+                                     "f_red_then_unevidenced", "g_each_attempt_red"])
 def test_g10_a_behaviour_changing_correction_needs_its_own_bound_red(env, kind, variant):
     env.start()
     env.task_done()
@@ -1014,9 +1029,12 @@ def test_g10_a_behaviour_changing_correction_needs_its_own_bound_red(env, kind, 
         env.complete("B1-a1")
     elif variant == "d":
         red = _correction(env, "B1-a1", "B1", ("F-1", "F-2"), kind, ("F-1",))
-    else:
+    elif variant == "e":
         _correction(env, "B1-a1", "B1", ("F-1",), kind, None, docs_only=True)
         env.na("batch:B1", "B1-a1")
+    else:  # A1's valid Red does not stand for a later attempt changing F-1 again
+        red = _correction(env, "B1-a1", "B1", ("F-1",), kind, ("F-1",))
+        later = _later_fix(env, "B1-a2", red=variant == "g_each_attempt_red")
     assert env.green()[0] == 0
     env.assess()
     g1 = env.g1()
@@ -1035,9 +1053,17 @@ def test_g10_a_behaviour_changing_correction_needs_its_own_bound_red(env, kind, 
         assert unit_red(env, "batch:B1:F-1") == red
         assert "original_red_unavailable:batch:B1:F-2" in g1["reasons"]
         assert "original_red_unavailable:batch:B1:F-1" not in g1["reasons"]
-    else:
+    elif variant == "e":
         assert g1["status"] == "passed", g1["reasons"]
         assert g1["units"]["batch:B1:F-1"]["via"] == "na"
+    elif variant == "f_red_then_unevidenced":
+        assert g1["status"] == "blocked", g1["reasons"]
+        assert g1["units"]["batch:B1:F-1"]["status"] == "blocked"
+        assert "original_red_unavailable:batch:B1:F-1" in g1["reasons"]
+        assert unit_red(env, "batch:B1:F-1") == red
+    else:
+        assert g1["status"] == "passed", g1["reasons"]
+        assert g1["units"]["batch:B1:F-1"]["reds"] == {"B1-a1": red, "B1-a2": later}
 
 
 @pytest.mark.parametrize("variant", ["import_other_finding", "na_other_finding", "na_later_attempt"])

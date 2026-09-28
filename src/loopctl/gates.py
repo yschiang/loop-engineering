@@ -178,8 +178,8 @@ class _G1:
         units = [f"task:{t['id']}" for t in self.doc["tasks"]] + self._batch_units()
         rewritten = [r for r in recorded if not self.anc(r, head)]
         if rewritten:  # every lineage-based Red eligibility is void (design §7)
-            base["units"] = {u: {"status": "blocked", "reasons": ["history_rewritten"], "red": None, "via": None,
-                                 "invalid": {}} for u in units}
+            base["units"] = {u: {"status": "blocked", "reasons": ["history_rewritten"], "red": None, "reds": {},
+                                 "via": None, "invalid": {}} for u in units}
             reasons = [f"history_rewritten:{r}" for r in rewritten]
             return {**base, "status": "blocked", "reasons": reasons, "green": None}
 
@@ -267,7 +267,8 @@ class _G1:
         return c is not None and not (c["author"]["conflict"] or c["author"]["additional"])
 
     def _unit(self, unit: str) -> dict[str, Any]:
-        out: dict[str, Any] = {"status": "passed", "reasons": [], "red": None, "via": None, "invalid": {}}
+        out: dict[str, Any] = {"status": "passed", "reasons": [], "red": None, "reds": {}, "via": None,
+                               "invalid": {}}
         eligible = [a for a in self._attempts_of(unit) if a in self.eligible]
         rejected = [(a, c) for a in eligible if (c := self.integration.get(a)) and c["status"] != "ok"]
         if rejected:
@@ -280,41 +281,50 @@ class _G1:
             why = self._check_red(r)
             if why:
                 out["invalid"][r["id"]] = why
-            elif out["red"] is None:
-                out["red"] = r["id"]
+            else:  # an eligible Red is its own attempt's; the first one per attempt is judged
+                out["reds"].setdefault(str(r["attempt"]), r["id"])
+        out["red"] = next(iter(out["reds"].values()), None)
         invalid = [f"red_invalid:{rid}:{w}" for rid, whys in out["invalid"].items() for w in whys]
-        if out["red"]:
-            return self._contradiction(out, unit, invalid)
-        # without a Red, each attempt the unit answers for must be exempt on its own
+        unavailable = {**out, "status": "blocked", "reasons": [f"original_red_unavailable:{unit}", *invalid]}
+        # each attempt the unit answers for needs its own Red or its own exemption (design §7)
         covering = self._covering(unit)
-        imports = {a for a in covering if self._pure_import(a)}
-        if covering and set(covering) <= imports:
-            return {**out, "via": "import"}  # a pure import needs no Red for upstream behaviour
-        na = self._na(unit, covering)
-        if na is not None:
+        bare = {a for a in covering if a not in out["reds"] and not self._pure_import(a)}
+        via = "red" if out["reds"] else "import"  # a pure import needs no Red for upstream behaviour
+        if bare or not covering:
+            na = self._na(unit, covering)
+            if na is None:
+                return unavailable
             status, reasons, judged = na
             if status != "passed":
                 return {**out, "status": status, "reasons": [*reasons, *invalid]}
-            if set(covering) <= imports | {judged}:
-                return {**out, "via": "na"}
-        return {**out, "status": "blocked", "reasons": [f"original_red_unavailable:{unit}", *invalid]}
+            if not bare <= {judged}:
+                return unavailable
+            via = "red" if out["reds"] else "na"
+        verdicts = {rid: self._contradiction(rid) for rid in out["reds"].values()}
+        out["reds"] = {a: rid for a, rid in out["reds"].items() if verdicts[rid][0] != "blocked"}
+        out["red"] = next(iter(out["reds"].values()), None)
+        status = worst([s for s, _ in verdicts.values()])
+        reasons = [x for _, why in verdicts.values() for x in why]
+        if status == "blocked":
+            return {**out, "status": status, "reasons": [*reasons, f"original_red_unavailable:{unit}", *invalid]}
+        return {**out, "status": status, "reasons": reasons, "via": via}
 
-    def _contradiction(self, out: dict[str, Any], unit: str, invalid: list[str]) -> dict[str, Any]:
-        r = self.evidence[out["red"]]
+    def _contradiction(self, rid: str) -> tuple[str, list[str]]:
+        """Whether contradictory evidence leaves this Red standing (design §7: replay once)."""
+        r = self.evidence[rid]
         tree = r["snapshot"]["tree"]
         failing = set(r["failing"])
-        others = [e for e in self.evidence.values() if e["id"] != r["id"] and e["kind"] in ("red", "green")
+        others = [e for e in self.evidence.values() if e["id"] != rid and e["kind"] in ("red", "green")
                   and failing & set(e.get("passing") or [])]
         if not any((e["snapshot"]["tree"] if e["kind"] == "red" else self.tree(e["head"])) == tree for e in others):
-            return {**out, "via": "red"}
-        runs = [e for e in ev.records(self.st, "replay") if e.get("of") == r["id"] and "reproduced" in e]
+            return "passed", []
+        runs = [e for e in ev.records(self.st, "replay") if e.get("of") == rid and "reproduced" in e]
         if not runs:
-            self.replays.append(r["id"])
-            return {**out, "status": "pending", "reasons": [f"replay_pending:{r['id']}"], "via": "red"}
+            self.replays.append(rid)
+            return "pending", [f"replay_pending:{rid}"]
         if runs[-1]["reproduced"]:
-            return {**out, "via": "red"}
-        return {**out, "status": "blocked", "red": None,
-                "reasons": [f"red_contradicted:{r['id']}", f"original_red_unavailable:{unit}", *invalid]}
+            return "passed", []
+        return "blocked", [f"red_contradicted:{rid}"]
 
     def _check_red(self, r: dict[str, Any]) -> list[str]:
         """Every reason this Red is not an eligible original Red (empty: eligible)."""
