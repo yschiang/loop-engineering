@@ -581,6 +581,46 @@ def test_an_attempt_assigned_under_an_earlier_approval_is_stopped_and_a_fresh_at
     assert h.unexpected() == []
 
 
+@pytest.mark.parametrize("between", ["revised_and_approved", "revoked"])
+def test_an_op_spec_built_before_a_concurrent_approval_change_is_never_persisted(h, monkeypatch, between):
+    from loopctl import assignments
+
+    h.start()
+    wt2 = h.tmp / "wt2"
+    real, interleaved = assignments.op_spec, []
+
+    def build_then_change(state: dict, kind: str, op_id: str, pol: dict, feature: str) -> dict:
+        spec = real(state, kind, op_id, pol, feature)
+        if not interleaved:  # another process changes the plan after this spec was built
+            interleaved.append(op_id)
+            scope_change(h)
+            if between == "revised_and_approved":  # plan v2 moves the worktree, approve-2
+                (h.repo / PLAN).write_text(plan_text(h.repo, wt2))
+                code, out = h.cli("register", "plan", "--locator", PLAN, "--version", "v2", "--producer",
+                                  "implementer", "--calibrated-from", SPEC, "--feature", FEATURE, f"--token={h.token}")
+                assert code == 0, out
+                code, out = h.decide("approve_plan", id="approve-2", target=PLAN, version="v2")
+                assert code == 0, out
+        return spec
+
+    monkeypatch.setattr(assignments, "op_spec", build_then_change)
+    h.expect(json.loads(json.dumps(c_worktree_create(h)).replace(str(h.wt), str(wt2))))
+
+    code, out = h.write("worktree_create", "worktree")
+    sent = [Path(argv[argv.index("--path") + 1]).name for argv in h.herdr("worktree", "create")]
+    if between == "revoked":
+        assert "worktree" not in h.state()["writes"]  # the approve-1 argv is not kept
+        assert (code, out["result"].get("error")) == (1, "not_routable")
+        assert sent == []
+        return
+    op = h.state()["writes"]["worktree"]
+    argv = json.loads(store.get_object(op["prepared"]["argv"][store.OBJECT_KEY]))
+    assert (op["approval"], Path(argv[argv.index("--path") + 1]).name) == ("approve-2", "wt2")  # rebuilt
+    assert sent == ["wt2"]  # the approve-1 workspace command: 0 sends
+    assert code == 0 and out["result"]["op"]["status"] == "succeeded"
+    assert h.unexpected() == []
+
+
 def unstamp(h: Harness) -> None:
     """The ops as persisted before they recorded their approval (before 84ab56e)."""
     from loopctl.observe import commit

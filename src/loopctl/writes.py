@@ -256,11 +256,11 @@ def write(feature: str, token: str | None, kind: str, op_id: str, prepare: Prepa
         raise Rejected("unsupported", 2, op=kind)
     if kind in GH_KINDS:
         prepare = github_spec
-    _, st = owned(feature, token)
-    pol = policy(st)
-    if op_id not in (st.get("writes") or {}):
-        _prepare(feature, kind, op_id, prepare(st, kind, op_id, pol, feature), pol)
-        st = store.load(feature)[1]
+    revision, st = owned(feature, token)
+    while op_id not in (st.get("writes") or {}):
+        pol = policy(st)
+        _prepare(feature, revision, kind, op_id, prepare(st, kind, op_id, pol, feature), pol)
+        revision, st = owned(feature, token)  # not prepared: the state moved, build the spec again
     op = st["writes"][op_id]
     if op["kind"] != kind:
         raise Rejected("op_kind_mismatch", op=op_id, kind=op["kind"])
@@ -285,8 +285,11 @@ def write(feature: str, token: str | None, kind: str, op_id: str, prepare: Prepa
     return _call(feature, op_id)
 
 
-def _prepare(feature: str, kind: str, op_id: str, spec: dict[str, Any], pol: dict[str, Any]) -> None:
-    """Persist the op (fixed argv, marker, expected identity) before any external call."""
+def _prepare(feature: str, revision: int, kind: str, op_id: str, spec: dict[str, Any], pol: dict[str, Any]) -> None:
+    """Persist the op (fixed argv, marker, expected identity) before any external call, only on
+    the state revision the spec was built from: the approval it is stamped with is then the one
+    its argv came from. Any later commit (a revised plan, an approval, another prepare of this op)
+    leaves it unprepared."""
     at = now_iso()
     argv_ref = store.put_object(json.dumps(spec["argv"]).encode())
     extra = int((pol.get("budget") or {}).get("infra_extra_retries", 2))
@@ -305,10 +308,8 @@ def _prepare(feature: str, kind: str, op_id: str, spec: dict[str, Any], pol: dic
     on_prepare = spec.get("on_prepare")
 
     def mutate(st: State) -> State:
-        if op_id in st.setdefault("writes", {}):
-            raise _Skip
         _supersede_stale(st, at)
-        st["writes"][op_id] = {
+        st.setdefault("writes", {})[op_id] = {
             "kind": kind, "status": "prepared", "prepared": prepared, "prepared_at": at, "attempts": [],
             "readbacks": [], "facts": {}, "resolved_by": None, "resolutions": {}, "blocked": None,
             "approval": approval_of(st),
@@ -320,9 +321,9 @@ def _prepare(feature: str, kind: str, op_id: str, spec: dict[str, Any], pol: dic
         return st
 
     try:
-        commit(feature, f"write:{op_id}:prepare@{at}:{secrets.token_hex(6)}", mutate)
-    except _Skip:
-        pass  # prepared concurrently: the first prepared op is the op
+        store.commit(feature, revision, f"write:{op_id}:prepare@{at}:{secrets.token_hex(6)}", mutate)
+    except store.RevisionConflict:
+        pass  # the caller reloads: prepared concurrently (that op is the op), or builds it again
 
 
 def _interrupted(feature: str, op_id: str, n: int) -> None:
