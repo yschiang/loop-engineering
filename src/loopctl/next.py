@@ -80,6 +80,11 @@ def next_action(state: State, blocked: list[str]) -> dict[str, Any]:
         return human(["plan_not_registered"])
     if phase in ("planning", "awaiting_approval") and not decisions.plan_approvable(state["plan"]):
         return human(["plan_not_calibrated"])  # T2.2: a draft is registered, not approvable
+    if phase in ("planning", "awaiting_approval") and (
+        scope_change := decisions.superseded_by(state, state["plan"])
+    ):
+        # T2.2: the old contract; a revised plan must be registered before approve_plan.
+        return human([f"plan_superseded:{scope_change}"])
     if phase in ("planning", "awaiting_approval"):
         return human(["plan_not_approved"], ["approve_plan"])
     if phase in ("approved", "implementing"):
