@@ -88,12 +88,14 @@ def test_f4_same_model_for_both_roles_is_unverified(repo, fakes, capsys, tmp_pat
 
 ROLES = ["implementer", "reviewer"]
 NEGATIVES = ["write_outside", "git_push", "gh", "herdr", "loopctl_decide"]
+ROLE_NEGATIVES = {"implementer": NEGATIVES, "reviewer": [*NEGATIVES, "write_author_worktree"]}
 RESOURCE = {
     "write_outside": "outside.txt",
     "git_push": "remote.git/refs/heads/probe",
     "gh": "gh.out",
     "herdr": "herdr.out",
     "loopctl_decide": "decide.out",
+    "write_author_worktree": ".txt",  # a new file in the author worktree, not under the probe dir
 }
 SCENARIOS = ROOT / "tests" / "fakes" / "scenarios" / "herdr"
 
@@ -184,7 +186,7 @@ def test_f5a_all_negatives_denied_and_stop_confirmed_is_verified(probe, fakes, c
     code, envelope, receipt = run_probe(capsys, fakes, tmp_path, role, scenario(role))
     assert_verified(code, envelope, receipt)
     prompt = next(c["argv"][-1] for c in fakes.calls() if c["argv"][:2] == ["agent", "prompt"])
-    assert [n["name"] for n in receipt["negatives"]] == NEGATIVES
+    assert [n["name"] for n in receipt["negatives"]] == ROLE_NEGATIVES[role]
     for negative in receipt["negatives"]:
         assert negative["command"] in prompt
         assert negative["resource"].endswith(RESOURCE[negative["name"]].split("/")[0])
@@ -310,7 +312,11 @@ def test_f6e_only_shell_cwd_matches_is_unverified(probe, fakes, capsys, tmp_path
     assert_blocked(code, envelope, receipt)
     assert receipt["reasons"] == ["native_cwd_missing"]
     assert receipt["location"]["actual"]["cwd"] is None
-    assert receipt["location"]["actual"]["shell_cwd"] == str(probe.resolve())
+    # the implementer starts in the checkout it was launched from, the reviewer in its own clone
+    assert receipt["location"]["actual"]["shell_cwd"] == receipt["location"]["requested"]["worktree"]
+    assert receipt["location"]["requested"]["worktree"] == (
+        str(probe.resolve()) if role == "implementer" else receipt["review_clone"]["path"]
+    )
     assert receipt["location"]["items"] == {"repo": False, "worktree": False, "branch": False}
 
 
@@ -604,3 +610,95 @@ def test_native_record_without_runtime_version_is_unverified(probe, fakes, capsy
     assert_blocked(code, envelope, receipt)
     assert receipt["reasons"] == ["runtime_version_missing"]
     assert receipt["runtime_version"] is None
+
+
+# ---- reviewer in its own clone, denied write to the author worktree (T1.2-01, design §6) ----
+
+
+def negatives_by_name(receipt: dict) -> dict[str, dict]:
+    return {n["name"]: n for n in receipt["negatives"]}
+
+
+def test_reviewer_is_placed_in_its_own_clone(probe, fakes, capsys, tmp_path):
+    author, head = str(probe.resolve()), git(probe, "rev-parse", "HEAD")
+    code, envelope, receipt = run_probe(capsys, fakes, tmp_path, "reviewer", scenario("reviewer"))
+    location = receipt["location"]
+    assert location["requested"]["worktree"] != author, "the reviewer must not be placed in the author worktree"
+    assert_verified(code, envelope, receipt)
+    clone = receipt["review_clone"]
+    assert (clone["author_worktree"], clone["head"]) == (author, head)
+    assert not clone["path"].startswith(author + "/")
+    requested = {"repo": "yschiang/loop-engineering", "worktree": clone["path"], "branch": "main"}
+    assert location["requested"] == {**requested, "source_checkout": clone["path"]}
+    assert {k: location["actual"][k] for k in requested} == requested
+    assert location["actual"]["cwd"] == location["actual"]["shell_cwd"] == clone["path"]
+    assert location["items"] == {"repo": True, "worktree": True, "branch": True}
+    argv = open_argv(fakes)
+    assert option(argv, "--cwd") == option(argv, "--path") == clone["path"]
+    # an independent clone, not a linked worktree of the author's repository; removed afterwards
+    assert git(probe, "worktree", "list", "--porcelain").count("worktree ") == 1
+    assert clone["removed"] is True and not Path(clone["path"]).exists()
+
+
+def test_reviewer_write_to_author_worktree_refused_is_a_verified_item(probe, fakes, capsys, tmp_path):
+    code, envelope, receipt = run_probe(capsys, fakes, tmp_path, "reviewer", scenario("reviewer"))
+    negatives = negatives_by_name(receipt)
+    assert "write_author_worktree" in negatives, list(negatives)
+    assert_verified(code, envelope, receipt)
+    item = negatives["write_author_worktree"]
+    target = Path(item["resource"])
+    assert target.parent == probe.resolve()  # the worktree preflight was launched from
+    prompt = next(c["argv"][-1] for c in fakes.calls() if c["argv"][:2] == ["agent", "prompt"])
+    assert item["command"] in prompt and str(target) in item["command"]
+    assert (item["denied"], item["resource_unchanged"], item["verified"]) == (True, True, True)
+    assert item["denial"]
+    assert not target.exists()
+
+
+@pytest.mark.parametrize(
+    "denied,written,reasons",
+    [
+        (False, True, ["negative_not_denied:write_author_worktree", "negative_resource_changed:write_author_worktree"]),
+        (True, True, ["negative_resource_changed:write_author_worktree"]),
+        (False, False, ["negative_not_denied:write_author_worktree"]),
+    ],
+    ids=["write_succeeded", "refused_but_written", "allowed_but_not_written"],
+)
+def test_reviewer_write_to_author_worktree_not_refused_or_written_is_unverified(
+    probe, fakes, capsys, tmp_path, denied, written, reasons
+):
+    s = scenario("reviewer")
+    part = opencode_export(s)["messages"][1]["parts"][-1]
+    if not denied:
+        part["state"] = {"status": "completed", "input": part["state"]["input"], "output": "Wrote file successfully."}
+    if written:
+        call(s, "prompt").setdefault("effects", []).append({"write": "{author}", "text": "written by the reviewer\n"})
+    code, envelope, receipt = run_probe(capsys, fakes, tmp_path, "reviewer", s)
+    assert_blocked(code, envelope, receipt)
+    assert receipt["reasons"] == reasons
+    item = negatives_by_name(receipt)["write_author_worktree"]
+    assert (item["denied"], item["resource_unchanged"], item["verified"]) == (denied, not written, False)
+    assert Path(item["resource"]).exists() is written
+
+
+@pytest.mark.parametrize("where", ["native_directory", "whole_session"])
+def test_reviewer_started_in_the_author_worktree_is_unverified(probe, fakes, capsys, tmp_path, where):
+    """native_directory: the session found for the clone records the author worktree as its
+    directory; whole_session: Herdr, the agent and OpenCode all report the author worktree."""
+    author = str(probe.resolve())
+    s = scenario("reviewer")
+    if where == "native_directory":
+        opencode_export(s)["info"]["directory"] = author
+    else:  # no session is listed in the clone, so none is exported
+        s = json.loads(json.dumps(s).replace("{cwd}", author))
+        s["calls"].remove(call(s, "export"))
+    code, envelope, receipt = run_probe(capsys, fakes, tmp_path, "reviewer", s)
+    assert_blocked(code, envelope, receipt)
+    location = receipt["location"]
+    assert location["items"]["worktree"] is False
+    if where == "native_directory":
+        assert receipt["reasons"] == ["location:worktree"]
+        assert location["actual"]["worktree"] == author
+    else:
+        assert "native_record_missing" in receipt["reasons"]
+        assert location["actual"]["shell_cwd"] == author
