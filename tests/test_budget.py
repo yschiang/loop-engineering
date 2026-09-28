@@ -424,6 +424,31 @@ def test_b4_an_extension_is_one_window_only(gh):
     assert code == 3 and out["next"]["blockers"] == [ci_timeout(gh)], out
 
 
+@pytest.mark.parametrize("extended", [False, True])
+def test_b4_a_success_read_after_the_deadline_stays_blocked_until_a_ci_wait_extension(gh, extended):
+    started(gh)
+    gh.open_pr()
+    gh.to_g3([run(gh, **QUEUED)])
+    gh.clock.advance(minutes=30)
+    assert gh.next().get("blockers") == [ci_timeout(gh)]
+    gh.clock.advance(minutes=1)
+    gh.ci([run(gh)])
+    code, out = gh.observe("ci")  # a direct read past the deadline, no extension yet
+    assert code == 0, out
+    assert gh.g3()["status"] == "passed"  # recorded as read
+    gh.clock.advance(minutes=1)
+    if extended:
+        code, out = gh.decide("budget_extension", id="ext-ci-1", target=f"ci_wait:{gh.h}", reason="checked the run")
+        assert code == 0, out
+        assert follow(gh) == {"action": "human", "blockers": ["g3_passed"], "decision_kinds": []}
+    else:
+        code, out = next_out(gh)
+        assert code == 3, out
+        assert out["next"] == {"action": "human", "blockers": [ci_timeout(gh)], "decision_kinds": ["budget_extension"]}
+    assert budget.active_used(gh.state(), gh.clock()) == timedelta(minutes=30)
+    assert reruns(gh) == [] and gh.state()["batches"] == {}
+
+
 # --- b5: active extension ---------------------------------------------------------------------
 
 

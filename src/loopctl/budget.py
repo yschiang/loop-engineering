@@ -151,16 +151,22 @@ def exhausted_units(state: State, t: dict[str, float]) -> list[str]:
 
 
 def ci_timeouts(state: State, now: datetime, t: dict[str, float]) -> list[str]:
-    """The head whose G3 is still pending (a check not terminal, mergeable not computed) at
-    the end of its CI wait's last window."""
+    """The head whose CI wait was not over by the end of its last window: G3 still pending
+    there (a check not terminal, mergeable not computed), or the terminal read came after it.
+    A late read stays timed out until a `ci_wait:<H>` extension opens a window it falls in."""
     gs = state.get("gates") or {}
     g1, g3 = gs.get("g1") or {}, gs.get("g3") or {}
     head = g3.get("head")
-    if g3.get("status") != "pending" or not head or (g1.get("status"), g1.get("head")) != ("passed", head):
+    if not head or (g1.get("status"), g1.get("head")) != ("passed", head):
         return []
-    waits = [a for a in state.get("activities", []) if a.get("kind") == "ci_wait" and a.get("head") == head]
-    ends = [end for a in waits for _, end in ci_windows(state, a, t["ci_wait_min"])]
-    return [head] if ends and now >= max(ends) else []
+    for a in state.get("activities", []):
+        if a.get("kind") != "ci_wait" or a.get("head") != head:
+            continue
+        deadline = max(end for _, end in ci_windows(state, a, t["ci_wait_min"]))
+        late = _at(a["end"]) >= deadline if a.get("end") else g3.get("status") == "pending"
+        if late and now >= deadline:
+            return [head]
+    return []
 
 
 # --- what `next` / `safety` read --------------------------------------------------------------
