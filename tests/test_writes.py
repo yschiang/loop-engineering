@@ -577,6 +577,44 @@ def test_w2_lost_receipt_is_read_back_by_marker_and_identity_never_resent(h, rea
     assert h.unexpected() == []
 
 
+def test_w2_a_readback_from_another_herdr_session_never_confirms(h):
+    """Pane ids are per Herdr session: another session can show the same pane id and this
+    op's marker. Only the op's own session is read, so that reply never confirms it."""
+    ours, other = "le-own", "le-other"
+    plan = h.repo / PLAN
+    plan.write_text(plan.read_text().replace("  base: main\n", f"  base: main\n  herdr_session: {ours}\n", 1))
+    commit_all(h.repo, "plan names its Herdr session")
+
+    def in_session(call: dict, session: str = ours) -> dict:
+        return {**call, "match": ["--session", session, *call["match"]]}
+
+    h.start()
+    h.expect(in_session(c_worktree_create(h)), in_session(c_agent_start(h)), in_session(c_prompt(**CLIENT_EXITED)))
+    for kind, op_id in [("worktree_create", "worktree"), ("agent_start", "T1-a1.agent_start")]:
+        code, out = h.write(kind, op_id)
+        assert code == 0 and out["result"]["op"]["status"] == "succeeded", out
+    code, out = h.write("prompt", "T1-a1.prompt")
+    assert out["result"]["op"]["status"] == "unknown", out
+
+    # only the other session holds a reply with this op's marker on pane PANE
+    h.expect(*[in_session(c_wait_output(), other)] * 3)
+    for n in range(1, 4):
+        assert h.safety() == {"action": "write", "op": "prompt", "id": "T1-a1.prompt"}
+        code, out = h.write("prompt", "T1-a1.prompt")
+        assert out["result"]["performed"] == "readback", out
+        h.clock.advance(seconds=10)
+    assert (code, out["result"]["error"]) == (3, "readback_exhausted"), out
+
+    reads = h.herdr("--session")[3:]
+    assert len(reads) == 3 and all(argv[:4] == ["--session", ours, "pane", "wait-output"] for argv in reads)
+    op = h.state()["writes"]["T1-a1.prompt"]
+    assert op["status"] == "unknown" and op["resolved_by"] is None
+    assert all(r["result"] != "confirmed" for r in op["readbacks"])
+    assert "readback_exhausted:T1-a1.prompt" in h.state()["blockers"]
+    assert h.next()["action"] == "human"
+    assert len(h.herdr("--session", ours, "agent", "prompt")) == 1  # 0 resends
+
+
 # --- w3 -------------------------------------------------------------------------------------
 
 
