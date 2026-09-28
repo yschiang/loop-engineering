@@ -20,10 +20,13 @@ from test_g1 import IMPL_DOUBLE, RED_DOUBLE, SLEEPER
 from test_g1 import Env as G1Env
 from test_github import GhEnv, job, run, started
 from test_writes import (
+    CLIENT_EXITED,
     FEATURE,
     Harness,
     c_process_info,
+    c_prompt,
     c_send_keys,
+    c_wait_output_absent,
 )
 
 from loopctl import budget, store
@@ -95,6 +98,29 @@ def exhaust_stop(h: Harness, attempt: str = "T1-a1") -> None:
         h.write("stop", op)
         h.clock.advance(seconds=10)
     assert f"readback_exhausted:{op}" in h.state()["blockers"]
+
+
+def writer_unknown(h: Harness, attempt: str = "T1-a1") -> str:
+    """The agent started, its prompt's outcome unknown and not found by the readback: the
+    writer is unknown and the feature Blocked on it (w3). Returns the blocker."""
+    h.dispatch(until="agent_start", attempt=attempt)
+    op = f"{attempt}.prompt"
+    h.expect(c_prompt(attempt, **CLIENT_EXITED), c_wait_output_absent(attempt))
+    h.write("prompt", op)
+    code, out = h.write("prompt", op)
+    assert code == 3 and out["result"]["error"] == "write_unknown", out
+    return f"write_unknown:{op}"
+
+
+def assert_held_by_writer(h: Harness, blocker: str, attempt: str) -> None:
+    """Only the writer blocker is left, and no new agent is started."""
+    code, out = next_out(h)
+    assert code == 3, out
+    assert out["next"] == {"action": "human", "blockers": [blocker], "decision_kinds": ["resolve_operation"]}, out
+    calls = len(h.fakes.calls())
+    code, out = h.write("agent_start", f"{attempt}.agent_start")
+    assert code == 3 and out["result"]["error"] == "feature_blocked", out
+    assert blocker in out["result"]["blockers"] and len(h.fakes.calls()) == calls
 
 
 def next_out(env: Any) -> tuple[int, dict]:
@@ -538,6 +564,19 @@ def test_b5_c_an_extension_does_not_clear_an_unconfirmed_stop(h):
     assert agent_starts(h) == ["T1-a1.agent_start"]
 
 
+def test_b5_c_an_extension_does_not_clear_a_writer_unknown(h):
+    h.start()
+    used_before(h.clock(), 230)
+    blocker = writer_unknown(h)
+    h.clock.advance(minutes=10)
+    assert h.next() == stop()  # 4h: the expiry stop of the running agent comes first
+    code, out = h.decide("budget_extension", id="ext-1", target="active:60", reason="one more hour agreed")
+    assert code == 0, out
+    assert h.safety() is None  # 4h10m of 5h, 10 of its 45 minutes: no stop is due
+    assert_held_by_writer(h, blocker, "T1-a2")
+    assert agent_starts(h) == ["T1-a1.agent_start"]
+
+
 # --- b6: attempts / ci_wait extensions: once, and only their own target ------------------------
 
 
@@ -562,6 +601,21 @@ def test_b6_attempt_extensions_apply_once_to_their_own_unit_and_clear_no_other_b
     assert h.next().get("blockers") == ["readback_exhausted:T1-a4.stop"]
 
 
+def test_b6_an_attempts_extension_does_not_clear_a_writer_unknown(h):
+    h.start()
+    t = h.clock()
+    for n in (1, 2):
+        timed_out_fixture(f"T1-a{n}", n, start=t - timedelta(minutes=100 * (3 - n)))
+    blocker = writer_unknown(h, "T1-a3")
+    h.clock.advance(minutes=45)
+    confirm_stop(h, "T1-a3")  # its third timeout: the unit is used up
+    code, out = next_out(h)
+    assert code == 3 and set(out["next"]["blockers"]) == {blocker, "attempt_timeout_exhausted:T1"}, out
+    assert h.decide("budget_extension", id="ext-t1", target="attempts:T1:+1", reason="one more")[0] == 0
+    assert_held_by_writer(h, blocker, "T1-a4")
+    assert agent_starts(h) == ["T1-a3.agent_start"]
+
+
 def test_b6_ci_wait_extensions_apply_once_and_only_to_their_head(gh):
     started(gh)
     gh.open_pr()
@@ -578,6 +632,20 @@ def test_b6_ci_wait_extensions_apply_once_and_only_to_their_head(gh):
     add_blocker("readback_exhausted:T1-a1.stop")
     assert gh.decide("budget_extension", id="ext-ci-2", target=f"ci_wait:{gh.h}", reason="again")[0] == 0
     assert gh.next().get("blockers") == ["readback_exhausted:T1-a1.stop"]
+
+
+def test_b6_a_ci_wait_extension_does_not_clear_a_writer_unknown(gh):
+    started(gh)
+    gh.open_pr()
+    gh.to_g3([run(gh, **QUEUED)])
+    gh.clock.advance(minutes=30)
+    add_blocker("write_unknown:T1-a2.prompt")  # as w3 records it; this environment runs no worker
+    assert gh.decide("budget_extension", id="ext-ci-1", target=f"ci_wait:{gh.h}", reason="runner fixed")[0] == 0
+    code, out = next_out(gh)
+    assert code == 3, out
+    assert out["next"] == {"action": "human", "blockers": ["write_unknown:T1-a2.prompt"],
+                           "decision_kinds": ["resolve_operation"]}, out
+    assert gh.safety() is None and gh.unexpected() == []
 
 
 # --- b7: after an evidence command cut short by the active budget ------------------------------
