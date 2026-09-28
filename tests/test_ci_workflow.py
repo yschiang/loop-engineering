@@ -11,6 +11,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -35,6 +36,10 @@ EXTRA_COMMANDS = {
 
 SHA_CHECK_NAME = "git rev-parse HEAD check"
 SHA_CHECK = f"{SHA_CHECK_NAME} against PR head SHA"
+# The accepted SHA checks: the checked-out HEAD itself, compared for equality with the PR head.
+SHA_CHECK_COMMANDS = frozenset(
+    {f'test "$(git rev-parse HEAD)" = "{HEAD_SHA}"', f'[ "$(git rev-parse HEAD)" = "{HEAD_SHA}" ]'}
+)
 UPLOAD = f"upload of {ARTIFACT} before tests"
 # The simulated run: GITHUB_SHA is the merge commit a pull_request run would test by default.
 RUN_ID, RUN_ATTEMPT, MERGE_SHA = "4242", "2", "f" * 40
@@ -129,7 +134,7 @@ def job_problems(name: str, job: dict) -> list[str]:
         problems.append("timeout-minutes missing")
     ordered = [
         ("checkout of PR head SHA", lambda s: _uses(s, "actions/checkout") and s.get("with", {}).get("ref") == HEAD_SHA),
-        (SHA_CHECK, lambda s: "git rev-parse HEAD" in s.get("run", "")),
+        (SHA_CHECK, lambda s: s.get("run", "").strip() in SHA_CHECK_COMMANDS),
         (UPLOAD, lambda s: _uses(s, "actions/upload-artifact") and s.get("with", {}).get("name") == ARTIFACT),
         ("uv sync --frozen", lambda s: "uv sync --frozen" in s.get("run", "")),
         ("uv run pytest with LOOPCTL_EXPECT_PLATFORM", lambda s: s.get("run", "").strip().startswith("uv run pytest") and s.get("env", {}).get("LOOPCTL_EXPECT_PLATFORM") == platform),
@@ -255,6 +260,18 @@ def _echo_only_sha_check(ci, policy):
     _step_running(ci, "git rev-parse HEAD")["run"] = f'echo "$(git rev-parse HEAD) {HEAD_SHA}"'
 
 
+def _sha_check_on_head_parent(ci, policy):
+    _step_running(ci, "git rev-parse HEAD")["run"] = f'test "$(git rev-parse HEAD~1)" != "{HEAD_SHA}"'
+
+
+def _sha_check_negated_on_head_parent(ci, policy):
+    _step_running(ci, "git rev-parse HEAD")["run"] = f'! test "$(git rev-parse HEAD~1)" = "{HEAD_SHA}"'
+
+
+def _sha_check_inequality(ci, policy):
+    _step_running(ci, "git rev-parse HEAD")["run"] = f'test "$(git rev-parse HEAD)" != "{HEAD_SHA}"'
+
+
 def _empty_artifact(ci, policy):
     _step_running(ci, "tested-sha.json")["run"] = ": > tested-sha.json"
 
@@ -286,7 +303,10 @@ def _upload_other_file(ci, policy):
         (_unpinned_action, "job unit-linux: action not pinned to a full commit SHA: actions/checkout@v4"),
         (_no_frozen_sync, "job unit-linux: missing step: uv sync --frozen"),
         (_blob_mismatch, "g3.workflow_blob_sha does not match"),
-        (_echo_only_sha_check, "job unit-linux: git rev-parse HEAD check does not fail when HEAD differs from the PR head SHA"),
+        (_echo_only_sha_check, f"job unit-linux: missing step: {SHA_CHECK}"),
+        (_sha_check_on_head_parent, f"job unit-linux: missing step: {SHA_CHECK}"),
+        (_sha_check_negated_on_head_parent, f"job unit-linux: missing step: {SHA_CHECK}"),
+        (_sha_check_inequality, f"job unit-linux: missing step: {SHA_CHECK}"),
         (_empty_artifact, "job unit-linux: tested-sha.json field run_id"),
         (_empty_object_artifact, "job unit-linux: tested-sha.json field run_id"),
         (_artifact_records_merge_sha, "job unit-linux: tested-sha.json field tested_sha"),
@@ -300,3 +320,15 @@ def test_t7_variant_fails_and_names_the_job_or_field(mutate, expected):
     mutate(ci, policy)
     found = problems(ci, policy, ci_bytes)
     assert any(p.startswith(expected) for p in found), found
+
+
+def test_t7_sha_check_is_still_run_if_the_accepted_commands_admit_a_non_comparing_one(monkeypatch):
+    """The run of the SHA check stays a second line behind SHA_CHECK_COMMANDS."""
+    echo = f'echo "$(git rev-parse HEAD) {HEAD_SHA}"'
+    monkeypatch.setattr(sys.modules[__name__], "SHA_CHECK_COMMANDS", SHA_CHECK_COMMANDS | {echo})
+    ci, policy, ci_bytes = load()
+    ci = copy.deepcopy(ci)
+    _echo_only_sha_check(ci, policy)
+    found = problems(ci, policy, ci_bytes)
+    expected = "job unit-linux: git rev-parse HEAD check does not fail when HEAD differs from the PR head SHA"
+    assert expected in found, found
