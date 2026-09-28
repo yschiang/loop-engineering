@@ -431,9 +431,39 @@ def _native(st: State, attempt: str, pol: dict[str, Any]) -> tuple[dict[str, Any
     return fact, raw, {}
 
 
-# The fetch per source (a seam: tests reorder reads through it). A fetch returns
-# (fact, raw bytes or text, handle updates) or raises ReadFailed on a transport failure.
-FETCHERS: dict[str, Callable[..., Any]] = {"worker": _worker, "native": _native}
+def _pr(st: State, target: dict[str, Any], pol: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    from loopctl.tools import gh
+
+    try:
+        return gh.read_pr(target["repo"], target["pr"]["number"], limit(pol, "read_call_s", 30))
+    except gh.ReadFailed as e:
+        raise ReadFailed(e.reason) from e
+
+
+def _ci(st: State, target: dict[str, Any], pol: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Every page of every GitHub read of H, plus the CI workflow's blob at H (local git)."""
+    from loopctl.tools import evidence as git_tools
+    from loopctl.tools import gh
+
+    read_s = limit(pol, "read_call_s", 30)
+    try:
+        fact, raw = gh.read_ci(target["repo"], target["head"], target["base_branch"], target["workflow"],
+                               target["names"], read_s)
+    except gh.ReadFailed as e:
+        raise ReadFailed(e.reason) from e
+    blob = None
+    if target["workflow"] and target["source"]:
+        try:
+            blob = git_tools.blob(target["source"], target["head"], target["workflow"], read_s)
+        except git_tools.GitError as e:
+            raise ReadFailed("git_unreadable") from e
+    return {**fact, "workflow_blob": blob}, raw
+
+
+# The fetch per source (a seam: tests reorder reads through it). A worker / native fetch returns
+# (fact, raw bytes or text, handle updates), a pr / ci fetch (fact, raw); either raises
+# ReadFailed on a transport failure.
+FETCHERS: dict[str, Callable[..., Any]] = {"worker": _worker, "native": _native, "pr": _pr, "ci": _ci}
 
 
 def _native_effects(
@@ -482,7 +512,57 @@ def parsed_native_result(st: State, attempt: str) -> tuple[dict[str, Any], dict[
     return (doc, found["fact"]) if doc is not None else None
 
 
+def _observe_github(feature: str, token: str | None, source: str, purpose: str | None) -> dict[str, Any]:
+    """`observe pr|ci` (T6.1): read keys `pr:<number>` and `ci:<repo>:<H>`; the same seq,
+    watermark and read-failure budget as worker / native. A general-purpose read also records
+    its effects (PR identity, integration triggers, G1 binding, G3); another purpose (T6.2's
+    `pass`) only files its fact."""
+    from loopctl import gates
+
+    _, st = owned(feature, token)
+    target = gates.github_target(st)
+    if target["pr"] is None:
+        raise Rejected("pr_identity_missing", source=source)
+    if source == "ci" and target["head"] is None:
+        raise Rejected("head_unknown", source=source)
+    purpose = purpose or source
+    read_key = f"pr:{target['pr']['number']}" if source == "pr" else f"ci:{target['repo']}:{target['head']}"
+    pol = gates.registered_policy(st)[0] or {}
+    per = int(limit(pol, "read_failures_max", READ_FAILURES_MAX))
+    if ids := pending_grants(st, read_key):
+        commit(feature, f"observe:{read_key}:grant:{','.join(ids)}", lambda s: _grant(s, read_key, per))
+        _, st = store.load(feature)
+    if exhausted(st, read_key):
+        raise Rejected("read_exhausted", 3, read_key=read_key, budget=st["read_budget"][read_key])
+    if source == "ci" and purpose == "ci" and not gates.ci_wait_started(st, target["head"]):
+        at = now_iso()
+        commit(feature, f"observe:{read_key}:ci_wait@{at}", lambda s: gates.start_ci_wait(s, target["head"], at))
+    seq = allocate(feature, read_key, source, purpose)
+    context = gates.observation_context(st)
+    try:
+        try:
+            fact, raw = FETCHERS[source](st, target, pol)
+        except (KeyError, TypeError, AttributeError, ValueError, UnicodeDecodeError) as e:
+            raise ReadFailed("unparseable_output") from e  # a reply of an unexpected shape
+    except ReadFailed as e:
+        budget = _failed(feature, seq, read_key, e.reason, per)
+        detail = {"read_key": read_key, "seq": seq, "reason": e.reason, "budget": budget}
+        if budget["consecutive_failures"] >= budget["allowance"]:
+            raise Rejected("read_exhausted", 3, **detail) from e
+        raise Rejected("read_failed", 1, **detail) from e
+    fact = {**fact, "context": context}
+    raw_ref = store.put_object(raw.encode())
+    versions = None
+    if source == "pr" and fact.get("found"):
+        versions = {"head": fact["head"]["sha"], "base": fact["base"]["sha"]}
+    after = gates.after_github(source) if purpose == source else None
+    outcome = commit_fact(feature, seq, read_key, purpose, fact, raw_ref, versions=versions, after=after, per=per)
+    return {"read_key": read_key, "seq": seq, "outcome": outcome, "fact": fact}
+
+
 def observe(feature: str, token: str | None, source: str, attempt: str, purpose: str | None) -> dict[str, Any]:
+    if source in GITHUB_SOURCES:
+        return _observe_github(feature, token, source, purpose)
     if source not in SOURCES:
         raise Rejected("unsupported", 2, source=source)
     _, st = owned(feature, token)
@@ -525,11 +605,16 @@ def observe(feature: str, token: str | None, source: str, attempt: str, purpose:
 
 
 def safety(state: State) -> dict[str, Any] | None:
-    """A resolve_read decision waiting to grant its one new allowance comes first."""
+    """A resolve_read decision waiting to grant its one new allowance comes first; then (T6.1)
+    a policy_change recorded after G3 found no usable policy."""
     for read_key in sorted(state.get("read_budget") or {}):
         if exhausted(state, read_key) and pending_grants(state, read_key):
             source, _, attempt = read_key.partition(":")
             if source in SOURCES:
                 return {"action": "observe", "source": source, "purpose": source, "read_key": read_key,
                         "attempt": attempt}
-    return None
+            if source in GITHUB_SOURCES:
+                return {"action": "observe", "source": source, "purpose": source, "read_key": read_key}
+    from loopctl import gates
+
+    return gates.policy_recheck(state)

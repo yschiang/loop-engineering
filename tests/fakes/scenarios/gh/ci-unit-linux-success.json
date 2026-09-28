@@ -1,0 +1,48 @@
+{
+  "routes": [
+    {
+      "id": "rules",
+      "match": ["api", "--include", "-H", "*", "repos/{env:GH_REPO}/rules/branches/main?per_page=100"],
+      "responses": [{"status": 403, "body": {"message": "Resource not accessible by integration"}}]
+    },
+    {
+      "id": "runs",
+      "match": ["api", "--include", "-H", "*", "repos/{env:GH_REPO}/actions/runs?head_sha={env:GH_HEAD}&per_page=100"],
+      "responses": [{"status": 200, "body": {"total_count": 1, "workflow_runs": [{
+        "id": 101, "run_number": 41, "run_attempt": 1, "event": "pull_request", "head_sha": "{env:GH_HEAD}",
+        "path": ".github/workflows/loopctl-ci.yml", "pull_requests": [{"number": 17}], "status": "completed",
+        "conclusion": "success", "html_url": "https://github.com/{env:GH_REPO}/actions/runs/101"}]}}]
+    },
+    {
+      "id": "jobs",
+      "match": ["api", "--include", "-H", "*", "repos/{env:GH_REPO}/actions/runs/101/attempts/1/jobs?per_page=100"],
+      "responses": [{"status": 200, "body": {"total_count": 1, "jobs": [{
+        "id": 9001, "name": "unit-linux", "status": "completed", "conclusion": "success", "run_attempt": 1,
+        "html_url": "https://github.com/{env:GH_REPO}/actions/runs/101/job/9001"}]}}]
+    },
+    {
+      "id": "artifacts",
+      "match": ["api", "--include", "-H", "*", "repos/{env:GH_REPO}/actions/runs/101/artifacts?per_page=100"],
+      "responses": [{"status": 200, "body": {"total_count": 1, "artifacts": [
+        {"id": 700, "name": "tested-sha-unit-linux-1", "expired": false}]}}]
+    },
+    {
+      "id": "download",
+      "match": ["run", "download", "101", "--repo", "{env:GH_REPO}", "--name", "tested-sha-unit-linux-1", "--dir", "*"],
+      "capture": {"dir": "--dir (\\S+)"},
+      "responses": [{"stdout": "", "effects": [{"write": "{dir}/tested-sha.json", "json": {
+        "run_id": "101", "run_attempt": "1", "job": "unit-linux", "check_name": "unit-linux",
+        "tested_sha": "{env:GH_HEAD}"}}]}]
+    },
+    {
+      "id": "check_runs",
+      "match": ["api", "--include", "-H", "*", "repos/{env:GH_REPO}/commits/{env:GH_HEAD}/check-runs?per_page=100"],
+      "responses": [{"status": 200, "body": {"total_count": 0, "check_runs": []}}]
+    },
+    {
+      "id": "statuses",
+      "match": ["api", "--include", "-H", "*", "repos/{env:GH_REPO}/commits/{env:GH_HEAD}/statuses?per_page=100"],
+      "responses": [{"status": 200, "body": []}]
+    }
+  ]
+}

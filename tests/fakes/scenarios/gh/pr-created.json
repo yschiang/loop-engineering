@@ -1,0 +1,28 @@
+{
+  "routes": [
+    {
+      "id": "pr_query",
+      "match": ["api", "--include", "-H", "*", "repos/{env:GH_REPO}/pulls?state=open&head=yschiang:feat&per_page=100"],
+      "responses": [{"status": 200, "body": []}]
+    },
+    {
+      "id": "pr_create",
+      "match": ["api", "--include", "--method", "POST", "repos/{env:GH_REPO}/pulls", "**"],
+      "responses": [{"status": 201, "body": {
+        "number": 17, "node_id": "PR_kw17", "html_url": "https://github.com/{env:GH_REPO}/pull/17", "state": "open",
+        "body": "loopctl feature F-1\n\n<!-- loopctl-op:F-1/pr_ensure -->\n", "mergeable": null,
+        "head": {"ref": "feat", "sha": "{env:GH_HEAD}", "repo": {"full_name": "{env:GH_REPO}"}},
+        "base": {"ref": "main", "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "repo": {"full_name": "{env:GH_REPO}"}}}}]
+    },
+    {
+      "id": "pr_get",
+      "match": ["api", "--include", "-H", "*", "repos/{env:GH_REPO}/pulls/{env:GH_PR}"],
+      "responses": [{"status": 200, "body": {
+        "number": 17, "node_id": "PR_kw17", "html_url": "https://github.com/{env:GH_REPO}/pull/17", "state": "open",
+        "body": "loopctl feature F-1\n\n<!-- loopctl-op:F-1/pr_ensure -->\n", "mergeable": true,
+        "mergeable_state": "clean",
+        "head": {"ref": "feat", "sha": "{env:GH_HEAD}", "repo": {"full_name": "{env:GH_REPO}"}},
+        "base": {"ref": "main", "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "repo": {"full_name": "{env:GH_REPO}"}}}}]
+    }
+  ]
+}

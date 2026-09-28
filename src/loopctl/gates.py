@@ -1,5 +1,5 @@
-"""Gates (design §7, §8). T3.1 adds G1; T6.1 (G3), T5.1 (G2) and T6.2 (Pass) add theirs
-without changing the G1 rules (tasks.md shared-file table).
+"""Gates (design §7, §8). T3.1 adds G1; T6.1 (G3, and the route G1 passed → push → PR → CI),
+T5.1 (G2) and T6.2 (Pass) add theirs without changing the G1 rules (tasks.md shared-file table).
 
 `route` is pure (called by `loopctl.next`). `assess` reads git and may run a diagnostic replay.
 
@@ -31,14 +31,24 @@ State (fields owned here): gates.g1 = {status passed|pending|failed|blocked, rea
 
 import fnmatch
 import secrets
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from loopctl import assignments, store
+from loopctl import assignments, store, writes
 from loopctl import evidence as ev
-from loopctl.observe import Rejected, block, commit, limit, now_iso, owned
+from loopctl.observe import (
+    Rejected,
+    block,
+    commit,
+    current,
+    exhausted,
+    limit,
+    now_iso,
+    owned,
+)
 
 State = dict[str, Any]
 ORDER = ("passed", "pending", "failed", "blocked")
@@ -46,7 +56,7 @@ G1_BLOCKERS = ("original_red_unavailable:", "history_rewritten", "integration_sc
 DOCS = ("*.md", "*.rst", "docs/*")  # "only documentation changed" after the last attempt (G05)
 
 
-RECOVERY_KINDS: dict[str, str] = {}  # T6.1: blocker prefix -> the decide kind that clears it
+RECOVERY_KINDS = {"g3_policy": "policy_change"}  # T6.1: blocker prefix -> the decide kind for it
 
 
 def human(blockers: list[str], kinds: list[str] | None = None) -> dict[str, Any]:
@@ -495,9 +505,521 @@ def assess(feature: str, token: str | None) -> dict[str, Any]:
     return {"g1": result}
 
 
-# --- T6.1: G1 passed → push → pr_ensure → observe pr / ci → G3 (interface stub) ------------
+# --- T6.1: G1 passed → push → pr_ensure → observe pr / ci → G3 --------------------------------
+#
+# State (fields owned here): pr (identity, written by writes on pr_ensure success), gates.g3,
+# integration_required {key: {key, base, base_tip, head, sources, status}}, g1_binding {head,
+# base, green, assessed_at, contract, pending, history}, and `ci_wait` activities.
+
+ACTIONS_APP = "github-actions"
+ACTIONS_APP_ID = 15368  # the GitHub Actions app, as branch rules name it (integration_id)
+APPROVED_POLICY_REPO = "yschiang/loop-engineering"  # D49: the one repo whose approved policy may stand in
+FAILED = ("failure", "cancelled", "timed_out", "stale", "action_required", "startup_failure")
+EXEMPTABLE = ("skipped", "neutral")  # the only conclusions an exception may cover
+G3_ORDER = ("passed", "failed", "pending", "unknown")
 
 
-def github_route(state: State, now: Any) -> dict[str, Any]:
-    """The next action once G1 passed at H (pure)."""
-    return human(["g1_passed"])
+def controller_version() -> str:
+    from importlib import metadata
+
+    try:
+        return metadata.version("loopctl")
+    except metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def contract(state: State) -> dict[str, Any]:
+    """What a G1 / G3 result is bound to besides H and the base (design §8 version table)."""
+    return {"approval": (state.get("approval") or {}).get("decision"),
+            "policy": ((state.get("versions") or {}).get("policy") or {}).get("digest"),
+            "controller": controller_version()}
+
+
+def github_workspace(state: State) -> dict[str, Any] | None:
+    """The plan workspace plus its declared push `remote`; None when the plan declares none."""
+    doc = assignments.plan_doc(state)
+    if doc is None:
+        return None
+    match = assignments.PLAN_BLOCK.search(store.get_object(state["plan"]["content"][store.OBJECT_KEY]).decode(errors="replace"))
+    try:
+        raw = yaml.safe_load(match.group(1)) if match else None
+    except yaml.YAMLError:
+        return None
+    remote = ((raw.get("workspace") or {}) if isinstance(raw, dict) else {}).get("remote")
+    if not isinstance(remote, str) or not remote:
+        return None
+    return {**doc["workspace"], "remote": remote}
+
+
+def registered_policy(state: State) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """(content, registration) of the registered policy only; G3 never reads a cwd file."""
+    entry = (state.get("versions") or {}).get("policy")
+    if not entry or not entry.get("content"):
+        return None, entry
+    try:
+        doc = yaml.safe_load(store.get_object(entry["content"][store.OBJECT_KEY]))
+    except (yaml.YAMLError, store.StoreError):
+        return None, entry
+    return (doc if isinstance(doc, dict) else None), entry
+
+
+def _g3_policy(pol: dict[str, Any] | None) -> dict[str, Any]:
+    g3 = (pol or {}).get("g3")
+    return g3 if isinstance(g3, dict) else {}
+
+
+def _passed_head(state: State) -> str | None:
+    g1 = (state.get("gates") or {}).get("g1") or {}
+    return g1.get("head") if g1.get("status") == "passed" else None
+
+
+def github_target(state: State) -> dict[str, Any]:
+    pol, _ = registered_policy(state)
+    g3p, ws, pr = _g3_policy(pol), github_workspace(state), state.get("pr")
+    names = [str(c["name"]) for c in g3p.get("required_checks") or [] if isinstance(c, dict) and c.get("name")]
+    return {"repo": state.get("repo"), "head": _passed_head(state), "pr": pr, "workflow": g3p.get("workflow"),
+            "names": names, "source": (ws or {}).get("source"),
+            "base_branch": (pr or {}).get("base_branch") or (ws or {}).get("base")}
+
+
+def current_pr(state: State) -> dict[str, Any] | None:
+    pr = state.get("pr")
+    return current(state, f"pr:{pr['number']}", "pr") if pr else None
+
+
+def _pr_fact(state: State) -> dict[str, Any] | None:
+    found = current_pr(state)
+    return found["fact"] if found and found["fact"].get("found") else None
+
+
+def current_ci(state: State, head: str) -> dict[str, Any] | None:
+    return current(state, f"ci:{state.get('repo')}:{head}", "ci")
+
+
+def observation_context(state: State) -> dict[str, Any]:
+    """Saved with each pr / ci fact: a G3 result is only current for the same contract and base."""
+    pf = _pr_fact(state)
+    return {"contract": contract(state), "base": pf["base"]["sha"] if pf else None}
+
+
+def open_integration(state: State, head: str) -> list[str]:
+    return sorted(k for k, e in (state.get("integration_required") or {}).items()
+                  if e["head"] == head and e.get("status", "open") == "open")
+
+
+def _approving(state: State, entry: dict[str, Any] | None) -> str | None:
+    """The latest human policy_change bound to this registration's locator and digest."""
+    if not entry:
+        return None
+    found = [d for d in (state.get("decisions") or {}).values() if d["kind"] == "policy_change"
+             and (d["target"], d["version"]) == (entry.get("locator"), entry.get("digest"))]
+    return max(found, key=lambda d: d["seq"])["id"] if found else None
+
+
+def _decision_kind(state: State, decision: Any) -> str | None:
+    return ((state.get("decisions") or {}).get(str(decision)) or {}).get("kind") if decision else None
+
+
+# --- G3 (pure) ----------------------------------------------------------------------------
+
+
+def _policy_source(state: State, rules: dict[str, Any], pol: dict[str, Any] | None,
+                   entry: dict[str, Any] | None) -> tuple[dict[str, Any], list[str]]:
+    """Design §8 source order: readable repo rules; else (403/404) the approved policy of
+    yschiang/loop-engineering only; else unknown."""
+    source: dict[str, Any] = {"kind": None, "github_rules_verified": None, "policy_locator": (entry or {}).get("locator"),
+                              "policy_digest": (entry or {}).get("digest"), "policy_change": _approving(state, entry),
+                              "required": []}
+    if pol is None:
+        return source, ["policy_not_registered"]
+    if rules.get("status") == "readable":
+        checks = rules.get("required") or []
+        source |= {"kind": "rules", "github_rules_verified": True,
+                   "required": _unique([str(c["context"]) for c in checks])}
+        return source, [f"required_check_app_unsupported:{c['context']}" for c in checks
+                        if c.get("integration_id") not in (None, ACTIONS_APP_ID)]
+    source |= {"kind": "approved_policy", "github_rules_verified": False}
+    if state.get("repo") != APPROVED_POLICY_REPO:
+        return source, ["rules_unreadable_other_repo"]
+    if pol.get("repo") != state.get("repo"):
+        return source, ["policy_repo_mismatch"]
+    if source["policy_change"] is None:
+        earlier = [d for d in (state.get("decisions") or {}).values()
+                   if d["kind"] == "policy_change" and d["target"] == (entry or {}).get("locator")]
+        return source, ["policy_digest_mismatch" if earlier else "policy_not_approved"]
+    checks = _g3_policy(pol).get("required_checks") or []
+    source["required"] = _unique([str(c["name"]) for c in checks if isinstance(c, dict) and c.get("name")])
+    return source, [f"required_check_app_unsupported:{c.get('name') if isinstance(c, dict) else c}" for c in checks
+                    if not isinstance(c, dict) or c.get("app", ACTIONS_APP) != ACTIONS_APP]
+
+
+def _valid_exception(state: State, e: Any) -> bool:
+    """A named check, skipped / neutral only, bound to a recorded policy_change decision."""
+    return isinstance(e, dict) and isinstance(e.get("check"), str) and bool(e["check"]) \
+        and e.get("conclusion") in EXEMPTABLE and _decision_kind(state, e.get("decision")) == "policy_change"
+
+
+def _policy_content(state: State, g3p: dict[str, Any], ci: dict[str, Any], pf: dict[str, Any] | None,
+                    source: dict[str, Any]) -> list[str]:
+    if not g3p:
+        return ["policy_invalid:g3_missing"]
+    why = [] if g3p.get("source") == "head" else ["policy_invalid:source"]  # first slice: head only
+    why += [] if g3p.get("trigger_event") == "pull_request" else ["policy_invalid:trigger_event"]
+    if not g3p.get("workflow"):
+        why.append("policy_invalid:workflow")
+    elif ci.get("workflow_blob") != g3p.get("workflow_blob_sha"):
+        why.append("workflow_digest_mismatch")  # the CI workflow at H is not the approved one
+    if pf is not None and pf["base"]["ref"] != g3p.get("base_branch"):
+        why.append("base_branch_not_in_policy")
+    for e in g3p.get("exceptions") or []:
+        if not _valid_exception(state, e):
+            why.append(f"policy_invalid:exception:{e.get('check') if isinstance(e, dict) else e}")
+    if not source["required"]:
+        why.append("required_set_empty")
+    return why
+
+
+def _tested(r: dict[str, Any], name: str, head: str) -> tuple[str, str | None, str | None]:
+    """The job's own tested-SHA artifact of this run attempt, compared field by field."""
+    found = (r.get("tested") or {}).get(f"tested-sha-{name}-{r['run_attempt']}")
+    run_ref = f"{name}:{r['id']}"
+    if found is None:
+        return "unknown", f"tested_sha_missing:{run_ref}", None
+    content = found.get("content")
+    if not isinstance(content, dict):
+        return "unknown", f"tested_sha_unreadable:{run_ref}", None
+    for field, want in (("run_id", str(r["id"])), ("run_attempt", str(r["run_attempt"])), ("job", name),
+                        ("check_name", name)):
+        if str(content.get(field)) != want:
+            return "unknown", f"tested_sha_mismatch:{field}:{run_ref}", content.get("tested_sha")
+    if content.get("tested_sha") != head:
+        return "unknown", f"unsupported_integration_source:{run_ref}", content.get("tested_sha")
+    return "passed", None, head
+
+
+def _check(name: str, runs: list[dict[str, Any]], ci: dict[str, Any], head: str,
+           exceptions: dict[tuple[str, str], str]) -> dict[str, Any]:
+    """One required check over every candidate run of H, each at its latest attempt."""
+    if not runs:
+        if any(s.get("context") == name for s in ci.get("statuses") or []):
+            return {"status": "unknown", "reasons": [f"commit_status_only:{name}"], "runs": []}
+        return {"status": "pending", "reasons": [f"missing:{name}"], "runs": []}
+    marks: list[tuple[str, str]] = []
+    records = []
+    for r in sorted(runs, key=lambda r: r["run_number"]):
+        jobs = [j for j in r.get("jobs") or [] if j["name"] == name]
+        if len(jobs) != 1:
+            if jobs:
+                marks.append(("unknown", f"ambiguous_job:{name}:{r['id']}"))
+            else:
+                marks.append(("pending" if r["status"] != "completed" else "unknown", f"missing:{name}:run:{r['id']}"))
+            continue
+        j = jobs[0]
+        rec = {"name": name, "app": ACTIONS_APP, "workflow": r["path"], "run_id": r["id"], "run_attempt": r["run_attempt"],
+               "run_number": r["run_number"], "event": r["event"], "head_sha": r["head_sha"], "status": j["status"],
+               "conclusion": j["conclusion"], "url": j.get("html_url"), "tested_sha": None, "via": None}
+        records.append(rec)
+        run_ref = f"{name}:{r['id']}"
+        if not j.get("html_url"):
+            marks.append(("unknown", f"check_url_missing:{run_ref}"))
+        elif j["status"] != "completed":
+            marks.append(("pending", f"pending:{run_ref}"))
+        elif j["conclusion"] == "success":
+            status, why, rec["tested_sha"] = _tested(r, name, head)
+            if why:
+                marks.append((status, why))
+            else:
+                rec["via"] = "tested_sha"
+        elif j["conclusion"] in EXEMPTABLE and (name, j["conclusion"]) in exceptions:
+            rec["via"] = {"exception": exceptions[(name, j["conclusion"])], "conclusion": j["conclusion"]}
+        elif j["conclusion"] in (*FAILED, *EXEMPTABLE):
+            marks.append(("failed", f"{j['conclusion']}:{run_ref}"))
+        else:
+            marks.append(("unknown", f"conclusion_unknown:{run_ref}"))
+    status = max((s for s, _ in marks), key=G3_ORDER.index) if marks else "passed"
+    return {"status": status, "reasons": [w for _, w in marks], "runs": records}
+
+
+def evaluate_g3(state: State, at: str) -> dict[str, Any]:
+    """G3 at the head G1 passed (design §8): policy source, head only, event / PR identity, the
+    latest attempt of every PR run of H, each job's tested-SHA artifact, no exceptions but
+    skipped / neutral with a policy_change decision, and mergeable known."""
+    head = str(_passed_head(state))
+    pr, prev = state.get("pr"), (state.get("gates") or {}).get("g3") or {}
+    same = prev.get("head") == head
+    out: dict[str, Any] = {
+        "status": "pending", "reasons": [], "head": head, "base": None, "source": prev.get("source") if same else None,
+        "checks": {}, "ignored": [], "applicability": list(prev.get("applicability") or []) if same else [],
+        "pr_seq": None, "ci_seq": None, "contract": contract(state), "policy_blockers": [], "evaluated_at": at,
+        "decisions_seen": max((d["seq"] for d in (state.get("decisions") or {}).values()), default=0),
+        # the policy digest G3 was judged under; another digest needs its own policy_change
+        "policy_accepted": prev.get("policy_accepted"),
+    }
+
+    def done(status: str, reasons: list[str], policy: bool = False) -> dict[str, Any]:
+        out["status"], out["reasons"] = status, _unique(reasons) if status != "passed" else []
+        out["policy_blockers"] = [f"g3_policy:{r}" for r in out["reasons"]] if policy else []
+        return out
+
+    if pr is None:
+        return done("pending", ["pr_identity_missing"])
+    found, pf = current_pr(state), _pr_fact(state)
+    if pf is not None:
+        out["pr_seq"], out["base"] = found["seq"], pf["base"]["sha"]  # type: ignore[index]
+        if same and prev.get("base") and out["base"] != prev["base"]:  # base moved, H did not (AC-G17)
+            moved = {"reason": "head_only_h_unchanged", "head": head, "base_from": prev["base"], "base_to": out["base"]}
+            if moved not in out["applicability"]:
+                out["applicability"].append(moved)
+    cif = current_ci(state, head)
+    if cif is None:
+        return done("pending", ["ci_not_observed"])
+    ci, out["ci_seq"] = cif["fact"], cif["seq"]
+    if ci.get("context") != {"contract": out["contract"], "base": out["base"]}:
+        return done("pending", ["ci_observation_stale"])  # read before a contract / base change: observe again
+    pol, entry = registered_policy(state)
+    source, why = _policy_source(state, ci.get("rules") or {}, pol, entry)
+    out["source"] = source
+    if why:
+        return done("unknown", why, policy=True)
+    g3p = _g3_policy(pol)
+    accepted = out["policy_accepted"] or source["policy_digest"]
+    if source["policy_digest"] != accepted and source["policy_change"] is None:
+        return done("unknown", ["policy_change_required"], policy=True)  # never passed by a policy change alone
+    out["policy_accepted"] = source["policy_digest"]
+    why = _policy_content(state, g3p, ci, pf, source)
+    if why:
+        return done("unknown", why, policy=True)
+    wf, required = g3p["workflow"], source["required"]
+    runs = [r for r in ci.get("runs") or [] if r["path"] == wf and r["head_sha"] == head]
+    out["ignored"] = [{"run_id": r["id"], "path": r["path"]} for r in ci.get("runs") or []
+                      if r["path"] != wf and r["head_sha"] == head]
+    out["ignored"] += [{"name": c["name"], "app": c["app"]} for c in ci.get("check_runs") or []
+                       if c["name"] in required and c["app"] != ACTIONS_APP]
+    unknown = [f"run_identity_missing:{r['id']}" for r in runs
+               if r["id"] is None or r["run_number"] is None or r["run_attempt"] is None]
+    numbers = [r["run_number"] for r in runs if r["run_number"] is not None]
+    unknown += [f"duplicate_run_number:{n}" for n in sorted(set(numbers)) if numbers.count(n) > 1]
+    unknown += [f"unexpected_event_context:{r['id']}" for r in runs
+                if r["event"] != "pull_request" or r["pull_requests"] != [pr["number"]]]
+    if unknown:
+        return done("unknown", unknown)
+    mergeable = pf.get("mergeable") if pf is not None else None
+    if not runs and mergeable is False:
+        return done("unknown", ["ci_unavailable_conflict"])  # a conflicting PR gets no pull_request run
+    exceptions = {(e["check"], e["conclusion"]): str(e["decision"]) for e in g3p.get("exceptions") or []
+                  if _valid_exception(state, e)}
+    statuses, reasons = [], []
+    for name in required:
+        result = _check(name, runs, ci, head, exceptions)
+        out["checks"][name] = result
+        statuses.append(result["status"])
+        reasons += result["reasons"]
+    if pf is None:
+        statuses, reasons = [*statuses, "pending"], [*reasons, "pr_not_observed"]
+    else:
+        if pf["head"]["sha"] != head:
+            statuses, reasons = [*statuses, "pending"], [*reasons, f"pr_head_differs:{pf['head']['sha']}"]
+        if mergeable is None:  # still being computed: waits inside the CI window (T7.1 times it out)
+            statuses, reasons = [*statuses, "pending"], [*reasons, "mergeable_unknown"]
+    return done(max(statuses, key=G3_ORDER.index), reasons)
+
+
+# --- effects of a pr / ci observation (the mutate of its commit; deterministic) ----------------
+
+
+def _check_pr_identity(st: State) -> None:
+    """A PR whose head or base repo / branch moved is Blocked, never re-bound (design §4)."""
+    pr, found = st["pr"], current_pr(st)
+    fact = found["fact"] if found else {}
+    if not fact.get("found"):
+        block(st, f"pr_missing:{pr['number']}")
+        return
+    if fact.get("state") != "open":
+        block(st, f"pr_not_open:{pr['number']}")
+    for field, value in (("head_repo", fact["head"]["repo"]), ("head_branch", fact["head"]["ref"]),
+                         ("base_repo", fact["base"]["repo"]), ("base_branch", fact["base"]["ref"])):
+        if value != pr[field]:
+            block(st, f"pr_identity_changed:{field}")
+
+
+def _detect_integration(st: State, head: str) -> None:
+    """Integration triggers (design §8): mergeable=false, a Reviewer finding marked
+    `base_incompatible`, a human `revise` targeting `base_integration`. One entry per trigger
+    key (base repo/branch, pinned base tip B, H); T5.1 creates the finding and the batch."""
+    pr, pf = st.get("pr"), _pr_fact(st)
+    if pr is None or pf is None:
+        return
+    required = st.setdefault("integration_required", {})
+    base = f"{pr['base_repo']}:{pr['base_branch']}"
+
+    def add(tip: str, at_head: str, source: str) -> None:
+        key = f"base_integration:{base}:{tip}:{at_head}"
+        entry = required.setdefault(key, {"key": key, "base": base, "base_tip": tip, "head": at_head,
+                                          "sources": [], "status": "open"})
+        if source not in entry["sources"]:
+            entry["sources"].append(source)
+
+    if pf.get("mergeable") is False:
+        add(pf["base"]["sha"], pf["head"]["sha"], "mergeable_false")
+    seen = {s for e in required.values() for s in e["sources"]}
+    for fid in sorted(st.get("findings") or {}):
+        f = st["findings"][fid]
+        if f.get("base_incompatible") and f.get("status", "open") == "open" and f"finding:{fid}" not in seen:
+            add(pf["base"]["sha"], head, f"finding:{fid}")
+    for d in sorted((st.get("decisions") or {}).values(), key=lambda d: d["seq"]):
+        if d["kind"] == "revise" and d["target"] == "base_integration" and f"decision:{d['id']}" not in seen:
+            add(pf["base"]["sha"], head, f"decision:{d['id']}")
+
+
+def rebind_satisfied(state: State, binding: dict[str, Any]) -> bool:
+    """A passing Green at H itself, run after the base moved, is what G1 is now assessed with."""
+    g1 = (state.get("gates") or {}).get("g1") or {}
+    green = next((e for e in ev.records(state, "green") if e["id"] == g1.get("green")), None)
+    return bool(g1.get("status") == "passed" and green and green["head"] == binding["head"]
+                and green["status"] == "passed" and green["n"] > binding["pending"]["after_green"])
+
+
+def _update_binding(st: State, head: str, at: str) -> None:
+    """G1's binding to the base and the contract (design §8): a moved base without a trigger
+    needs a Green at H itself (not a temporary merge), then the new base is bound."""
+    g1, pf = st["gates"]["g1"], _pr_fact(st)
+    if pf is None:
+        return
+    tip, now = pf["base"]["sha"], contract(st)
+    b = st.get("g1_binding")
+    if b is None or b["head"] != head:
+        st["g1_binding"] = {"head": head, "base": tip, "green": g1.get("green"), "assessed_at": g1.get("assessed_at"),
+                            "contract": now, "pending": None,
+                            "history": [{"reason": "bound", "base": tip, "green": g1.get("green"), "at": at}]}
+        return
+    if b.get("pending") and rebind_satisfied(st, b):
+        b.update(base=b["pending"]["base"], green=g1.get("green"), assessed_at=g1.get("assessed_at"), pending=None)
+        b["history"].append({"reason": "base_rebound", "base": b["base"], "green": b["green"], "at": at})
+    if b["contract"] != now and g1.get("assessed_at") != b["assessed_at"]:
+        b.update(contract=now, green=g1.get("green"), assessed_at=g1.get("assessed_at"))
+        b["history"].append({"reason": "reassessed", "contract": now, "green": b["green"], "at": at})
+    if tip != b["base"] and pf.get("mergeable") is True and not open_integration(st, head):
+        greens = [e["n"] for e in ev.records(st, "green")]
+        if b.get("pending"):
+            b["pending"]["base"] = tip
+        else:
+            b["pending"] = {"base": tip, "after_green": max(greens, default=0), "at": at}
+
+
+def ci_wait_started(state: State, head: str) -> bool:
+    return any(a.get("kind") == "ci_wait" and a.get("head") == head for a in state.get("activities") or [])
+
+
+def start_ci_wait(st: State, head: str, at: str) -> State:
+    """The CI wait (design §10) starts at the first `observe ci` after the push of H succeeded;
+    its timeout is T7.1's."""
+    if (st.get("writes") or {}).get(f"push.{head}", {}).get("status") == "succeeded" and not ci_wait_started(st, head):
+        st.setdefault("activities", []).append({"kind": "ci_wait", "head": head, "start": at, "end": None})
+    return st
+
+
+def after_github(source: str) -> Any:
+    def after(st: State, outcome: str, at: str) -> None:
+        head = _passed_head(st)
+        if outcome != "fetched" or head is None:
+            return
+        if source == "pr":
+            _check_pr_identity(st)
+        _detect_integration(st, head)
+        _update_binding(st, head, at)
+        g3 = evaluate_g3(st, at)
+        st.setdefault("gates", {})["g3"] = g3
+        st["blockers"] = [b for b in st.get("blockers", []) if not b.startswith("g3_policy:")]
+        for reason in g3["policy_blockers"]:
+            block(st, reason)
+        if g3["status"] != "pending":  # every required check terminal: the CI wait ends
+            for a in st.get("activities") or []:
+                if a.get("kind") == "ci_wait" and a.get("head") == head and not a["end"]:
+                    a["end"] = at
+
+    return after
+
+
+# --- routing after G1 passed (pure) -------------------------------------------------------------
+
+
+def _op_step(state: State, kind: str, op_id: str, now: datetime) -> dict[str, Any] | None:
+    op = (state.get("writes") or {}).get(op_id)
+    if op is None or (op["status"] in ("prepared", "failed") and not op.get("blocked")):
+        return {"action": "write", "op": kind, "id": op_id}
+    if op["status"] == "succeeded":
+        return None
+    if op["status"] == "in_flight":
+        wait = max(1.0, (writes.stale_at(op) - now).total_seconds())
+        return {"action": "wait", "poll_after_s": wait, "reason": f"write_in_flight:{op_id}"}
+    if op.get("blocked") and op["blocked"] in writes.REFUSALS + ("retry_exhausted",):
+        return human([f"{op['blocked']}:{op_id}"])  # the feature blocker normally comes first
+    return human([f"write_unknown:{op_id}"], ["resolve_operation"])  # safety normally reads it back
+
+
+def _observe_action(source: str, read_key: str) -> dict[str, Any]:
+    return {"action": "observe", "source": source, "purpose": source, "read_key": read_key}
+
+
+def _due(state: State, read_key: str, poll_s: float, now: datetime) -> float:
+    last = ((state.get("read_budget") or {}).get(read_key) or {}).get("last_at")
+    if last is None:
+        return 0.0
+    return max(0.0, (datetime.fromisoformat(last) + timedelta(seconds=poll_s) - now).total_seconds())
+
+
+def github_route(state: State, now: datetime) -> dict[str, Any]:
+    """The next action once G1 passed at H: keep G1 bound to the current contract and base,
+    push H, ensure the one PR, then observe the PR and CI until G3 is terminal."""
+    ws = github_workspace(state)
+    if ws is None:
+        return human(["g1_passed"])  # the plan declares no push remote: nothing to push to
+    g1 = state["gates"]["g1"]
+    head = g1["head"]
+    b = state.get("g1_binding")
+    if b and b["head"] == head:
+        if b["contract"] != contract(state) and g1.get("assessed_at") == b["assessed_at"]:
+            return {"action": "assess"}  # approval, policy or controller changed: recompute G1
+        if b.get("pending") and not rebind_satisfied(state, b):
+            return {"action": "evidence_green", "head": head}  # base moved: Green at H itself
+    for kind, op_id in (("push", f"push.{head}"), ("pr_ensure", "pr_ensure")):
+        if (step := _op_step(state, kind, op_id, now)) is not None:
+            return step
+    pr = state.get("pr")
+    if pr is None:
+        return human(["pr_identity_missing"])
+    if keys := open_integration(state, head):
+        return human([f"integration_required:{k}" for k in keys])  # the path is T5.1's
+    ctx = observation_context(state)
+    pr_key, ci_key = f"pr:{pr['number']}", f"ci:{state['repo']}:{head}"
+    found = current_pr(state)
+    if found is None or (found["fact"].get("context") or {}).get("contract") != ctx["contract"]:
+        return _observe_action("pr", pr_key)
+    cif = current_ci(state, head)
+    g3 = (state.get("gates") or {}).get("g3") or {}
+    if cif is None or cif["fact"].get("context") != ctx or g3.get("head") != head:
+        return _observe_action("ci", ci_key)
+    if g3["status"] == "passed":
+        return human(["g3_passed"])  # T5.1 / T6.2 continue from here
+    if g3["status"] != "pending":
+        return human([f"g3_{g3['status']}", *g3["reasons"]])
+    pol, _ = registered_policy(state)
+    poll = limit(pol or {}, "poll_github_s", 60)
+    waits = {key: _due(state, key, poll, now) for key in (pr_key, ci_key)}
+    for source, key in (("pr", pr_key), ("ci", ci_key)):
+        if waits[key] == 0:
+            return _observe_action(source, key)
+    return {"action": "wait", "poll_after_s": min(waits.values()), "reason": f"ci_pending:{head}"}
+
+
+def policy_recheck(state: State) -> dict[str, Any] | None:
+    """Safety: a policy_change recorded after G3 found no usable policy → observe CI again."""
+    g3 = (state.get("gates") or {}).get("g3") or {}
+    if not g3.get("policy_blockers"):
+        return None
+    read_key = f"ci:{state.get('repo')}:{g3['head']}"
+    if exhausted(state, read_key):
+        return None
+    newer = [d for d in (state.get("decisions") or {}).values()
+             if d["kind"] == "policy_change" and d["seq"] > g3.get("decisions_seen", 0)]
+    return _observe_action("ci", read_key) if newer else None

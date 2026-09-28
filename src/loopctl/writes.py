@@ -39,10 +39,14 @@ from loopctl.observe import (
 )
 
 State = dict[str, Any]
-KINDS = ("worktree_create", "agent_start", "prompt", "stop")
-BLOCKED_REASONS = ("write_unknown", "readback_exhausted", "retry_exhausted")
+GH_KINDS = ("push", "pr_ensure")  # T6.1: tools.gh op calls and readbacks
+KINDS = ("worktree_create", "agent_start", "prompt", "stop", *GH_KINDS)
+# T6.1: a delivered request the remote refused (non-fast-forward push, a PR create refused) or
+# a pre-create query that forbids creating (one open PR of another identity, several open PRs)
+REFUSALS = ("push_rejected", "pr_identity_mismatch", "pr_ambiguous", "pr_create_rejected")
+BLOCKED_REASONS = ("write_unknown", "readback_exhausted", "retry_exhausted", *REFUSALS)
 RECOVERY_KINDS = {"write_unknown": "resolve_operation", "readback_exhausted": "resolve_operation"}
-STATUS = {"succeeded": "succeeded", "failed_not_delivered": "failed", "unknown": "unknown"}
+STATUS = {"succeeded": "succeeded", "failed_not_delivered": "failed", "rejected": "failed", "unknown": "unknown"}
 STALE_GRACE_S = 30.0  # an in_flight op older than its call limit + this lost its process
 # (state, kind, op_id, policy, feature) -> spec {argv, expected, marker?, session?, on_prepare?}
 Prepare = Callable[[State, str, str, dict[str, Any], str], dict[str, Any]]
@@ -56,6 +60,26 @@ def _herdr() -> Any:
     from loopctl.tools import herdr
 
     return herdr
+
+
+def _gh() -> Any:
+    from loopctl.tools import gh
+
+    return gh
+
+
+def _op_call(op: dict[str, Any], argv: Any) -> dict[str, Any]:
+    p = op["prepared"]
+    if op["kind"] in GH_KINDS:
+        return dict(_gh().op_call(op["kind"], argv, float(p["call_limit_s"]), p["expected"], float(p["read_limit_s"])))
+    return dict(_herdr().op_call(op["kind"], argv, float(p["call_limit_s"])))
+
+
+def _op_readback(op: dict[str, Any], observed: str | None = None) -> dict[str, Any]:
+    p = op["prepared"]
+    if op["kind"] in GH_KINDS:
+        return dict(_gh().readback(op["kind"], p["expected"], float(p["read_limit_s"]), observed))
+    return dict(_herdr().readback(op["kind"], p["session"], p["expected"], float(p["read_limit_s"])))
 
 
 def view(op_id: str, op: dict[str, Any]) -> dict[str, Any]:
@@ -103,8 +127,21 @@ def pending_resolution(st: State, op_id: str) -> dict[str, Any] | None:
 
 
 def _settle_op(st: State, op_id: str, at: str) -> None:
-    if st["writes"][op_id]["kind"] == "stop":
+    op = st["writes"][op_id]
+    if op["kind"] == "stop":
         settle(st, op_id.removesuffix(".stop"), at)
+    elif op["kind"] == "pr_ensure" and op["status"] == "succeeded" and st.get("pr") is None:
+        _record_pr(st, op_id, at)
+
+
+def _record_pr(st: State, op_id: str, at: str) -> None:
+    """The PR identity (design §4): number, node id, url, head/base repo, branch, SHA, origin."""
+    op = st["writes"][op_id]
+    found = op["facts"]["pr"]
+    st["pr"] = {**{k: found[k] for k in ("number", "node_id", "url", "head_repo", "head_branch", "head_sha",
+                                         "base_repo", "base_branch", "origin")}, "op": op_id, "at": at}
+    if op["facts"].get("differs"):  # GitHub created a PR other than the one persisted as expected
+        block(st, f"pr_identity_mismatch:{op_id}")
 
 
 def _report(feature: str, op_id: str, performed: str) -> dict[str, Any]:
@@ -117,6 +154,8 @@ def _report(feature: str, op_id: str, performed: str) -> dict[str, Any]:
 def write(feature: str, token: str | None, kind: str, op_id: str, prepare: Prepare) -> dict[str, Any]:
     if kind not in KINDS:
         raise Rejected("unsupported", 2, op=kind)
+    if kind in GH_KINDS:
+        prepare = github_spec
     _, st = owned(feature, token)
     pol = policy(st)
     if op_id not in (st.get("writes") or {}):
@@ -226,7 +265,7 @@ def _call(feature: str, op_id: str) -> dict[str, Any]:
         raise Rejected("op_in_flight" if op["status"] == "in_flight" else "op_state_changed", 1, op=view(op_id, op)) from None
 
     argv = json.loads(store.get_object(prepared["argv"][store.OBJECT_KEY]))
-    result = _herdr().op_call(op["kind"], argv, float(prepared["call_limit_s"]))  # the one call
+    result = _op_call(op, argv)  # the one call
     ended = now_iso()
     receipt = store.put_object(result["receipt"].encode())
 
@@ -238,7 +277,10 @@ def _call(feature: str, op_id: str) -> dict[str, Any]:
         o["status"] = STATUS[result["outcome"]]
         if o["status"] == "succeeded":
             o["facts"] = {**o["facts"], **result["facts"]}
-        if o["status"] == "failed" and n >= prepared["max_attempts"]:
+        if result["outcome"] == "rejected":  # refused, not undelivered: never retried
+            o["facts"] = {**o["facts"], **result["facts"]}
+            _set_blocked(st, op_id, result["block"])
+        elif o["status"] == "failed" and n >= prepared["max_attempts"]:
             _set_blocked(st, op_id, "retry_exhausted")
         _settle_op(st, op_id, ended)
         return st
@@ -258,7 +300,7 @@ def _readback(feature: str, op_id: str) -> dict[str, Any]:
         commit(feature, f"write:{op_id}:readback_exhausted:{len(op['attempts'])}", _blocking(op_id, "readback_exhausted"))
         return _report(feature, op_id, "none")
     seq = allocate(feature, f"op:{op_id}", "op", "readback")
-    read = _herdr().readback(op["kind"], prepared["session"], prepared["expected"], float(prepared["read_limit_s"]))
+    read = _op_readback(op)
     at, ref, n = now_iso(), _observation(read), len(op["attempts"])
 
     def mutate(st: State) -> State:
@@ -290,11 +332,14 @@ def _resolve(feature: str, op_id: str, decision: dict[str, Any]) -> dict[str, An
     if op["status"] != "unknown":
         reason = f"op_not_unknown:{op['status']}"
     elif mode == "bind":
-        if decision["resolution"]["observed"] != prepared["expected"]["bind"]:
+        observed = decision["resolution"]["observed"]
+        # expected.bind None (pr_ensure): the number is unknown before creation, so the one fresh
+        # read of the named PR must match the persisted identity instead
+        if prepared["expected"]["bind"] is not None and observed != prepared["expected"]["bind"]:
             reason = "bind_differs_from_expected"
         else:
             seq = allocate(feature, f"op:{op_id}", "op", "resolve_operation")
-            read = _herdr().readback(op["kind"], prepared["session"], prepared["expected"], float(prepared["read_limit_s"]))
+            read = _op_readback(op, observed)
             read = {**read, "seq": seq, "observation": _observation(read)}
             if read["result"] != "confirmed":
                 reason = f"read_{read['result']}:{read['detail']}"
@@ -335,6 +380,39 @@ def _resolve(feature: str, op_id: str, decision: dict[str, Any]) -> dict[str, An
         op = store.load(feature)[1]["writes"][op_id]
         raise Rejected("resolution_rejected", 3, decision=decision["id"], reason=reason, op=view(op_id, op))
     return _report(feature, op_id, "resolution")
+
+
+def github_spec(state: State, kind: str, op_id: str, pol: dict[str, Any], feature: str) -> dict[str, Any]:
+    """T6.1: the fixed argv, expected identity and marker of `push` / `pr_ensure` (design §4).
+    Only after G1 passed at H, and only the op `next` offers (push before pr_ensure)."""
+    from loopctl import gates
+    from loopctl import next as next_step
+
+    g1 = (state.get("gates") or {}).get("g1") or {}
+    if g1.get("status") != "passed":
+        raise Rejected("g1_not_passed", 1, op=op_id, g1=g1.get("status", "pending"))
+    if state.get("blockers"):
+        raise Rejected("feature_blocked", 3, blockers=state["blockers"])
+    allowed = next_step.next_action(state, [])
+    if allowed != {"action": "write", "op": kind, "id": op_id}:
+        raise Rejected("not_routable", op=op_id, next=allowed)
+    ws = gates.github_workspace(state)
+    assert ws is not None  # routing offered a GitHub op
+    head, repo, ref = g1["head"], state["repo"], f"refs/heads/{ws['branch']}"
+    if kind == "push":  # a plain fast-forward of H: no force, no + refspec, no delete (design §4)
+        argv = ["git", "-C", ws["source"], "push", "--porcelain", ws["remote"], f"{head}:{ref}"]
+        expected = {"source": ws["source"], "remote": ws["remote"], "ref": ref, "sha": head, "bind": head}
+        return {"argv": argv, "expected": expected, "call_limit_s": limit(pol, "push_call_s", 120)}
+    marker = f"loopctl-op:{feature}/{op_id}"
+    expected = {"repo": repo, "head_repo": repo, "head_branch": ws["branch"], "head_sha": head, "base_repo": repo,
+                "base_branch": ws["base"], "marker": marker, "bind": None}
+    body = f"loopctl feature {feature} (issue {state.get('issue')}).\n\nHead: {head}\n\n<!-- {marker} -->\n"
+    create = ["gh", "api", "--include", "--method", "POST", f"repos/{repo}/pulls",
+              "-f", f"title=loopctl {feature}: issue {state.get('issue')}", "-f", f"head={ws['branch']}",
+              "-f", f"base={ws['base']}", "-f", f"body={body}"]
+    query = f"repos/{repo}/pulls?state=open&head={repo.split('/')[0]}:{ws['branch']}&per_page=100"
+    return {"argv": {"query": query, "create": create}, "expected": expected, "marker": marker,
+            "call_limit_s": limit(pol, "pr_ensure_call_s", 120)}
 
 
 def safety(state: State, now: datetime) -> dict[str, Any] | None:
