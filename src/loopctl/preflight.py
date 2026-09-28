@@ -109,9 +109,11 @@ def _claude_native(session_id: str, marker: str) -> Native | None:
     )
 
 
-def _opencode_native(marker: str, timeout_s: float) -> Native | None:
+def _opencode_native(marker: str, worktree: str, timeout_s: float) -> Native | None:
     listed = json.loads(tools.run(["opencode", "session", "list", "--format", "json"], timeout_s))
-    newest = sorted(listed, key=lambda s: s.get("time", {}).get("updated", 0), reverse=True)
+    here = [s for s in listed if s.get("directory") and str(Path(s["directory"]).resolve()) == worktree]
+    # OpenCode 1.18 rows carry top-level `updated`; older rows nest it under `time`.
+    newest = sorted(here, key=lambda s: s.get("updated") or s.get("time", {}).get("updated", 0), reverse=True)
     for session in newest[:5]:
         data = json.loads(tools.run(["opencode", "export", session["id"]], timeout_s))
         messages = data.get("messages", [])
@@ -194,6 +196,22 @@ def _opencode_agent(config: Path) -> dict[str, Any]:
     return entry if isinstance(entry, dict) else {}
 
 
+def _claude_settings_reasons(settings: Path) -> list[str]:
+    """The boundary must hold without user-level hooks (a hook can rewrite a command past a deny
+    rule) and Edit/Write may only be allowed inside the worktree (`./…`, no `..`)."""
+    try:
+        data = json.loads(settings.read_text())
+        allow = data.get("permissions", {}).get("allow", [])
+    except (ValueError, AttributeError):
+        data, allow = {}, []
+    reasons = [] if data.get("disableAllHooks") is True else ["claude_hooks_not_disabled"]
+    for rule in allow:
+        tool, _, spec = str(rule).removesuffix(")").partition("(")
+        if tool in ("Edit", "Write") and not (spec.startswith("./") and ".." not in spec.split("/")):
+            reasons.append(f"claude_permission_unscoped:{rule}")
+    return reasons
+
+
 def static_reasons(policy: dict[str, Any], role: str, root: Path) -> list[str]:
     """Checks on the approved settings alone; any reason means unverified before launching."""
     profiles = policy.get("profiles") or {}
@@ -212,6 +230,8 @@ def static_reasons(policy: dict[str, Any], role: str, root: Path) -> list[str]:
             wanted = (f"{profile.get('provider')}/{profile.get('model')}", profile.get("effort"))
             if (agent.get("model"), agent.get("reasoningEffort")) != wanted:
                 reasons.append("opencode_agent_config_mismatch")
+        elif profile.get("runtime") == "claude-code":
+            reasons += _claude_settings_reasons(root / settings)
         if profile.get("runtime") not in RUNTIMES:
             reasons.append(f"runtime_unsupported:{profile.get('runtime')}")
     return reasons
@@ -252,7 +272,7 @@ def _probe(
         if profile["runtime"] == "opencode":
             herdr.pane_run(pane, f"export OPENCODE_CONFIG={shlex.quote(str(settings))}", write_s, session=session)
             args = ["--agent", OPENCODE_AGENT, "-m", f"{profile['provider']}/{profile['model']}"]
-            read: Callable[[], Native | None] = lambda: _opencode_native(marker, read_s)
+            read: Callable[[], Native | None] = lambda: _opencode_native(marker, worktree, read_s)
         else:
             session_id = str(uuid.uuid4())
             args = ["--model", profile["model"], "--effort", profile["effort"], "--settings", str(settings), "--session-id", session_id]

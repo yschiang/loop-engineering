@@ -3,6 +3,7 @@
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,7 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from loopctl import clock
+from loopctl import clock, tools
 from loopctl.cli import main
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -451,3 +452,112 @@ def test_opencode_native_agent_differs_is_unverified(probe, fakes, capsys, tmp_p
     code, envelope, receipt = run_probe(capsys, fakes, tmp_path, "reviewer", s)
     assert_blocked(code, envelope, receipt)
     assert receipt["reasons"] == ["opencode_agent_mismatch"]
+
+
+# ---- implementer permission boundary, stdout capture, OpenCode session pick (T1.1 attempt 4) ----
+
+IMPLEMENTER_SETTINGS = ROOT / "profiles" / "implementer.claude-settings.json"
+DENIED_PREFIXES = [
+    "git push", "gh", "herdr",
+    *(f"loopctl {c}" for c in ["init", "claim", "status", "next", "register", "decide", "write", "observe"]),
+    "loopctl evidence green", "loopctl result", "loopctl assess", "loopctl preflight",
+]  # design §6: every loopctl subcommand except `evidence red`
+
+
+def test_implementer_profile_boundary_does_not_depend_on_user_hooks_or_bare_rules():
+    settings = json.loads(IMPLEMENTER_SETTINGS.read_text())
+    permissions = settings["permissions"]
+    assert settings["disableAllHooks"] is True
+    rules = permissions["allow"] + permissions["deny"]
+    assert {r for r in rules if r.split("(")[0] in {"Edit", "Write"}} == {"Edit(./**)", "Write(./**)"}
+    bash = [r for r in rules if r.startswith("Bash")]
+    assert bash and all(r.startswith("Bash(") and r.endswith(" *)") and ":*" not in r for r in bash)
+    assert [r for r in permissions["deny"] if r.startswith("Bash(")] == [f"Bash({p} *)" for p in DENIED_PREFIXES]
+    assert "Bash(loopctl evidence red *)" in permissions["allow"]
+
+
+def edit_implementer_settings(repo: Path, change) -> None:
+    path = repo / "profiles" / "implementer.claude-settings.json"
+    settings = json.loads(path.read_text())
+    change(settings)
+    path.write_text(json.dumps(settings))
+
+
+def allow_file_rule(settings: dict, rule: str) -> None:
+    """Replace the allow rule(s) of rule's tool (Edit or Write) with rule."""
+    tool = rule.split("(")[0]
+    allow = settings["permissions"]["allow"]
+    settings["permissions"]["allow"] = [r for r in allow if r.split("(")[0] != tool] + [rule]
+
+
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        (lambda s: s.pop("disableAllHooks", None), "claude_hooks_not_disabled"),
+        (lambda s: s.update(disableAllHooks=False), "claude_hooks_not_disabled"),
+        (lambda s: allow_file_rule(s, "Edit"), "claude_permission_unscoped:Edit"),
+        (lambda s: allow_file_rule(s, "Write"), "claude_permission_unscoped:Write"),
+        (lambda s: allow_file_rule(s, "Write(//tmp/**)"), "claude_permission_unscoped:Write(//tmp/**)"),
+        (lambda s: allow_file_rule(s, "Edit(./../**)"), "claude_permission_unscoped:Edit(./../**)"),
+    ],
+    ids=["hooks_missing", "hooks_false", "bare_edit", "bare_write", "absolute_write", "parent_edit"],
+)
+def test_implementer_settings_boundary_is_checked_before_launch(repo, fakes, capsys, tmp_path, change, reason):
+    edit_implementer_settings(repo, change)
+    code, envelope, receipt = preflight(capsys, "implementer", tmp_path / "out" / "implementer.json")
+    assert_blocked(code, envelope, receipt)
+    assert receipt["reasons"] == [reason]
+    assert fakes.calls() == []
+
+
+def test_tool_run_returns_full_stdout_of_a_child_that_exits_right_after_writing():
+    """Like `opencode export`: one non-blocking stdout write, then exit; a pipe keeps only what fits."""
+    size = 256 * 1024
+    child = (
+        "import os\n"
+        "os.set_blocking(1, False)\n"
+        f"data = b'x' * {size} + b'END'\n"
+        "try:\n"
+        "    os.write(1, data)\n"
+        "except BlockingIOError:\n"
+        "    pass\n"
+        "os._exit(0)\n"
+    )
+    out = tools.run([sys.executable, "-c", child], 30)
+    assert len(out) == size + 3
+    assert out.endswith("END")
+
+
+def test_tool_run_keeps_stdout_stderr_and_exit_code_on_failure():
+    with pytest.raises(tools.ToolError) as e:
+        tools.run([sys.executable, "-c", "import sys; print('partial'); sys.exit('boom')"], 30)
+    assert (e.value.code, e.value.stdout, e.value.stderr) == (1, "partial\n", "boom\n")
+
+
+def test_tool_run_timeout_is_a_tool_error():
+    with pytest.raises(tools.ToolError) as e:
+        tools.run([sys.executable, "-c", "import time; time.sleep(30)"], 0.5)
+    assert e.value.code is None
+
+
+def session_rows(shape: str) -> list[dict]:
+    """`opencode session list --format json` rows; OpenCode 1.18.32 puts created/updated at top level."""
+    rows = [
+        ("ses_elsewhere", "/elsewhere", 9),  # newest, but another directory: never exported
+        ("ses_stale", "{cwd}", 1),  # same worktree, older than the probe's session
+        ("ses_fakeReviewer1", "{cwd}", 3),
+    ]
+    if shape == "top_level":
+        return [{"id": i, "directory": d, "created": u, "updated": u} for i, d, u in rows]
+    return [{"id": i, "directory": d, "time": {"created": u, "updated": u}} for i, d, u in rows]
+
+
+@pytest.mark.parametrize("shape", ["top_level", "legacy_time"])
+def test_opencode_exports_newest_session_of_the_requested_worktree_first(probe, fakes, capsys, tmp_path, shape):
+    s = scenario("reviewer")
+    call(s, "sessions")["stdout"] = session_rows(shape)
+    code, envelope, receipt = run_probe(capsys, fakes, tmp_path, "reviewer", s)
+    assert_verified(code, envelope, receipt)
+    exports = [c["argv"] for c in fakes.calls() if c["tool"] == "opencode" and c["argv"][0] == "export"]
+    assert exports == [["export", "ses_fakeReviewer1"]]
+    assert receipt["native_session_id"] == "ses_fakeReviewer1"

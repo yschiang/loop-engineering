@@ -15,8 +15,8 @@
      "capture": {"marker": "(LOOPCTL-PF-[0-9a-f]+)", "probe": "(/\\S*/loopctl-preflight-[0-9a-f]+)"},
      "stdout": {"id": "cli:agent:prompt", "result": {"type": "ok"}}},
     {"id": "sessions", "tool": "opencode", "match": ["session", "list", "--format", "json"],
-     "stdout": [{"id": "ses_older", "directory": "/elsewhere", "time": {"created": 1, "updated": 1}},
-                {"id": "ses_fakeReviewer1", "directory": "{cwd}", "time": {"created": 2, "updated": 3}}]},
+     "stdout": [{"id": "ses_older", "directory": "/elsewhere", "created": 1, "updated": 1},
+                {"id": "ses_fakeReviewer1", "directory": "{cwd}", "created": 2, "updated": 3}]},
     {"id": "export", "tool": "opencode", "match": ["export", "ses_fakeReviewer1"],
      "stdout": {"info": {"id": "ses_fakeReviewer1", "directory": "{cwd}", "version": "1.18.32"}, "messages": [
        {"info": {"id": "msg_u1", "sessionID": "ses_fakeReviewer1", "role": "user"},
