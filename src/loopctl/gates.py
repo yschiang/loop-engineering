@@ -732,6 +732,23 @@ def _tested(r: dict[str, Any], name: str, head: str) -> tuple[str, str | None, s
     return "passed", None, head
 
 
+def _check_run(r: dict[str, Any], j: dict[str, Any], name: str, head: str,
+               ci: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """The job's own check-run (the one its check_run_url names) and the first identity field
+    that does not match (design §8): app github-actions, the job / check name, head_sha H, and
+    the run's check suite, which carries the run's workflow path, event and PR."""
+    wanted = str(j.get("check_run_url") or "").rsplit("/", 1)[-1]
+    found = [c for c in ci.get("check_runs") or [] if wanted and str(c.get("id")) == wanted]
+    run_ref = f"{name}:{r['id']}"
+    if len(found) != 1:
+        return None, f"check_run_missing:{run_ref}"
+    c = found[0]
+    for field, want in (("app", ACTIONS_APP), ("name", name), ("head_sha", head), ("check_suite", r.get("check_suite_id"))):
+        if want is None or c.get(field) != want:
+            return c, f"check_run_mismatch:{field}:{run_ref}"
+    return c, None
+
+
 def _check(name: str, runs: list[dict[str, Any]], ci: dict[str, Any], head: str,
            exceptions: dict[tuple[str, str], str]) -> dict[str, Any]:
     """One required check over every candidate run of H, each at its latest attempt."""
@@ -752,13 +769,21 @@ def _check(name: str, runs: list[dict[str, Any]], ci: dict[str, Any], head: str,
         j = jobs[0]
         rec = {"name": name, "app": ACTIONS_APP, "workflow": r["path"], "run_id": r["id"], "run_attempt": r["run_attempt"],
                "run_number": r["run_number"], "event": r["event"], "head_sha": r["head_sha"], "status": j["status"],
-               "conclusion": j["conclusion"], "url": j.get("html_url"), "tested_sha": None, "via": None}
+               "conclusion": j["conclusion"], "url": j.get("html_url"), "check_run_id": None, "tested_sha": None,
+               "via": None}
         records.append(rec)
         run_ref = f"{name}:{r['id']}"
+        counts = j["status"] == "completed" and (
+            j["conclusion"] == "success" or (j["conclusion"] in EXEMPTABLE and (name, j["conclusion"]) in exceptions))
+        check_run, mismatch = _check_run(r, j, name, head, ci) if counts else (None, None)
+        if check_run is not None and mismatch is None:
+            rec["check_run_id"] = check_run["id"]
         if not j.get("html_url"):
             marks.append(("unknown", f"check_url_missing:{run_ref}"))
         elif j["status"] != "completed":
             marks.append(("pending", f"pending:{run_ref}"))
+        elif mismatch:  # a job counts only through its own GitHub Actions check-run
+            marks.append(("unknown", mismatch))
         elif j["conclusion"] == "success":
             status, why, rec["tested_sha"] = _tested(r, name, head)
             if why:

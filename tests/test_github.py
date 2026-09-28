@@ -87,11 +87,22 @@ def pr_json(env: "GhEnv", *, number: int = PR, head_sha: str | None = None, head
     }
 
 
+def job_id(run_id: int, name: str, attempt: int) -> int:
+    """GitHub Actions gives each job its own id, which is also the id of its check-run."""
+    return run_id * 1000 + 10 * {JOB: 0, "unit-macos": 1}.get(name, 9) + attempt
+
+
+def check_run_url(jid: int) -> str:
+    return f"https://api.github.com/repos/{REPO}/check-runs/{jid}"
+
+
 def job(name: str = JOB, conclusion: str | None = "success", status: str = "completed", attempt: int = 1,
-        url: bool = True) -> dict:
-    return {"id": 9000 + attempt, "name": name, "status": status,
+        url: bool = True, run_id: int = 101) -> dict:
+    jid = job_id(run_id, name, attempt)
+    return {"id": jid, "name": name, "status": status,
             "conclusion": conclusion if status == "completed" else None, "run_attempt": attempt,
-            "html_url": f"https://github.com/{REPO}/actions/runs/1/job/{9000 + attempt}" if url else None}
+            "html_url": f"https://github.com/{REPO}/actions/runs/{run_id}/job/{jid}" if url else None,
+            "check_run_url": check_run_url(jid)}
 
 
 def run(env: "GhEnv", run_id: int = 101, number: int | None = 41, attempt: int | None = 1, *,
@@ -101,6 +112,8 @@ def run(env: "GhEnv", run_id: int = 101, number: int | None = 41, attempt: int |
     """A workflow run of H and what GitHub holds for its latest attempt: jobs, and the
     tested-SHA artifact contents by name (default: one correct artifact per success job)."""
     jobs = [job(attempt=attempt or 1)] if jobs is None else jobs
+    jobs = [{**j, "id": job_id(run_id, j["name"], j["run_attempt"]),
+             "check_run_url": check_run_url(job_id(run_id, j["name"], j["run_attempt"]))} for j in jobs]
     if tested is None:
         tested = {
             f"tested-sha-{j['name']}-{attempt}": {"run_id": str(run_id), "run_attempt": str(attempt), "job": j["name"],
@@ -108,10 +121,17 @@ def run(env: "GhEnv", run_id: int = 101, number: int | None = 41, attempt: int |
             for j in jobs if j["conclusion"] == "success"
         }
     return {"id": run_id, "run_number": number, "run_attempt": attempt, "event": event, "head_sha": head or env.h,
-            "path": path, "pull_requests": [{"number": n} for n in prs], "status": status,
+            "check_suite_id": 5000 + run_id, "path": path, "pull_requests": [{"number": n} for n in prs], "status": status,
             "conclusion": None if status != "completed" else "success",
             "html_url": f"https://github.com/{REPO}/actions/runs/{run_id}", "jobs": jobs, "tested": tested,
             **run_extra}
+
+
+def actions_check_runs(runs: list[dict]) -> list[dict]:
+    """The GitHub Actions check-run of every job, as `commits/<sha>/check-runs` lists it."""
+    return [{"id": j["id"], "name": j["name"], "head_sha": r["head_sha"], "status": j["status"],
+             "conclusion": j["conclusion"], "html_url": j["html_url"], "app": {"slug": "github-actions"},
+             "check_suite": {"id": r["check_suite_id"]}} for r in runs for j in r["jobs"]]
 
 
 # --- environment ------------------------------------------------------------------------------
@@ -290,10 +310,13 @@ class GhEnv(Env):
         self.gh.set("pr_get", api(f"repos/{self.gh_repo}/pulls/{PR}"), page(get or pr_json(self)))
 
     def ci(self, runs: list[dict], *, rules: int | list[str] = 403, statuses: list[dict] | None = None,
-           check_runs: list[dict] | None = None, pages: int = 1, head: str | None = None) -> None:
+           check_runs: list[dict] | None = None, pages: int = 1, head: str | None = None,
+           own_check_runs: bool = True) -> None:
         """Everything `observe ci` may read for H: rules, runs (in `pages` pages), jobs of each
-        run's latest attempt, artifacts and their download, check-runs, commit statuses."""
+        run's latest attempt, artifacts and their download, check-runs (each job's own, unless
+        `own_check_runs` is false, plus `check_runs`), commit statuses."""
         repo, h = self.gh_repo, head or self.h
+        check_runs = [*(actions_check_runs(runs) if own_check_runs else []), *(check_runs or [])]
         if isinstance(rules, int):
             self.gh.set("rules", api(f"repos/{repo}/rules/branches/main?per_page=100"),
                         page({"message": "Resource not accessible by integration"}, status=rules))
@@ -323,8 +346,8 @@ class GhEnv(Env):
                             ["run", "download", str(r["id"]), "--repo", repo, "--name", name, "--dir", "*"],
                             {"stdout": "", "effects": [{"write": "{dir}/tested-sha.json", "json": content}]},
                             capture={"dir": r"--dir (\S+)"})
-        self.gh.set("check_runs", api(f"repos/{repo}/commits/{h}/check-runs?per_page=100"),
-                    page({"total_count": len(check_runs or []), "check_runs": check_runs or []}))
+        self.gh.set("check_runs", api(f"repos/{repo}/commits/{h}/check-runs?*per_page=100"),
+                    page({"total_count": len(check_runs), "check_runs": check_runs}))
         self.gh.set("statuses", api(f"repos/{repo}/commits/{h}/statuses?per_page=100"), page(statuses or []))
 
     # --- the path to G3 -------------------------------------------------------------------------
@@ -588,6 +611,8 @@ def test_h4b_every_pr_run_of_h_counts_with_its_latest_attempt(env, rerun):
     assert g3["status"] == {"pending": "pending", "failure": "failed", "success": "passed"}[rerun], g3
     runs = check(g3)["runs"]
     assert [(r["run_number"], r["run_attempt"]) for r in runs] == [(41, 2), (42, 1)]
+    # the check-runs of every run of H, not only the latest per name (GitHub's default filter)
+    assert "filter=all" in env.calls("check_runs")[-1]["argv"][-1]
 
 
 def test_h4c_a_later_run_success_does_not_hide_an_earlier_run_failure(env):
@@ -624,11 +649,44 @@ def test_h4_a_counted_check_keeps_its_identity_and_readable_url(env):
         "event": "pull_request", "head_sha": env.h, "status": "completed", "conclusion": "success",
         "tested_sha": env.h}
     assert record["url"].startswith("https://github.com/")
+    assert record["check_run_id"] == job_id(101, JOB, 1)  # the job's own GitHub Actions check-run
     env.ci([run(env, jobs=[job(url=False)])])
     env.clock.advance(seconds=60)
     assert env.observe("ci")[0] == 0
     g3 = env.g3()
     assert g3["status"] == "unknown" and f"check_url_missing:{JOB}:101" in g3["reasons"]
+
+
+CHECK_RUN = {
+    "no_check_run": f"check_run_missing:{JOB}:101",
+    "only_another_apps_same_name": f"check_run_missing:{JOB}:101",
+    "other_app": f"check_run_mismatch:app:{JOB}:101",
+    "other_name": f"check_run_mismatch:name:{JOB}:101",
+    "other_head": f"check_run_mismatch:head_sha:{JOB}:101",
+    "other_check_suite": f"check_run_mismatch:check_suite:{JOB}:101",
+}
+
+
+@pytest.mark.parametrize("case", CHECK_RUN)
+def test_h4_a_successful_job_counts_only_through_its_own_github_actions_check_run(env, case):
+    """Design §8: a candidate is a check-run of app github-actions, of the policy workflow's run
+    (its check suite: workflow path, event, PR), with the job's name and head_sha H."""
+    started(env)
+    env.open_pr()
+    r = run(env)
+    own = actions_check_runs([r])[0]
+    check_runs = {
+        "no_check_run": [],
+        "only_another_apps_same_name": [{**own, "id": 777, "app": {"slug": "other-ci"}, "check_suite": {"id": 1}}],
+        "other_app": [{**own, "app": {"slug": "other-ci"}}],
+        "other_name": [{**own, "name": "unit-macos"}],
+        "other_head": [{**own, "head_sha": "e" * 40}],
+        "other_check_suite": [{**own, "check_suite": {"id": 1}}],
+    }[case]
+    g3 = env.to_g3([r], check_runs=check_runs, own_check_runs=False)
+    assert g3["status"] == "unknown" and CHECK_RUN[case] in g3["reasons"], g3
+    assert check(g3)["runs"][0]["via"] is None  # never counted
+    assert env.next()["action"] == "human"
 
 
 # --- h5: an integration SHA as the tested source ----------------------------------------------

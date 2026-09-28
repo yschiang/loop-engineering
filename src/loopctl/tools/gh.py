@@ -306,7 +306,7 @@ def _download(repo: str, run_id: int, name: str, timeout_s: float) -> dict[str, 
 
 
 def _job(j: dict[str, Any]) -> dict[str, Any]:
-    return {k: j.get(k) for k in ("id", "name", "status", "conclusion", "run_attempt", "html_url")}
+    return {k: j.get(k) for k in ("id", "name", "status", "conclusion", "run_attempt", "html_url", "check_run_url")}
 
 
 def read_ci(repo: str, head: str, base_branch: str, workflow: str | None, names: list[str],
@@ -331,7 +331,7 @@ def read_ci(repo: str, head: str, base_branch: str, workflow: str | None, names:
     listed = _pages(f"repos/{repo}/actions/runs?head_sha={head}&per_page=100", timeout_s, "workflow_runs", raws) or []
     for r in sorted((r for r in listed if isinstance(r, dict)), key=lambda r: (r.get("id") is None, r.get("id") or 0)):
         entry: dict[str, Any] = {k: r.get(k) for k in ("id", "run_number", "run_attempt", "event", "head_sha",
-                                                       "status", "conclusion", "html_url")}
+                                                       "check_suite_id", "status", "conclusion", "html_url")}
         entry |= {"path": str(r.get("path") or "").split("@", 1)[0],
                   "pull_requests": [p.get("number") for p in (r.get("pull_requests") or []) if isinstance(p, dict)],
                   "jobs": None, "artifacts": None, "tested": {}}
@@ -351,10 +351,12 @@ def read_ci(repo: str, head: str, base_branch: str, workflow: str | None, names:
                     if any(a["name"] == name and not a["expired"] for a in entry["artifacts"]):
                         entry["tested"][name] = _download(repo, entry["id"], name, timeout_s)
         runs.append(entry)
-    check_runs = [{"name": c.get("name"), "app": (c.get("app") or {}).get("slug"), "status": c.get("status"),
+    # filter=all: every run's check-runs of H, not only the latest one per name (GitHub's default)
+    check_runs = [{"id": c.get("id"), "name": c.get("name"), "app": (c.get("app") or {}).get("slug"),
+                   "check_suite": (c.get("check_suite") or {}).get("id"), "status": c.get("status"),
                    "conclusion": c.get("conclusion"), "head_sha": c.get("head_sha"), "url": c.get("html_url")}
-                  for c in _pages(f"repos/{repo}/commits/{head}/check-runs?per_page=100", timeout_s, "check_runs",
-                                  raws) or [] if isinstance(c, dict)]
+                  for c in _pages(f"repos/{repo}/commits/{head}/check-runs?filter=all&per_page=100", timeout_s,
+                                  "check_runs", raws) or [] if isinstance(c, dict)]
     statuses = [{"context": s.get("context"), "state": s.get("state")}
                 for s in _pages(f"repos/{repo}/commits/{head}/statuses?per_page=100", timeout_s, None, raws) or []
                 if isinstance(s, dict)]
