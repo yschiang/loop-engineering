@@ -302,8 +302,8 @@ def op_spec(state: State, kind: str, op_id: str, pol: dict[str, Any], feature: s
         started = (state.get("writes") or {}).get(f"{attempt}.agent_start") or {}
         if op_id == attempt or attempt not in attempts or started.get("status") != "succeeded":
             raise Rejected("not_routable", op=op_id)
-    elif state.get("blockers"):
-        raise Rejected("feature_blocked", 3, blockers=state["blockers"])
+    elif found := writes.live_blockers(state):
+        raise Rejected("feature_blocked", 3, blockers=found)
     elif state.get("phase") not in ("approved", "implementing"):
         raise Rejected("not_routable", op=op_id, phase=state.get("phase"))
     else:

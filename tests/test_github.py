@@ -1264,6 +1264,68 @@ def test_h11_a_push_of_an_earlier_approval_is_superseded_and_a_fresh_push_runs(e
     assert env.unexpected() == []
 
 
+def exhausted_push(env: GhEnv) -> str:
+    """Three pushes of H under approve-1, none of which reached any remote: retry_exhausted."""
+    started(env)
+    old = f"push.{env.h}"
+    git(env.repo, "remote", "set-url", "origin", str(env.tmp / "missing.git"))
+    for _ in range(3):
+        env.write_op("push", old)
+    assert env.state()["writes"][old]["blocked"] == "retry_exhausted"
+    assert f"retry_exhausted:{old}" in env.blockers()
+    git(env.repo, "remote", "set-url", "origin", str(env.remote))
+    return old
+
+
+def reapproved(env: GhEnv) -> None:
+    (env.tmp / "spec-v2.md").write_text("# spec v2\n")
+    code, out = env.cli("register", "binding", "--role", "spec", "--locator", str(env.tmp / "spec-v2.md"),
+                        "--version", "s2", "--feature", FEATURE, f"--token={env.token}")
+    assert code == 0 and out["result"]["approval_invalidated"] is True, out
+    code, out = env.decide("approve_plan", id="approve-2", target=str(env.tmp / "plan.md"), reason="re-approved")
+    assert code == 0, out
+
+
+@pytest.mark.parametrize("retired", ["by_the_fresh_push", "by_writing_it"])
+def test_h11_a_retry_exhausted_push_of_an_earlier_approval_is_superseded_and_a_fresh_push_runs(env, retired):
+    old = exhausted_push(env)
+    reapproved(env)
+
+    fresh = f"{old}~2"
+    assert env.next() == {"action": "write", "op": "push", "id": fresh}  # not the obsolete blocker
+    if retired == "by_writing_it":
+        code, out = env.write_op("push", old)
+        assert (code, out["result"]["error"]) == (1, "op_superseded"), out
+    code, out = env.write_op("push", fresh)
+    assert code == 0 and out["result"]["op"]["status"] == "succeeded", out
+    op = env.state()["writes"][old]
+    assert (op["status"], op["blocked"], len(op["attempts"])) == ("superseded", None, 3)
+    assert {k: op["superseded"][k] for k in ("reason", "approval", "current", "blocked")} == {
+        "reason": "approval_changed", "approval": "approve-1", "current": "approve-2", "blocked": "retry_exhausted"}
+    assert env.blockers() == []  # its own obsolete blocker is cleared
+    assert len(env.state()["writes"][fresh]["attempts"]) == 1  # the fresh op starts its own count
+    assert len(env.pushes()) == 4 and env.remote_ref() == env.h
+    env.pr_routes()
+    assert env.next() == {"action": "write", "op": "pr_ensure", "id": "pr_ensure"}
+    assert env.unexpected() == []
+
+
+def test_h11_an_unrelated_blocker_stays_when_a_retry_exhausted_push_is_superseded(env):
+    old = exhausted_push(env)
+    unrelated = f"read_exhausted:pr:{PR}"  # recorded by another path; not the push's
+    env.mutate("unrelated_blocker", lambda s: {**s, "blockers": [*s["blockers"], unrelated]})
+    reapproved(env)
+
+    assert env.next() == {"action": "human", "blockers": [unrelated], "decision_kinds": ["resolve_read"]}
+    code, out = env.write_op("push", old)
+    assert (code, out["result"]["error"]) == (1, "op_superseded"), out
+    assert env.state()["writes"][old]["status"] == "superseded"
+    assert env.blockers() == [unrelated]
+    code, out = env.write_op("push", f"{old}~2")
+    assert (code, out["result"]["error"]) == (3, "feature_blocked"), out
+    assert len(env.pushes()) == 3  # nothing sent while the unrelated blocker stands
+
+
 def test_h10_a_pr_ensure_of_an_earlier_approval_is_superseded_and_a_fresh_one_runs(env, monkeypatch):
     from loopctl import writes
 

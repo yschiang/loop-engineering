@@ -37,7 +37,9 @@ def budget_blockers(state: State) -> list[str]:
 
 
 def blockers(state: State, blocked: list[str]) -> list[str]:
-    """The recorded blockers plus the budget's (derived from the state and the clock)."""
+    """The recorded blockers plus the budget's (derived from the state and the clock). The
+    blocker of an op of an earlier approval is obsolete: routing supersedes that op."""
+    blocked = writes.live_blockers(state, blocked)
     return [*blocked, *(b for b in budget_blockers(state) if b not in blocked)]
 
 

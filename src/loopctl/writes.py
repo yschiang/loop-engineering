@@ -20,10 +20,12 @@ back (at most `readback_max` per call attempt, every read counts) or resolved by
 `resolve_operation`; nothing is ever resent on a guess.
 
 Superseded (Lead ruling 2026-09-28, T2.3 review verdict): a never-sent op (prepared, or failed
-and not delivered) whose approval is no longer the current one is stale. Its argv is never
-sent; the controller marks it superseded (terminal) when it is written or when the next op is
-prepared, and routing continues with a fresh op ID (`current_id`). An in_flight or unknown op
-is never superseded: it may have taken effect.
+and not delivered, also once its retries are exhausted) whose approval is no longer the current
+one is stale. Its argv is never sent; the controller marks it superseded (terminal) when it is
+written or when the next op is prepared, clearing its own retry_exhausted blocker, and routing
+continues with a fresh op ID (`current_id`) that has its own retry count. Until then that
+blocker is obsolete (`live_blockers`); every other blocker stays. An in_flight or unknown op is
+never superseded: it may have taken effect.
 """
 
 import json
@@ -147,12 +149,25 @@ def prepared_under_current(st: State, op: dict[str, Any]) -> bool:
 
 def stale(st: State, op_id: str) -> bool:
     """Never sent, and not prepared under the current approval. A stop is always allowed
-    (D47); a Blocked op stays for a human."""
+    (D47). Of the Blocked ops only retry_exhausted is certainly undelivered; a refused one
+    stays for a human."""
     op = (st.get("writes") or {}).get(op_id)
     return (
         op is not None and op.get("kind") in KINDS and op["kind"] != "stop" and op.get("status") in ("prepared", "failed")
-        and not op.get("blocked") and not prepared_under_current(st, op)
+        and op.get("blocked") in (None, "retry_exhausted") and not prepared_under_current(st, op)
     )
+
+
+def obsolete(st: State, blocker: str) -> bool:
+    """The blocker of a stale op: cleared when that op is superseded, never waited on."""
+    reason, _, op_id = blocker.partition(":")
+    op = (st.get("writes") or {}).get(op_id) or {}
+    return reason in BLOCKED_REASONS and op.get("blocked") == reason and stale(st, op_id)
+
+
+def live_blockers(st: State, blocked: list[str] | None = None) -> list[str]:
+    """The recorded blockers (or `blocked`) without the obsolete ones."""
+    return [b for b in (st.get("blockers", []) if blocked is None else blocked) if not obsolete(st, b)]
 
 
 def current_id(st: State, base: str) -> str:
@@ -166,8 +181,8 @@ def current_id(st: State, base: str) -> str:
 
 
 def _supersede_stale(st: State, at: str) -> None:
-    """Mark every stale op superseded. An agent_start never sent started no agent: its attempt
-    ends with it."""
+    """Mark every stale op superseded, clearing its own retry_exhausted blocker. An
+    agent_start never sent started no agent: its attempt ends with it."""
     for op_id in sorted(st.get("writes") or {}):
         if not stale(st, op_id):
             continue
@@ -175,6 +190,9 @@ def _supersede_stale(st: State, at: str) -> None:
         op["status"] = "superseded"
         op["superseded"] = {"reason": "approval_changed" if "approval" in op else "approval_unrecorded",
                             "approval": op.get("approval"), "current": approval_of(st), "at": at}
+        if op.get("blocked"):
+            op["superseded"]["blocked"] = op["blocked"]
+            _clear_blocked(st, op_id)
         a = (st.get("attempts") or {}).get(op_id.removesuffix(".agent_start"))
         if op["kind"] == "agent_start" and a is not None and not a.get("end"):
             a["end"] = {"evidence": "superseded", "at": at}
@@ -192,8 +210,8 @@ def refusal(st: State, op_id: str) -> Rejected | None:
     op = st["writes"][op_id]
     if op["kind"] == "stop":
         return None
-    if st.get("blockers"):
-        return Rejected("feature_blocked", 3, blockers=st["blockers"])
+    if found := live_blockers(st):
+        return Rejected("feature_blocked", 3, blockers=found)
     allowed = next_step.next_action(st, [])
     if allowed != {"action": "write", "op": op["kind"], "id": op_id}:
         return Rejected("not_routable", op=op_id, next=allowed)
@@ -248,6 +266,8 @@ def write(feature: str, token: str | None, kind: str, op_id: str, prepare: Prepa
         raise Rejected("op_kind_mismatch", op=op_id, kind=op["kind"])
     if (decision := pending_resolution(st, op_id)) is not None:
         return _resolve(feature, op_id, decision)
+    if op.get("blocked") and stale(st, op_id):
+        return _retire(feature, op_id)
     if op.get("blocked"):
         raise Rejected(op["blocked"], 3, op=view(op_id, op), performed="none")
     status = op["status"]
@@ -321,6 +341,27 @@ def _interrupted(feature: str, op_id: str, n: int) -> None:
         commit(feature, f"write:{op_id}:interrupted:{n}", mutate)
     except _Skip:
         pass
+
+
+def _retire(feature: str, op_id: str) -> dict[str, Any]:
+    """A retry-exhausted op of an earlier approval: superseded, never sent again."""
+    at = now_iso()
+
+    def mutate(st: State) -> State:
+        if not stale(st, op_id):
+            raise _Skip
+        _supersede_stale(st, at)
+        return st
+
+    try:
+        commit(feature, f"write:{op_id}:retire@{at}:{secrets.token_hex(6)}", mutate)
+    except _Skip:
+        pass
+    op = store.load(feature)[1]["writes"][op_id]
+    if op["status"] == "superseded":
+        raise _superseded(op_id, op)
+    raise Rejected(op["blocked"] or "op_state_changed", 3 if op.get("blocked") else 1, op=view(op_id, op),
+                   performed="none")
 
 
 def _call(feature: str, op_id: str) -> dict[str, Any]:
@@ -489,8 +530,8 @@ def github_spec(state: State, kind: str, op_id: str, pol: dict[str, Any], featur
     g1 = (state.get("gates") or {}).get("g1") or {}
     if g1.get("status") != "passed":
         raise Rejected("g1_not_passed", 1, op=op_id, g1=g1.get("status", "pending"))
-    if state.get("blockers"):
-        raise Rejected("feature_blocked", 3, blockers=state["blockers"])
+    if found := live_blockers(state):
+        raise Rejected("feature_blocked", 3, blockers=found)
     allowed = next_step.next_action(state, [])
     if allowed != {"action": "write", "op": kind, "id": op_id}:
         raise Rejected("not_routable", op=op_id, next=allowed)
