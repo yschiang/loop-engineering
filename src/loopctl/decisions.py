@@ -36,6 +36,8 @@ PRODUCERS = ("implementer", "project_lead")
 BINDING_ROLES = ("spec", "design", "ac", "sa", "skill", "baseline")
 # Bindings an approval covers (design §8 version table); sa and baseline are not.
 APPROVAL_ROLES = ("spec", "design", "ac", "skill")
+# The plan fields an approval binds (AC-O06): any change needs a new approve_plan.
+PLAN_BINDING = ("locator", "version", "digest", "producer", "calibrated_from")
 CATEGORIES = ("spec_ac", "correctness_security", "missing_verification", "preference")
 REQUIRED = ("feature", "id", "actor", "target", "version", "reason")
 FINDING_KINDS = ("resolve_finding", "waive_finding", "reclassify_finding")
@@ -114,6 +116,10 @@ def plan_approvable(plan: dict[str, Any] | None) -> bool:
     return bool(plan and plan["producer"] == "implementer" and plan["calibrated_from"])
 
 
+def plan_binding(plan: dict[str, Any]) -> dict[str, Any]:
+    return {k: plan[k] for k in PLAN_BINDING}
+
+
 def bound_digests(state: State) -> dict[str, str]:
     plan = state.get("plan")
     out = {"plan": plan["digest"]} if plan else {}
@@ -170,7 +176,7 @@ def decide(state: State, rec: dict[str, Any], at: str) -> State:
         plan = state["plan"]
         new["approval"] = {
             "decision": rec["id"],
-            "plan": {k: plan[k] for k in ("locator", "version", "digest", "producer", "calibrated_from")},
+            "plan": plan_binding(plan),
             "digests": bound_digests(state),
         }
         new["phase"] = "approved"
@@ -208,8 +214,9 @@ def artifact(
 
 
 def register(state: State, kind: str, entry: dict[str, Any]) -> State:
-    """The mutate of a registration. A changed plan/spec/design/AC/skill digest revokes the
-    approval: the run waits for a new approve_plan (design §8 version table)."""
+    """The mutate of a registration. A changed plan binding, or a changed spec/design/AC/skill
+    digest, revokes the approval: the run waits for a new approve_plan (design §8 version
+    table)."""
     versions = dict(state.get("versions", {}))
     new = {**state}
     if kind == "plan":
@@ -220,7 +227,9 @@ def register(state: State, kind: str, entry: dict[str, Any]) -> State:
         versions["policy"] = entry
     new["versions"] = versions
     approval = state.get("approval")
-    if approval and bound_digests(new) != approval["digests"]:
+    if approval and (
+        plan_binding(new["plan"]) != approval["plan"] or bound_digests(new) != approval["digests"]
+    ):
         new["approval"] = None
         new["phase"] = "awaiting_approval"
     return new

@@ -342,6 +342,51 @@ def test_registering_a_changed_plan_after_approval_needs_a_new_approve_plan(
     assert store.load(FEATURE)[1]["approval"]["plan"]["digest"] == sha(repo / PLAN)
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"version": "v2"},
+        {"producer": "project_lead"},
+        {"calibrated": "docs/sa/P03-confirmation.md"},
+        {"locator": "docs/superpowers/plans/P03-copy.md"},
+    ],
+    ids=["version", "producer", "calibrated_from", "locator"],
+)
+def test_reregistering_the_same_plan_bytes_with_another_binding_revokes_approval(
+    capsys, home, repo, fakes, change
+):
+    """Approval binds locator, version, producer and calibration source, not only the
+    digest (AC-O06): the same bytes under another binding need a new approve_plan."""
+    token = started(capsys)
+    register_plan(capsys, token)
+    approve(capsys, token)
+    if "locator" in change:
+        (repo / change["locator"]).write_bytes((repo / PLAN).read_bytes())
+
+    code, out = register_plan(capsys, token, **change)
+    assert code == 0, out
+    _, state = store.load(FEATURE)
+    assert state["plan"]["digest"] == sha(repo / PLAN)  # same bytes
+    assert out["result"]["approval_invalidated"] is True
+    assert state["approval"] is None and state["phase"] == "awaiting_approval"
+    blocker = "plan_not_calibrated" if "producer" in change else "plan_not_approved"
+    assert next_of(capsys)["blockers"] == [blocker]
+    assert fakes.calls() == []
+
+
+def test_reregistering_the_identical_plan_binding_keeps_approval(capsys, home, repo, fakes):
+    token = started(capsys)
+    register_plan(capsys, token)
+    approve(capsys, token)
+
+    code, out = register_plan(capsys, token)
+    assert code == 0, out
+    assert out["result"]["approval_invalidated"] is False
+    _, state = store.load(FEATURE)
+    assert state["phase"] == "approved"
+    assert state["approval"]["decision"] == "approve_plan-1"
+
+
 # --- d7a -------------------------------------------------------------------------------
 
 
