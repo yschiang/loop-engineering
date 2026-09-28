@@ -18,7 +18,14 @@ POLICY = ROOT / "workflow.yaml"
 HEAD_SHA = "${{ github.event.pull_request.head.sha }}"
 ARTIFACT = "tested-sha-${{ github.job }}-${{ github.run_attempt }}"
 RUNNER_PLATFORM = {"ubuntu-24.04": "linux", "macos-15": "darwin"}
-EXTRA_COMMANDS = {"unit-linux": ["uv run ruff check .", "uv run mypy src", "scripts/dist-smoke.sh"]}
+EXTRA_COMMANDS = {
+    "unit-linux": [
+        "uv run ruff check .",
+        "uv run mypy src",
+        "scripts/dist-smoke.sh",
+        'scripts/hooks/commit-msg --range "$BASE_SHA..$HEAD_SHA"',
+    ]
+}
 
 
 def blob_sha(data: bytes) -> str:

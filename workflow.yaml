@@ -5,7 +5,7 @@ g3:
   trigger_event: pull_request
   base_branch: main
   workflow: .github/workflows/loopctl-ci.yml
-  workflow_blob_sha: 515672328bcf7817d60698fd7fe44c5338ea3a41
+  workflow_blob_sha: b07d383a323bda0c55b73ecae192a1ff02703b8e
   required_checks:
     - {name: unit-linux, app: github-actions}   # D53: only unit-linux (validation §6.3)
   exceptions: []
