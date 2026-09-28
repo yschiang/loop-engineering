@@ -751,6 +751,18 @@ def test_g4_a_syntax_or_import_error_is_not_a_red(env, broken, status):
 # --- g5: evidence outside the repo; a docs-only head after the code -----------------------------
 
 
+def _raw_copies(env: Env) -> dict[str, list[Path]]:
+    """Each non-empty raw evidence digest → every file under the test's tmp dir with exactly
+    that content (the store, the repository, the worktree, anything else)."""
+    raw = {d for e in env.state()["evidence"].values()
+           for d in [*(e.get("raw_digest") or {}).values(), e.get("junit_digest")] if d} - {store.digest(b"")}
+    found: dict[str, list[Path]] = {d: [] for d in raw}
+    for path in env.tmp.rglob("*"):
+        if path.is_file() and not path.is_symlink() and (d := store.digest(path.read_bytes())) in found:
+            found[d].append(path)
+    return found
+
+
 @pytest.mark.parametrize("green_at_d", ["passes", "fails"])
 def test_g5_docs_commit_after_the_code_reruns_green_at_d(env, monkeypatch, green_at_d):
     env.start()
@@ -766,8 +778,14 @@ def test_g5_docs_commit_after_the_code_reruns_green_at_d(env, monkeypatch, green
     assert code == 0, out
     green = out["result"]["evidence"]
     assert (green["head"], green["checkout_head"], sha_out.read_text()) == (d, d, d)  # D, not C
-    assert not [p for p in git(env.wt, "ls-files").splitlines() if p.startswith(".loopctl")]
-    assert env.home not in env.repo.parents and not (env.repo / "objects").exists()
+    # Every raw artefact (stdout, stderr, junit) is stored only under $LOOPCTL_HOME/objects,
+    # outside the repository and its worktree, tracked or untracked.
+    copies = _raw_copies(env)
+    assert copies and all(copies.values())  # each one is stored somewhere
+    elsewhere = [str(p.relative_to(env.tmp)) for paths in copies.values() for p in paths
+                 if p.parent != env.home / "objects" or p.is_relative_to(env.repo) or p.is_relative_to(env.wt)]
+    assert elsewhere == []
+    assert not env.home.is_relative_to(env.repo) and not env.home.is_relative_to(env.wt)
 
     env.assess()
     g1 = env.g1()
