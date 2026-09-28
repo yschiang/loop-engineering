@@ -913,7 +913,8 @@ def ci_wait_started(state: State, head: str) -> bool:
 def start_ci_wait(st: State, head: str, at: str) -> State:
     """The CI wait (design §10) starts at the first `observe ci` after the push of H succeeded;
     its timeout is T7.1's."""
-    if (st.get("writes") or {}).get(f"push.{head}", {}).get("status") == "succeeded" and not ci_wait_started(st, head):
+    push = (st.get("writes") or {}).get(writes.current_id(st, f"push.{head}"), {})
+    if push.get("status") == "succeeded" and not ci_wait_started(st, head):
         st.setdefault("activities", []).append({"kind": "ci_wait", "head": head, "start": at, "end": None})
     return st
 
@@ -944,6 +945,7 @@ def after_github(source: str) -> Any:
 
 
 def _op_step(state: State, kind: str, op_id: str, now: datetime) -> dict[str, Any] | None:
+    op_id = writes.current_id(state, op_id)  # an op of an earlier approval is superseded by a fresh one
     op = (state.get("writes") or {}).get(op_id)
     if op is None or (op["status"] in ("prepared", "failed") and not op.get("blocked")):
         return {"action": "write", "op": kind, "id": op_id}

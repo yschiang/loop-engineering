@@ -1209,6 +1209,91 @@ def test_h11_a_third_undelivered_push_exhausts_the_retries(env):
     assert code == 3 and len(env.pushes()) == 3
 
 
+class Crash(Exception):
+    """The writing process vanished after persisting the op, before calling git."""
+
+
+@pytest.mark.parametrize("status", ["prepared", "failed"])
+def test_h11_a_push_of_an_earlier_approval_is_superseded_and_a_fresh_push_runs(env, monkeypatch, status):
+    from loopctl import writes
+
+    started(env)
+    old = f"push.{env.h}"
+    if status == "failed":
+        git(env.repo, "remote", "set-url", "origin", str(env.tmp / "missing.git"))
+        code, out = env.write_op("push", old)  # nothing reached any remote
+        assert code == 0 and out["result"]["op"]["status"] == "failed", out
+        git(env.repo, "remote", "set-url", "origin", str(env.remote))
+    else:
+        def crash(feature: str, op_id: str) -> dict:
+            raise Crash(op_id)
+
+        with monkeypatch.context() as m:
+            m.setattr(writes, "_call", crash)
+            with pytest.raises(Crash):
+                env.write_op("push", old)
+    pushes = len(env.pushes())
+    (env.tmp / "spec-v2.md").write_text("# spec v2\n")
+    code, out = env.cli("register", "binding", "--role", "spec", "--locator", str(env.tmp / "spec-v2.md"),
+                        "--version", "s2", "--feature", FEATURE, f"--token={env.token}")
+    assert code == 0 and out["result"]["approval_invalidated"] is True, out
+    code, out = env.decide("approve_plan", id="approve-2", target=str(env.tmp / "plan.md"), reason="re-approved")
+    assert code == 0, out
+
+    fresh = f"{old}~2"
+    assert env.next() == {"action": "write", "op": "push", "id": fresh}
+    code, out = env.write_op("push", old)
+    assert (code, out["result"]["error"]) == (1, "op_superseded"), out
+    assert len(env.pushes()) == pushes  # the old argv is never sent
+    op = env.state()["writes"][old]
+    assert op["status"] == "superseded"
+    assert {k: op["superseded"][k] for k in ("reason", "approval", "current")} == {
+        "reason": "approval_changed", "approval": "approve-1", "current": "approve-2"}
+    code, out = env.write_op("push", fresh)
+    assert code == 0 and out["result"]["op"]["status"] == "succeeded", out
+    assert len(env.pushes()) == pushes + 1 and env.remote_ref() == env.h
+
+    env.pr_routes()
+    assert env.next() == {"action": "write", "op": "pr_ensure", "id": "pr_ensure"}
+    assert env.write_op("pr_ensure", "pr_ensure")[0] == 0
+    assert env.observe("pr")[0] == 0
+    env.ci([run(env)])
+    assert env.next() == {"action": "observe", "source": "ci", "purpose": "ci", "read_key": env.ci_key}
+    assert env.observe("ci")[0] == 0
+    assert [a["head"] for a in env.state()["activities"] if a["kind"] == "ci_wait"] == [env.h]  # after the fresh push
+    assert env.unexpected() == []
+
+
+def test_h10_a_pr_ensure_of_an_earlier_approval_is_superseded_and_a_fresh_one_runs(env, monkeypatch):
+    from loopctl import writes
+
+    started(env)
+    env.push()
+    env.pr_routes()
+
+    def crash(feature: str, op_id: str) -> dict:
+        raise Crash(op_id)
+
+    with monkeypatch.context() as m:
+        m.setattr(writes, "_call", crash)
+        with pytest.raises(Crash):
+            env.write_op("pr_ensure", "pr_ensure")
+    (env.tmp / "spec-v2.md").write_text("# spec v2\n")
+    code, out = env.cli("register", "binding", "--role", "spec", "--locator", str(env.tmp / "spec-v2.md"),
+                        "--version", "s2", "--feature", FEATURE, f"--token={env.token}")
+    assert code == 0, out
+    code, out = env.decide("approve_plan", id="approve-2", target=str(env.tmp / "plan.md"), reason="re-approved")
+    assert code == 0, out
+
+    assert env.next() == {"action": "write", "op": "pr_ensure", "id": "pr_ensure~2"}
+    code, out = env.write_op("pr_ensure", "pr_ensure~2")
+    assert code == 0 and out["result"]["op"]["status"] == "succeeded", out
+    assert env.state()["writes"]["pr_ensure"]["status"] == "superseded"
+    assert len(env.calls("pr_create")) == 1 and env.state()["pr"]["op"] == "pr_ensure~2"
+    assert env.next() == {"action": "observe", "source": "pr", "purpose": "pr", "read_key": f"pr:{PR}"}
+    assert env.unexpected() == []
+
+
 # --- h12: the tested-SHA artifact of every job ---------------------------------------------------
 
 
