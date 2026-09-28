@@ -5,6 +5,7 @@ Each later task adds its own top-level fields; schema_version lives in store.
 
 import hashlib
 import hmac
+import secrets
 from typing import Any
 
 State = dict[str, Any]
@@ -34,6 +35,11 @@ def new_feature(repo: str, repo_id: str, issue: str) -> State:
         "acceptance": None,
         "blockers": [],
     }
+
+
+def new_token() -> str:
+    """256 random bits as hex: never starts with '-', so `--token <value>` parses (D53)."""
+    return secrets.token_hex(32)
 
 
 def token_digest(token: str) -> str:

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import secrets
 import subprocess
 import sys
 from pathlib import Path
@@ -343,6 +344,36 @@ def test_s7_uninitialised_feature_is_reported_absent_and_nothing_is_taken_over(
     assert not fdir(home, "F-missing").exists()
     assert store.load("F-other")[1]["owner"] is None
     assert fakes.calls() == []
+
+
+def test_claim_token_is_accepted_in_space_form_even_when_randomness_starts_with_0xf8(
+    capsys, home, tmp_path, monkeypatch
+):
+    """D53: a token starting with '-' made `--token <value>` a usage error.
+
+    0xf8 as the first random byte is the value token_urlsafe renders as a leading '-'.
+    """
+    monkeypatch.setattr(secrets, "token_bytes", lambda n=32: b"\xf8" + b"\x00" * (n - 1))
+    init(capsys)
+    token = claim(capsys, "alice")["result"]["token"]
+    doc = tmp_path / "sa.md"
+    doc.write_text("confirmed\n")
+    code, out = run(
+        capsys, "register", "binding", "--feature", FEATURE, "--token", token,
+        "--role", "sa", "--locator", str(doc), "--version", "sa-1",
+    )
+    assert code == 0, out
+    assert out["ok"] is True
+
+
+def test_generated_tokens_never_start_with_dash_and_keep_256_bits(monkeypatch):
+    tokens = [loopctl_state.new_token() for _ in range(2000)]
+    for first in range(256):
+        monkeypatch.setattr(secrets, "token_bytes", lambda n=32, b=first: bytes([b]) * n)
+        tokens.append(loopctl_state.new_token())
+    assert not [t for t in tokens if t.startswith("-")]
+    assert all(len(t) == 64 and int(t, 16) >= 0 for t in tokens)
+    assert len(set(tokens[:2000])) == 2000
 
 
 def test_state_core_does_not_import_subprocess_or_tools():

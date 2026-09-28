@@ -8,7 +8,6 @@ Each task adds only its own subcommands here (tasks.md shared-file table).
 import argparse
 import json
 import re
-import secrets
 import sys
 from pathlib import Path
 from typing import Any
@@ -212,7 +211,7 @@ class _Rejected(Exception):
 
 
 def _claim(args: argparse.Namespace) -> Outcome:
-    token = secrets.token_urlsafe(32)
+    token = state.new_token()
     owner = {"actor": args.actor, "token_digest": state.token_digest(token)}
 
     def take(st: state.State) -> state.State:
