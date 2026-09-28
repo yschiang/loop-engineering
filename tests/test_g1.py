@@ -41,7 +41,7 @@ from test_writes import (
     git,
 )
 
-from loopctl import clock, store
+from loopctl import clock, gates, store
 from loopctl.cli import main
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -114,10 +114,10 @@ def policy_doc(suite: list[str] | None = None, **limits: float) -> dict:
     return doc
 
 
-def plan_text(repo: Path, wt: Path, tasks: tuple[str, ...]) -> str:
+def plan_text(repo: Path, wt: Path, tasks: tuple[str, ...], remote: str | None = None) -> str:
+    ws = {"source": str(repo), "worktree": str(wt), "branch": BRANCH, "base": "main"}
     block = yaml.safe_dump(
-        {"workspace": {"source": str(repo), "worktree": str(wt), "branch": BRANCH, "base": "main"},
-         "tasks": [{"id": t, **TASKS[t]} for t in tasks]},
+        {"workspace": {**ws, "remote": remote} if remote else ws, "tasks": [{"id": t, **TASKS[t]} for t in tasks]},
         sort_keys=False,
     )
     return f"# plan\n\n```loopctl-plan\n{block}```\n"
@@ -182,11 +182,12 @@ class Env:
         code = main(list(argv))
         return code, json.loads(self.capsys.readouterr().out)
 
-    def start(self, tasks: tuple[str, ...] = ("T1",), suite: list[str] | None = None, **limits: float) -> None:
+    def start(self, tasks: tuple[str, ...] = ("T1",), suite: list[str] | None = None, remote: str | None = None,
+              **limits: float) -> None:
         pol, spec, plan = self.tmp / "workflow.yaml", self.tmp / "spec.md", self.tmp / "plan.md"
         pol.write_text(yaml.safe_dump(policy_doc(suite, **limits)))
         spec.write_text("# spec\n")
-        plan.write_text(plan_text(self.repo, self.wt, tasks))
+        plan.write_text(plan_text(self.repo, self.wt, tasks, remote))
         code, out = self.cli("init", "--repo", "yschiang/loop-engineering", "--repo-id", "R_1",
                              "--feature", FEATURE, "--issue", "7")
         assert code == 0, out
@@ -1130,9 +1131,32 @@ def test_g12_rewritten_history_blocks_and_nothing_is_pushed_or_rebased(env, fake
 # --- g13: integration merge, imports and author edits (real git) ------------------------------
 
 
+def _seed_g2_g3_passed(env: Env, head: str) -> None:
+    """G2 and G3 passed at `head`, as T5.1 / T6.1 record them once H was pushed, its PR
+    observed and CI read (fixture: the G2 result, the ops and the facts behind G3)."""
+    def seed(s: dict) -> None:
+        ctx = {"contract": gates.contract(s), "base": env.b0}
+        side = {"repo": s["repo"]}
+        pr_fact = {"found": True, "state": "open", "mergeable": True, "context": ctx,
+                   "head": {**side, "ref": BRANCH, "sha": head}, "base": {**side, "ref": "main", "sha": env.b0}}
+        current = s.setdefault("observations", {}).setdefault("current", {})
+        current["pr:5"] = {"pr": {"fact": pr_fact, "seq": 1}}
+        current[f"ci:{s['repo']}:{head}"] = {"ci": {"fact": {"context": ctx}, "seq": 2}}
+        s["pr"] = {"number": 5, "head_repo": s["repo"], "head_branch": BRANCH, "base_repo": s["repo"],
+                   "base_branch": "main"}
+        s["writes"].update({f"push.{head}": {"kind": "push", "status": "succeeded"},
+                            "pr_ensure": {"kind": "pr_ensure", "status": "succeeded"}})
+        s["gates"]["g2"] = {"status": "passed", "reasons": [], "head": head, "base": env.b0}
+        s["gates"]["g3"] = {"status": "passed", "reasons": [], "head": head, "base": env.b0,
+                            "contract": ctx["contract"]}
+
+    env.mutate("seed:g2-g3", seed)
+
+
 def _integration(env: Env, variant: str) -> tuple[str, str, str | None]:
-    """Steps 1–4 of validation g13; returns (H, B1, the integration Red or None)."""
-    env.start(tasks=("TA",))
+    """Steps 1–4 of validation g13; returns (H, B1, the integration Red or None). Before the
+    base moves, H has passed G1, G2 and G3."""
+    env.start(tasks=("TA",), remote="origin")
     env.dispatch("TA-a1")
     env.write("tests/test_a.py", "from a import a\n\n\ndef test_a_two():\n    assert a() == 2\n")
     env.captured("TA-a1")
@@ -1142,8 +1166,12 @@ def _integration(env: Env, variant: str) -> tuple[str, str, str | None]:
     if variant == "g":  # H and B1 will also conflict on docs/usage.md, outside F-I's scope
         env.write("docs/usage.md", "# Usage\n\nfeature docs\n")
         h = env.commit("docs: feature usage")
-        env.write("docs/usage.md", "# Usage\n\nbase docs\n", env.repo)
+    assert env.green()[0] == 0 and env.assess()[0] == 0
+    _seed_g2_g3_passed(env, h)
+    assert env.next() == {"action": "human", "blockers": ["g3_passed"], "decision_kinds": []}
 
+    if variant == "g":
+        env.write("docs/usage.md", "# Usage\n\nbase docs\n", env.repo)
     env.write("src/p.py", "P = 2\n", env.repo)
     if variant != "a":
         env.write("src/a.py", "def a():\n    return 3\n", env.repo)
@@ -1189,7 +1217,15 @@ def test_g13_integration_attempt_imports_and_author_edits(env, variant):
     env.assess()
     g1 = env.g1()
     check = g1["integration"].get("I1-a1", {})
-    assert "g2" not in env.state()["gates"] and "g3" not in env.state()["gates"]
+    # H's G2 and G3 stay H's: the new head gets neither from them, whatever G1 says at M.
+    gs = env.state()["gates"]
+    assert g1["head"] == m != h and (gs["g2"]["head"], gs["g3"]["head"]) == (h, h)
+    nxt = env.next()
+    assert "g3_passed" not in nxt.get("blockers", [])
+    if g1["status"] == "passed":
+        assert nxt == {"action": "write", "op": "push", "id": f"push.{m}"}  # then a PR run and review of M
+    else:
+        assert nxt["action"] == "human"
     if variant == "a":
         assert git(env.wt, "rev-list", "--parents", "-n", "1", m).split()[1:] == [h, b1]
         assert check["imported"] == ["src/p.py"] and check["author"] == {"conflict": [], "additional": []}
