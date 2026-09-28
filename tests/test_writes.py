@@ -437,10 +437,8 @@ class Crash(Exception):
     """The writing process vanished after persisting the op, before calling Herdr."""
 
 
-def prepared_prompt(h: Harness, monkeypatch) -> None:
+def crashed_write(h: Harness, monkeypatch, kind: str, op_id: str) -> None:
     from loopctl import writes
-
-    h.dispatch(until="agent_start")
 
     def crash(feature: str, op_id: str) -> dict:
         raise Crash(op_id)
@@ -448,15 +446,44 @@ def prepared_prompt(h: Harness, monkeypatch) -> None:
     with monkeypatch.context() as m:
         m.setattr(writes, "_call", crash)
         with pytest.raises(Crash):
-            h.write("prompt", "T1-a1.prompt")
-    op = h.state()["writes"]["T1-a1.prompt"]
+            h.write(kind, op_id)
+    op = h.state()["writes"][op_id]
     assert (op["status"], op["attempts"]) == ("prepared", [])
+
+
+def prepared_prompt(h: Harness, monkeypatch) -> None:
+    h.dispatch(until="agent_start")
+    crashed_write(h, monkeypatch, "prompt", "T1-a1.prompt")
 
 
 def scope_change(h: Harness) -> None:
     code, out = h.decide("scope_change", id="scope-1", target="AC-1", reason="AC-1 must also cover retries")
     assert code == 0, out
     assert h.state()["phase"] == "awaiting_approval"
+
+
+def reapprove(h: Harness) -> None:
+    """scope_change, a revised plan v2, approve-2 (design §8)."""
+    scope_change(h)
+    plan = h.repo / PLAN
+    plan.write_text(plan.read_text() + "\nT1 also covers retries.\n")
+    code, out = h.cli("register", "plan", "--locator", PLAN, "--version", "v2", "--producer", "implementer",
+                      "--calibrated-from", SPEC, "--feature", FEATURE, f"--token={h.token}")
+    assert code == 0, out
+    code, out = h.decide("approve_plan", id="approve-2", target=PLAN, version="v2")
+    assert code == 0, out
+
+
+def superseded(h: Harness, op_id: str) -> dict:
+    op = h.state()["writes"][op_id]
+    assert op["status"] == "superseded", op["status"]
+    return {k: v for k, v in op["superseded"].items() if k != "at"}
+
+
+def written(h: Harness, kind: str, op_id: str) -> None:
+    assert h.next() == {"action": "write", "op": kind, "id": op_id}
+    code, out = h.write(kind, op_id)
+    assert code == 0 and out["result"]["op"]["status"] == "succeeded", out
 
 
 @pytest.mark.parametrize("status", ["prepared", "failed"])
@@ -475,10 +502,12 @@ def test_an_existing_op_is_not_sent_once_approval_is_revoked(h, monkeypatch, sta
     h.expect(c_prompt())
 
     code, out = h.write("prompt", "T1-a1.prompt")
-    assert (code, out["result"].get("error")) == (3, "approval_changed"), out
+    assert (code, out["result"].get("error")) == (1, "op_superseded"), out
     assert len(h.herdr("agent", "prompt")) == sent  # 0 sends after the approval was revoked
-    op = h.state()["writes"]["T1-a1.prompt"]
-    assert op["status"] == status and len(op["attempts"]) == sent
+    assert len(h.state()["writes"]["T1-a1.prompt"]["attempts"]) == sent
+    assert superseded(h, "T1-a1.prompt") == {"reason": "approval_changed", "approval": "approve-1", "current": None}
+    code, out = h.write("prompt", "T1-a1.prompt")  # superseded is terminal
+    assert (code, out["result"].get("error")) == (1, "op_superseded"), out
 
     # stopping the started agent stays allowed (D47)
     h.calls = []
@@ -490,23 +519,66 @@ def test_an_existing_op_is_not_sent_once_approval_is_revoked(h, monkeypatch, sta
     assert h.unexpected() == []
 
 
-def test_an_op_prepared_under_an_earlier_approval_goes_to_a_human(h, monkeypatch):
-    prepared_prompt(h, monkeypatch)
-    scope_change(h)
-    plan = h.repo / PLAN
-    plan.write_text(plan.read_text() + "\nT1 also covers retries.\n")
-    tok = f"--token={h.token}"
-    code, out = h.cli("register", "plan", "--locator", PLAN, "--version", "v2", "--producer", "implementer",
-                      "--calibrated-from", SPEC, "--feature", FEATURE, tok)
-    assert code == 0, out
-    code, out = h.decide("approve_plan", id="approve-2", target=PLAN, version="v2")
-    assert code == 0, out
+REAPPROVED = {"reason": "approval_changed", "approval": "approve-1", "current": "approve-2"}
 
-    assert h.next() == {"action": "human", "blockers": ["approval_changed:T1-a1.prompt"], "decision_kinds": []}
+
+def test_a_worktree_prepared_under_an_earlier_approval_is_superseded_by_a_fresh_op(h, monkeypatch):
+    h.start()
+    crashed_write(h, monkeypatch, "worktree_create", "worktree")
+    reapprove(h)
+    h.expect(c_worktree_create(h), c_agent_start(h))
+
+    written(h, "worktree_create", "worktree~2")
+    assert superseded(h, "worktree") == REAPPROVED
+    written(h, "agent_start", "T1-a1.agent_start")  # on the pane the fresh op created
+    assert len(h.herdr("worktree", "create")) == 1
+    assert h.unexpected() == []
+
+
+def test_an_agent_start_prepared_under_an_earlier_approval_is_superseded_with_its_attempt(h, monkeypatch):
+    h.dispatch(until="worktree_create")
+    crashed_write(h, monkeypatch, "agent_start", "T1-a1.agent_start")
+    reapprove(h)
+    h.expect(c_agent_start(h, "T1-a2"))
+
+    written(h, "agent_start", "T1-a2.agent_start")
+    assert superseded(h, "T1-a1.agent_start") == REAPPROVED
+    st = h.state()
+    assert st["attempts"]["T1-a1"]["end"]["evidence"] == "superseded"  # never started
+    assert all(a["end"] for a in st["activities"] if a.get("attempt") == "T1-a1")
+    assert h.assignment("T1-a2")["plan"]["version"] == "v2"
+    assert [argv[2] for argv in h.herdr("agent", "start")] == [agent("T1-a2")]
+    assert h.next() == {"action": "write", "op": "prompt", "id": "T1-a2.prompt"}
+    assert h.unexpected() == []
+
+
+@pytest.mark.parametrize("prompt", ["prepared", "not_prepared"])
+def test_an_attempt_assigned_under_an_earlier_approval_is_stopped_and_a_fresh_attempt_runs(h, monkeypatch, prompt):
+    if prompt == "prepared":
+        prepared_prompt(h, monkeypatch)
+    else:  # the agent started, then the approval changed before its prompt was prepared
+        h.dispatch(until="agent_start")
+    reapprove(h)
+    h.expect(c_send_keys(), c_process_info(running=False))
+
+    # the started agent holds the approve-1 assignment: it is stopped, never prompted
+    assert h.next() == {"action": "write", "op": "stop", "id": "T1-a1.stop"}
+    assert h.write("stop", "T1-a1.stop")[0] == 0
+    code, out = h.write("stop", "T1-a1.stop")
+    assert code == 0 and out["result"]["op"]["status"] == "succeeded", out
+    if prompt == "prepared":
+        assert superseded(h, "T1-a1.prompt") == REAPPROVED
+    else:
+        assert "T1-a1.prompt" not in h.state()["writes"]
+
+    h.expect(c_agent_start(h, "T1-a2"), c_prompt("T1-a2"))
+    written(h, "agent_start", "T1-a2.agent_start")
+    written(h, "prompt", "T1-a2.prompt")
+    assert h.assignment("T1-a2")["plan"]["version"] == "v2"
     code, out = h.write("prompt", "T1-a1.prompt")
-    assert (code, out["result"].get("error")) == (3, "approval_changed"), out
-    assert out["result"]["prepared_under"] == "approve-1" and out["result"]["approval"] == "approve-2"
-    assert h.herdr("agent", "prompt") == []
+    assert code == 1 and out["result"]["error"] in ("op_superseded", "not_routable"), out
+    assert [argv[2] for argv in h.herdr("agent", "prompt")] == [agent("T1-a2")]  # the old argv: 0 sends
+    assert h.unexpected() == []
 
 
 def test_an_existing_op_is_not_sent_once_routing_no_longer_offers_it(h, monkeypatch):

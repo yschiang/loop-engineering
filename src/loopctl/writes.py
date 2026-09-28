@@ -2,20 +2,28 @@
 
 T6.1 / T6.2 only add op kinds and their tool functions; the state machine stays.
 
-  writes[op_id] = {kind, status: prepared|in_flight|succeeded|failed|unknown,
+  writes[op_id] = {kind, status: prepared|in_flight|succeeded|failed|unknown|superseded,
                    prepared: {argv: {$object}, argv_digest, marker, expected, session,
                               call_limit_s, read_limit_s, readback_max, readback_interval_s,
                               max_attempts},
+                   approval: the approval decision it was prepared under,
                    attempts: [{n, started_at, ended_at, outcome, reason, receipt}],
                    readbacks: [{seq, at, attempt, result, detail, observation, [decision]}],
                    facts, resolved_by: readback|human|None, resolutions: {decision id: …},
-                   blocked: write_unknown|readback_exhausted|retry_exhausted|None}
+                   blocked: write_unknown|readback_exhausted|retry_exhausted|None,
+                   superseded: {reason, approval, current, at}}
 
 `write <op> --id` consumes the op once in the lock, runs its fixed argv once, and records the
 receipt. A call past its time limit is unknown, never failed. Retries: only after a recorded
 not-delivered outcome, at most `infra_extra_retries` more calls. An unknown op is only read
 back (at most `readback_max` per call attempt, every read counts) or resolved by a human
 `resolve_operation`; nothing is ever resent on a guess.
+
+Superseded (Lead ruling 2026-09-28, T2.3 review verdict): a never-sent op (prepared, or failed
+and not delivered) whose approval is no longer the current one is stale. Its argv is never
+sent; the controller marks it superseded (terminal) when it is written or when the next op is
+prepared, and routing continues with a fresh op ID (`current_id`). An in_flight or unknown op
+is never superseded: it may have taken effect.
 """
 
 import json
@@ -95,6 +103,10 @@ def view(op_id: str, op: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _superseded(op_id: str, op: dict[str, Any]) -> Rejected:
+    return Rejected("op_superseded", 1, op=view(op_id, op), superseded=op["superseded"], performed="none")
+
+
 def _set_blocked(st: State, op_id: str, reason: str) -> None:
     st["writes"][op_id]["blocked"] = reason
     block(st, f"{reason}:{op_id}")
@@ -128,17 +140,53 @@ def approval_of(st: State) -> str | None:
     return (st.get("approval") or {}).get("decision")
 
 
+def stale(st: State, op_id: str) -> bool:
+    """Never sent, and prepared under an approval that is no longer the current one. A stop is
+    always allowed (D47); a Blocked op stays for a human."""
+    op = (st.get("writes") or {}).get(op_id)
+    return (
+        op is not None and op.get("kind") in KINDS and op["kind"] != "stop" and op.get("status") in ("prepared", "failed")
+        and not op.get("blocked") and "approval" in op and op["approval"] != approval_of(st)
+    )
+
+
+def current_id(st: State, base: str) -> str:
+    """The op routing continues with: `base`, or `base~N` once the ops before it were
+    superseded (or are stale, and superseded when this one is prepared)."""
+    ops, n, op_id = st.get("writes") or {}, 1, base
+    while op_id in ops and (ops[op_id]["status"] == "superseded" or stale(st, op_id)):
+        n += 1
+        op_id = f"{base}~{n}"
+    return op_id
+
+
+def _supersede_stale(st: State, at: str) -> None:
+    """Mark every stale op superseded. An agent_start never sent started no agent: its attempt
+    ends with it."""
+    for op_id in sorted(st.get("writes") or {}):
+        if not stale(st, op_id):
+            continue
+        op = st["writes"][op_id]
+        op["status"] = "superseded"
+        op["superseded"] = {"reason": "approval_changed", "approval": op["approval"], "current": approval_of(st),
+                            "at": at}
+        a = (st.get("attempts") or {}).get(op_id.removesuffix(".agent_start"))
+        if op["kind"] == "agent_start" and a is not None and not a.get("end"):
+            a["end"] = {"evidence": "superseded", "at": at}
+            for activity in st.get("activities", []):
+                if activity.get("attempt") == op_id.removesuffix(".agent_start") and not activity["end"]:
+                    activity["end"] = at
+
+
 def refusal(st: State, op_id: str) -> Rejected | None:
-    """Why a prepared or retryable op may not be sent now (design §2, §8): the approval it was
-    prepared under is no longer the current one, the feature is Blocked, or routing no longer
-    offers it. A stop is always allowed (D47); readback of a sent op never comes here."""
+    """Why a prepared or retryable op may not be sent now (design §2, §8): the feature is
+    Blocked, or routing no longer offers it. A stop is always allowed (D47); readback of a sent
+    op never comes here, and a stale op is superseded before."""
     from loopctl import next as next_step
 
     op = st["writes"][op_id]
     if op["kind"] == "stop":
         return None
-    if "approval" in op and op["approval"] != approval_of(st):
-        return Rejected("approval_changed", 3, op=op_id, prepared_under=op["approval"], approval=approval_of(st))
     if st.get("blockers"):
         return Rejected("feature_blocked", 3, blockers=st["blockers"])
     allowed = next_step.next_action(st, [])
@@ -200,6 +248,8 @@ def write(feature: str, token: str | None, kind: str, op_id: str, prepare: Prepa
     status = op["status"]
     if status == "succeeded":
         return {"op": view(op_id, op), "performed": "none"}
+    if status == "superseded":
+        raise _superseded(op_id, op)
     if status == "in_flight":
         if clock.now() < stale_at(op):
             raise Rejected("op_in_flight", 1, op=view(op_id, op))
@@ -232,6 +282,7 @@ def _prepare(feature: str, kind: str, op_id: str, spec: dict[str, Any], pol: dic
     def mutate(st: State) -> State:
         if op_id in st.setdefault("writes", {}):
             raise _Skip
+        _supersede_stale(st, at)
         st["writes"][op_id] = {
             "kind": kind, "status": "prepared", "prepared": prepared, "prepared_at": at, "attempts": [],
             "readbacks": [], "facts": {}, "resolved_by": None, "resolutions": {}, "blocked": None,
@@ -280,6 +331,9 @@ def _call(feature: str, op_id: str) -> dict[str, Any]:
         o = st["writes"][op_id]
         if o["status"] not in ("prepared", "failed") or len(o["attempts"]) != n - 1 or o.get("blocked"):
             raise _Skip
+        if stale(st, op_id):
+            _supersede_stale(st, started)
+            return st
         if (refused := refusal(st, op_id)) is not None:
             raise _Refused(refused)
         o["status"] = "in_flight"
@@ -296,7 +350,12 @@ def _call(feature: str, op_id: str) -> dict[str, Any]:
         op = store.load(feature)[1]["writes"][op_id]
         if op["status"] == "succeeded":
             return {"op": view(op_id, op), "performed": "none"}
+        if op["status"] == "superseded":
+            raise _superseded(op_id, op) from None
         raise Rejected("op_in_flight" if op["status"] == "in_flight" else "op_state_changed", 1, op=view(op_id, op)) from None
+    op = store.load(feature)[1]["writes"][op_id]
+    if op["status"] == "superseded":  # its argv was never sent; routing has a fresh op
+        raise _superseded(op_id, op)
 
     argv = json.loads(store.get_object(prepared["argv"][store.OBJECT_KEY]))
     result = _op_call(op, argv)  # the one call

@@ -127,10 +127,6 @@ def _active(state: State) -> str | None:
 
 def _op_step(state: State, kind: str, op_id: str, now: datetime) -> dict[str, Any] | None:
     op = (state.get("writes") or {}).get(op_id)
-    if op is not None and op["status"] in ("prepared", "failed") and kind != "stop" and (
-        "approval" in op and op["approval"] != writes.approval_of(state)
-    ):
-        return human([f"approval_changed:{op_id}"])  # prepared under an earlier approval: never sent
     if op is None or op["status"] in ("prepared", "failed"):
         return _write(kind, op_id)
     if op["status"] == "succeeded":
@@ -221,16 +217,38 @@ def _next_task(state: State, doc: dict[str, Any]) -> tuple[str | None, bool]:
     return None, False
 
 
+def _superseded(state: State, op_id: str) -> bool:
+    op = (state.get("writes") or {}).get(op_id)
+    return op is not None and (op["status"] == "superseded" or writes.stale(state, op_id))
+
+
+def _assigned_earlier(state: State, attempt: str) -> bool:
+    """The agent was started with an assignment of an earlier approval and has not been sent
+    its prompt: it is stopped, never prompted, and a fresh attempt takes its task."""
+    start = state["writes"].get(f"{attempt}.agent_start") or {}
+    if start.get("status") != "succeeded":
+        return False
+    if f"{attempt}.prompt" in state["writes"]:
+        return _superseded(state, f"{attempt}.prompt")
+    return "approval" in start and start["approval"] != writes.approval_of(state)
+
+
 def route(state: State, now: datetime) -> dict[str, Any]:
     """The next worker-dispatch action after approval, in the design §2 vocabulary."""
     doc = plan_doc(state)
     if doc is None:
         return human(["plan_tasks_unusable"])
-    if step := _op_step(state, "worktree_create", "worktree", now):
+    worktree = writes.current_id(state, "worktree")
+    if step := _op_step(state, "worktree_create", worktree, now):
         return step
-    if not state["writes"]["worktree"]["facts"].get("pane"):
+    if not state["writes"][worktree]["facts"].get("pane"):
         return human(["worktree_pane_unknown"])
-    if active := _active(state):
+    active = _active(state)
+    if active and _superseded(state, f"{active}.agent_start"):
+        active = None  # never started: superseded with its attempt when the fresh one is prepared
+    if active and _assigned_earlier(state, active):
+        return _op_step(state, "stop", f"{active}.stop", now) or human([f"approval_changed:{active}"])
+    if active:
         for kind in ("agent_start", "prompt"):
             if step := _op_step(state, kind, f"{active}.{kind}", now):
                 return step
@@ -301,7 +319,7 @@ def op_spec(state: State, kind: str, op_id: str, pol: dict[str, Any], feature: s
                 "--path", ws["worktree"], "--label", f"loopctl-{feature}", "--no-focus"]
         expected = {"source": ws["source"], "path": ws["worktree"], "branch": ws["branch"], "bind": ws["worktree"]}
         return {"argv": herdr.argv(session, args), "expected": expected, "session": session}
-    pane_facts = state["writes"]["worktree"]["facts"]
+    pane_facts = state["writes"][writes.current_id(state, "worktree")]["facts"]
     if kind == "agent_start":
         return _agent_start(state, op_id, pol, feature, ws, pane_facts, RUNTIMES, herdr)
     attempt = op_id.rsplit(".", 1)[0]
