@@ -1,5 +1,10 @@
 {
   "disableAllHooks": true,
+  "attribution": {
+    "commit": "",
+    "pr": "",
+    "sessionUrl": false
+  },
   "permissions": {
     "defaultMode": "dontAsk",
     "allow": [
