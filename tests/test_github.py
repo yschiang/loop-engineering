@@ -471,8 +471,30 @@ H2 = {
     "skipped": ([job(conclusion="skipped")], "failed", f"skipped:{JOB}:101"),
     "neutral": ([job(conclusion="neutral")], "failed", f"neutral:{JOB}:101"),
     # a Linux-only case that skips on Linux fails the session (M-TPOL), so the job fails
-    "test_policy_failure": ([job(conclusion="failure")], "failed", f"failure:{JOB}:101"),
+    "test_policy_failure": (None, "failed", f"failure:{JOB}:101"),
 }
+
+LINUX_ONLY_SKIPPING_ITSELF = (
+    "import pytest\n"
+    "@pytest.mark.only_on('linux')\n"
+    "def test_needs_tool(): pytest.skip('missing tool')\n"
+)
+
+
+def ci_job_conclusion(tmp: Path, platform: str, tests: str) -> str:
+    """The conclusion of a CI job whose test step is a pytest session under this repo's test
+    policy (M-TPOL: its pyproject settings and conftest, the platform simulated the way
+    test_test_policy does): the job fails exactly when the session does."""
+    root = tmp / f"ci-session-{platform}"
+    (root / "tests").mkdir(parents=True)
+    (root / "pyproject.toml").write_text((ROOT / "pyproject.toml").read_text())
+    (root / "conftest.py").write_text((ROOT / "tests" / "conftest.py").read_text()
+                                      + f"\n\ndef current_platform() -> str:\n    return {platform!r}\n")
+    (root / "tests" / "test_case.py").write_text(tests)
+    environ = {k: v for k, v in os.environ.items() if k != "LOOPCTL_EXPECT_PLATFORM"}
+    done = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"], cwd=root, env=environ,
+                          capture_output=True, text=True, check=False)
+    return "success" if done.returncode == 0 else "failure"
 
 
 @pytest.mark.parametrize("case", [*H2, "empty_required_set"])
@@ -485,6 +507,10 @@ def test_h2_required_check_states_never_pass(env, case):
         status, reason = "unknown", "required_set_empty"
     else:
         jobs, status, reason = H2[case]
+        if case == "test_policy_failure":
+            # the same test file passes where it is foreign (darwin) and fails the session on linux
+            assert ci_job_conclusion(env.tmp, "darwin", LINUX_ONLY_SKIPPING_ITSELF) == "success"
+            jobs = [job(conclusion=ci_job_conclusion(env.tmp, "linux", LINUX_ONLY_SKIPPING_ITSELF))]
         env.ci([run(env, jobs=jobs)] if case != "missing" else [])
     assert env.observe("ci")[0] == 0
     g3 = env.g3()
