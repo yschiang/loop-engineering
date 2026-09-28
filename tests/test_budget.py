@@ -338,26 +338,45 @@ def as_review(attempt: str, unit: str) -> None:
     mutate(change)
 
 
-def test_b3_a_review_past_30_minutes_is_stopped_g2_stays_pending_and_exhaustion_blocks(h):
+def g2_shown(h: Harness) -> dict:
+    _, out = h.cli("status", "--feature", FEATURE)
+    return dict(out["result"]["gates"]["g2"])
+
+
+def test_b3_a_review_past_30_minutes_is_stopped_g2_stays_pending_then_unknown_when_exhausted(h):
     h.dispatch()
     as_review("T1-a1", "R1")
     h.clock.advance(minutes=29, seconds=59)
     assert h.safety() is None
     h.clock.advance(seconds=1)
     assert h.safety() == stop()
-    _, out = h.cli("status", "--feature", FEATURE)
-    assert out["result"]["gates"]["g2"]["status"] == "pending"  # not failed while timing out
+    assert g2_shown(h)["status"] == "pending"  # not failed while timing out
     confirm_stop(h)
     assert budget.timed_out(h.state(), "T1-a1")
     for n in (2, 3):
+        assert g2_shown(h)["status"] == "pending"  # a new attempt may still run
         timed_out_fixture(f"R1-a{n}", n, role="reviewer", task=None, unit="R1", start=h.clock(), minutes=30)
         h.clock.advance(minutes=32)
     code, out = next_out(h)
     assert code == 3, out
     assert out["next"] == {"action": "human", "blockers": ["attempt_timeout_exhausted:R1"],
                            "decision_kinds": ["budget_extension"]}
+    g2 = g2_shown(h)
+    assert (g2["status"], g2["reasons"]) == ("unknown", ["attempt_timeout_exhausted:R1"]), g2
     st = h.state()
     assert "g2" not in st["gates"] and st["batches"] == {}  # G2 never failed; no correction round
+    assert h.decide("budget_extension", id="ext-r1", target="attempts:R1:+1", reason="reviewer fixed")[0] == 0
+    assert g2_shown(h)["status"] == "pending"  # one more review attempt may run
+
+
+def test_b3_an_exhausted_worker_unit_leaves_g2_as_it_is(h):
+    h.start()
+    t = h.clock()
+    for n in (1, 2, 3):
+        timed_out_fixture(f"T1-a{n}", n, start=t + timedelta(minutes=50 * (n - 1)))
+    h.clock.advance(minutes=200)
+    assert h.next().get("blockers") == ["attempt_timeout_exhausted:T1"]
+    assert g2_shown(h) == {"status": "pending", "reasons": ["not_evaluated"]}
 
 
 # --- b4: CI wait (30 minutes) -----------------------------------------------------------------

@@ -215,6 +215,7 @@ def _read(args: argparse.Namespace) -> Outcome:
         return _store_failure(args.feature, e)
     action = next_step.next_action(st, blocked)
     result = state.view(st, blocked)
+    result["gates"].update(budget.timeout_gates(st, clock.now()))  # T7.1: a gate a timeout left unknown
     result["budget"] = budget.summary(st, clock.now())  # T7.1: active limit, used, over
     if getattr(args, "human", False):
         result["human"] = state.render_human(result, revision, action)
