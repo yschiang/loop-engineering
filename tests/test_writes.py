@@ -408,6 +408,9 @@ def finished_turn(h: Harness, final_text: str, attempt: str = "T1-a1") -> list[d
 
 
 def test_w1_two_processes_writing_the_same_prompt_op_call_herdr_once(h):
+    # The two processes read the real clock: start the attempt at real time, so no role
+    # timeout has passed when they route the prompt.
+    h.clock.t = datetime.now(UTC)
     h.dispatch(until="agent_start")
     h.expect(c_prompt(sleep=0.5))
     argv = ["write", "prompt", "--feature", FEATURE, f"--token={h.token}", "--id", "T1-a1.prompt"]
