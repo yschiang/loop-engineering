@@ -4,12 +4,13 @@ T2.1 decides by phase only. Later tasks add their own checks without reordering 
 (tasks.md shared-file table: T7.1 expiry/timeouts, T5.1 correction, T6.2 publish/Pass).
 T2.3 adds `safety` (readbacks and pending recovery decisions, which come before any other
 action, design §2/§10) and worker dispatch for approved / implementing.
+T3.1 hands over to G1 (`evidence_green` / `assess`) where dispatch has no task left.
 Anything not decided here stops and hands over to a human.
 """
 
 from typing import Any
 
-from loopctl import assignments, clock, decisions, observe, writes
+from loopctl import assignments, clock, decisions, gates, observe, writes
 
 State = dict[str, Any]
 RECOVERY_KINDS = {**writes.RECOVERY_KINDS, **observe.RECOVERY_KINDS}
@@ -46,7 +47,10 @@ def next_action(state: State, blocked: list[str]) -> dict[str, Any]:
     if phase in ("planning", "awaiting_approval"):
         return human(["plan_not_approved"], ["approve_plan"])
     if phase in ("approved", "implementing"):
-        return assignments.route(state, clock.now())  # T2.3: worker dispatch
+        action = assignments.route(state, clock.now())  # T2.3: worker dispatch
+        if action == human(["tasks_complete"]):
+            return gates.route(state)  # T3.1: Green and G1 once every task is done
+        return action
     if phase == "pass":
         return {"action": "done", "status": "pass"}
     if phase == "accepted":

@@ -16,6 +16,8 @@ from loopctl import (
     assignments,
     clock,
     decisions,
+    evidence,
+    gates,
     observe,
     preflight,
     state,
@@ -130,6 +132,19 @@ def _parser() -> _Parser:
     ob.add_argument("--token")
     ob.add_argument("--attempt", required=True)
     ob.add_argument("--purpose", help="default: the source's general purpose")
+    ev = sub.add_parser("evidence", help="run a policy evidence command (design §7)")
+    ev_sub = ev.add_subparsers(dest="evidence_command", required=True)
+    er = ev_sub.add_parser("red", help="worker: capture a Red in the attempt's worktree")
+    er.add_argument("--feature", required=True, type=_feature_id)
+    er.add_argument("--attempt", required=True)
+    er.add_argument("--command-id", required=True, help="a command id of workflow.yaml evidence.commands")
+    er.add_argument("--finding", action="append", default=[], help="correction attempts: a finding this Red covers")
+    eg = ev_sub.add_parser("green", help="coordinator: run Green in a clean checkout of the feature head")
+    eg.add_argument("--feature", required=True, type=_feature_id)
+    eg.add_argument("--token")
+    asg = sub.add_parser("assess", help="compute the gates (G1) at the current feature head")
+    asg.add_argument("--feature", required=True, type=_feature_id)
+    asg.add_argument("--token")
     pf = sub.add_parser("preflight", help="capability probe of a selected profile (design §6)")
     pf.add_argument("--role", required=True, choices=preflight.ROLES)
     pf.add_argument("--out", required=True, type=Path, help="receipt JSON path")
@@ -429,6 +444,19 @@ def _observe(args: argparse.Namespace) -> Outcome:
     )
 
 
+def _evidence(args: argparse.Namespace) -> Outcome:
+    if args.evidence_command == "red":
+        return _effect(
+            args.feature,
+            lambda: evidence.red(args.feature, args.attempt, args.command_id, args.finding, Path.cwd()),
+        )
+    return _effect(args.feature, lambda: evidence.green(args.feature, args.token))
+
+
+def _assess(args: argparse.Namespace) -> Outcome:
+    return _effect(args.feature, lambda: gates.assess(args.feature, args.token))
+
+
 def _safety(args: argparse.Namespace) -> Outcome:
     """Read-only: the action that must come before any other (readback, recovery), or null."""
     try:
@@ -477,6 +505,8 @@ def main(argv: list[str] | None = None) -> int:
             "result": _result,
             "safety": _safety,
             "observe": _observe,
+            "evidence": _evidence,
+            "assess": _assess,
         }[args.command](args)
     sys.stdout.write(json.dumps(out) + "\n")
     return code
