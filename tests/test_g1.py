@@ -1068,6 +1068,10 @@ def _integration(env: Env, variant: str) -> tuple[str, str, str | None]:
     env.write("src/a.py", "def a():\n    return 2\n")
     h = env.commit("TA: a returns 2")
     env.complete("TA-a1")
+    if variant == "g":  # H and B1 will also conflict on docs/usage.md, outside F-I's scope
+        env.write("docs/usage.md", "# Usage\n\nfeature docs\n")
+        h = env.commit("docs: feature usage")
+        env.write("docs/usage.md", "# Usage\n\nbase docs\n", env.repo)
 
     env.write("src/p.py", "P = 2\n", env.repo)
     if variant != "a":
@@ -1095,6 +1099,8 @@ def _integration(env: Env, variant: str) -> tuple[str, str, str | None]:
         env.write("src/p.py", "P = 2  # tweaked while merging\n")
     if variant == "f":
         env.write("docs/usage.md", "# Usage\n\nneeded to resolve the merge\n")
+    if variant == "g":
+        env.write("docs/usage.md", "# Usage\n\nfeature and base docs\n")  # resolves a conflict outside the scope
     env.gitx(env.wt, "add", "-A")
     if variant == "e_squash":
         env.gitx(env.wt, "commit", "-q", "-m", "squash the base")
@@ -1104,7 +1110,7 @@ def _integration(env: Env, variant: str) -> tuple[str, str, str | None]:
     return h, b1, red
 
 
-@pytest.mark.parametrize("variant", ["a", "b", "c", "d", "e_squash", "e_other_parent", "f"])
+@pytest.mark.parametrize("variant", ["a", "b", "c", "d", "e_squash", "e_other_parent", "f", "g"])
 def test_g13_integration_attempt_imports_and_author_edits(env, variant):
     h, b1, red = _integration(env, variant)
     m = env.head()
@@ -1134,7 +1140,9 @@ def test_g13_integration_attempt_imports_and_author_edits(env, variant):
     elif variant.startswith("e_"):
         assert g1["status"] == "failed"
         assert "integration_rejected:I1-a1:parents" in g1["reasons"]
-    else:
+    else:  # f: an additional edit, g: a conflict resolution, both outside the scope
+        if variant == "g":
+            assert check["author"]["conflict"] == ["docs/usage.md", "src/a.py", "tests/test_a.py"]
         assert g1["status"] == "blocked"
         assert "integration_scope_exceeded:I1-a1:docs/usage.md" in g1["reasons"]
         assert "integration_scope_exceeded:I1-a1" in env.state()["blockers"]

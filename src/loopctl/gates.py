@@ -15,7 +15,8 @@ G1 at the current head H (the feature branch in the source repository):
     lineage    its attempt has a completed result whose commit C is an ancestor of H
                (a stopped or abandoned attempt's Red does not transfer);
     scope      snapshot changes and the attempt's range (dispatch head..C) are in scope
-               (integration: author edits only, imports verified against merge-tree);
+               (integration: author edits only — conflict resolutions included —, imports
+               verified against merge-tree);
     mapping    the snapshot commit is in the attempt's own history, or the failing tests'
                delta (vs the dispatch head) is in C.
   A replay never makes a Red; it runs only when another run of the same tree passed one of
@@ -359,14 +360,12 @@ class _G1:
     def _scope(self, r: dict[str, Any], asg: dict[str, Any], c: str) -> list[str]:
         snap = r["snapshot"]["commit"]
         paths = self.changed(asg["head"], snap)
-        allowed = list(asg["scope"])
         check = self.integration.get(r["attempt"])
         if check is not None:  # integration: verified imports are not author edits
             paths = [p for p in paths if not self._imported(check, snap, p)]
-            allowed += check["conflicts"]
         else:
             paths += self.changed(asg["head"], c)
-        return [f"scope:{p}" for p in _unique(sorted(paths)) if not in_scope(p, allowed)]
+        return [f"scope:{p}" for p in _unique(sorted(paths)) if not in_scope(p, asg["scope"])]
 
     def _imported(self, check: dict[str, Any], rev: str, path: str) -> bool:
         return bool(check.get("auto_tree")) and (
@@ -405,13 +404,15 @@ class _G1:
         edits = set(self.changed(auto, c))  # differs from the automatic merge: the author's
         base_changed = set(self.changed(self.t.merge_base(self.repo, pinned_h, pinned_b, self.s), pinned_b))
         additional = sorted(edits - set(conflicts))
-        outside = [p for p in additional if not in_scope(p, asg["scope"])]
+        # both kinds of author edit must stay in the scope; a conflict path is not in it by itself
+        outside = [p for p in sorted(edits) if not in_scope(p, asg["scope"])]
+        hidden = [p for p in outside if p in additional and p in base_changed]
         out |= {
             "auto_tree": auto, "conflicts": conflicts,
             "imported": sorted(set(self.changed(pinned_h, auto)) - edits),
             "author": {"conflict": sorted(edits & set(conflicts)), "additional": additional},
-            "rejected": [f"hidden_edit:{p}" for p in outside if p in base_changed],
-            "exceeded": [p for p in outside if p not in base_changed],
+            "rejected": [f"hidden_edit:{p}" for p in hidden],
+            "exceeded": [p for p in outside if p not in hidden],  # resolving needs more scope: back to D11
         }
         out["status"] = "scope_exceeded" if out["exceeded"] else "rejected" if out["rejected"] else "ok"
         return out
