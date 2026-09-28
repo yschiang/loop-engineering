@@ -13,10 +13,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from loopctl import decisions, preflight, state, store
+from loopctl import clock, decisions, preflight, state, store
 from loopctl import next as next_step
 
 EXIT_OK, EXIT_REJECTED, EXIT_USAGE, EXIT_BLOCKED, EXIT_UNTRUSTED = 0, 1, 2, 3, 5
+EXIT_NOT_OWNER = 4
 
 
 class _UsageError(Exception):
@@ -240,8 +241,117 @@ def _claim(args: argparse.Namespace) -> Outcome:
     )
 
 
-def _not_implemented(args: argparse.Namespace) -> Outcome:
-    return _rejected("not_implemented", command=args.command)
+def _not_owner(feature: str, revision: int) -> Outcome:
+    return EXIT_NOT_OWNER, envelope(
+        False,
+        result={"error": "not_owner", "feature": feature},
+        revision=revision,
+        next_=human(["not_owner"]),
+    )
+
+
+def _commit_latest(feature: str, tid: Any, mutate: Any) -> int:
+    """Commit on the latest revision; a lost revision race reloads and applies again."""
+    while True:
+        revision, _ = store.load(feature)
+        try:
+            return store.commit(feature, revision, tid(revision), mutate)
+        except store.RevisionConflict:
+            continue
+
+
+def _after(feature: str, result: dict[str, Any]) -> Outcome:
+    revision, st = store.load(feature)
+    blocked = state.blockers(st, store.conflicts(feature))
+    return EXIT_OK, envelope(
+        True, result=result, revision=revision, next_=next_step.next_action(st, blocked)
+    )
+
+
+def _read_file(locator: str) -> bytes | None:
+    path = Path(locator)
+    return path.read_bytes() if path.is_file() else None
+
+
+def _register(args: argparse.Namespace) -> Outcome:
+    try:
+        revision, st = store.load(args.feature)
+        if not state.is_owner(st, args.token):
+            return _not_owner(args.feature, revision)
+        data = _read_file(args.locator)
+        if args.digest is not None and not decisions.valid_digest(args.digest):
+            raise decisions.Rejected("invalid_digest", digest=args.digest)
+        if data is None and args.digest is None:
+            raise decisions.Rejected("locator_unreadable", locator=args.locator)
+        found = store.digest(data) if data is not None else args.digest
+        if args.digest is not None and found != args.digest:
+            raise decisions.Rejected("digest_mismatch", expected=args.digest, found=found)
+        entry = decisions.artifact(
+            args.kind,
+            locator=args.locator,
+            version=args.version,
+            digest=found,
+            content=store.object_ref(store.put_object(data)) if data is not None else None,
+            producer=args.producer,
+            calibrated_from=args.calibrated_from,
+            role=args.role,
+        )
+        key = store.digest(json.dumps(entry, sort_keys=True).encode())[7:23]
+        _commit_latest(
+            args.feature,
+            lambda rev: f"register:{args.kind}:{rev}:{key}",
+            lambda s: decisions.register(s, args.kind, entry),
+        )
+        _, new = store.load(args.feature)
+    except decisions.Rejected as e:
+        return _rejected(e.error, revision=revision, feature=args.feature, **e.detail)
+    except store.StoreError as e:
+        return _store_failure(args.feature, e)
+    invalidated = st.get("approval") is not None and new.get("approval") is None
+    return _after(
+        args.feature,
+        {"feature": args.feature, args.kind: entry, "approval_invalidated": invalidated},
+    )
+
+
+def _decide(args: argparse.Namespace) -> Outcome:
+    fields = {
+        k: getattr(args, k)
+        for k in ("feature", "id", "actor", "target", "version", "reason", "evidence", "bind")
+    }
+    fields |= {"not_delivered": args.not_delivered, "category": args.category}
+    revision = None
+    try:
+        rec = decisions.request(args.kind, fields)
+        revision, st = store.load(args.feature)
+        if not state.is_owner(st, args.token):
+            return _not_owner(args.feature, revision)
+        if args.evidence:
+            data = _read_file(args.evidence)
+            if data is None:
+                raise decisions.Rejected("evidence_unreadable", evidence=args.evidence)
+            rec["evidence"] = store.object_ref(store.put_object(data))
+        if rec["id"] in st["decisions"]:
+            raise decisions.Duplicate(st["decisions"][rec["id"]])
+        at = clock.now().isoformat()
+        _commit_latest(
+            args.feature,
+            lambda _: f"decide:{rec['id']}@{at}",
+            lambda s: decisions.decide(s, rec, at),
+        )
+    except decisions.Rejected as e:
+        code = EXIT_USAGE if e.error == "unsupported" else EXIT_REJECTED
+        return code, envelope(
+            False, result={"error": e.error, **e.detail}, revision=revision, next_=human([e.error])
+        )
+    except decisions.Duplicate as d:
+        if not decisions.same(d.record, rec):
+            return _rejected("decision_id_conflict", revision=revision, id=rec["id"])
+        return _after(args.feature, {"decision": d.record, "duplicate": True})
+    except store.StoreError as e:
+        return _store_failure(args.feature, e)
+    decided = store.load(args.feature)[1]["decisions"][rec["id"]]
+    return _after(args.feature, {"decision": decided, "duplicate": False})
 
 
 def _preflight(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
@@ -269,8 +379,8 @@ def main(argv: list[str] | None = None) -> int:
             "init": _init,
             "claim": _claim,
             "next": _read,
-            "register": _not_implemented,
-            "decide": _not_implemented,
+            "register": _register,
+            "decide": _decide,
         }[args.command](args)
     sys.stdout.write(json.dumps(out) + "\n")
     return code
