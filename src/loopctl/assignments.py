@@ -182,7 +182,10 @@ def _running(state: State, attempt: str, now: datetime) -> dict[str, Any]:
     if f"{attempt}.stop" in state["writes"] and (step := _op_step(state, "stop", f"{attempt}.stop", now)):
         return step
     seen = _seen(a)
-    for data in (_file_result(state, attempt), None if a["result"] else tool_result(state, attempt)):
+    # A result can only be checked against a known native ID (OpenCode reports its own):
+    # until native observation learns it, the file waits instead of being judged.
+    known = a["handle"]["native_session_id"] is not None
+    for data in (_file_result(state, attempt) if known else None, None if a["result"] else tool_result(state, attempt)):
         if data is not None and store.digest(data) not in seen:
             return {"action": "import", "attempt": attempt}
     poll = float(a["poll_s"])
@@ -442,6 +445,8 @@ def import_result(feature: str, token: str | None, attempt: str, file: str | Non
         data, producer = tool_result(st, attempt), "tool"
     if data is None:
         raise Rejected("result_missing", attempt=attempt, path=file or asg["result_path"])
+    if handle["native_session_id"] is None:  # nothing to compare yet: not a rejection
+        raise Rejected("native_session_unknown", attempt=attempt, runtime=handle["runtime"])
     digest = store.digest(data)
     if a.get("result") and a["result"]["digest"] == digest:
         return {"attempt": attempt, "duplicate": True, "result": a["result"]}

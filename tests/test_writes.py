@@ -927,6 +927,45 @@ def test_w9_handles_round_trip_by_attempt_and_a_wrong_native_id_is_rejected(h, r
     assert h.unexpected() == []
 
 
+def test_w9_a_result_written_before_the_native_id_is_known_waits_for_it(h):
+    use_opencode(h)
+    h.start()
+    h.expect(c_worktree_create(h), c_agent_start(h, kind="opencode"), c_prompt())
+    for kind, op_id in [("worktree_create", "worktree"), ("agent_start", "T1-a1.agent_start"),
+                        ("prompt", "T1-a1.prompt")]:
+        assert h.write(kind, op_id)[0] == 0
+    real = "ses_4f2a9c"
+    h.work()
+    h.put_result(h.envelope(native={"session_id": real}))  # before loopctl learned the id
+    assert h.handle()["native_session_id"] is None
+
+    code, out = h.import_result()
+    assert (code, out["result"].get("error")) == (1, "native_session_unknown"), out
+    assert h.state()["attempts"]["T1-a1"]["rejected"] == []  # not a rejection: nothing to compare yet
+    assert h.next() == {"action": "observe", "source": "worker", "purpose": "worker",
+                        "read_key": "worker:T1-a1", "attempt": "T1-a1"}
+
+    export = {"info": {"id": real, "directory": str(h.wt), "version": "1.18.32"}, "messages": [
+        {"info": {"id": "msg_u1", "role": "user"}, "parts": [{"type": "text", "text": marker("T1-a1.prompt")}]},
+        {"info": {"id": "msg_a1", "role": "assistant", "finish": "tool-calls", "modelID": "gpt-6-astra",
+                  "providerID": "openai", "agent": "loopctl-implementer"},
+         "parts": [{"type": "tool", "state": {"status": "running", "input": {}}}]}]}
+    h.expect(
+        {"id": "list", "tool": "opencode", "match": ["session", "list", "--format", "json"],
+         "stdout": [{"id": real, "directory": str(h.wt), "updated": 5}]},
+        {"id": "export", "tool": "opencode", "match": ["export", real], "stdout": export},
+    )
+    code, out = h.observe("native")
+    assert code == 0, out
+    assert h.handle()["native_session_id"] == real
+
+    assert h.next() == {"action": "import", "attempt": "T1-a1"}
+    code, out = h.import_result()
+    assert code == 0, out
+    assert h.state()["attempts"]["T1-a1"]["result"]["native"]["session_id"] == real
+    assert h.unexpected() == []
+
+
 # --- w10 ------------------------------------------------------------------------------------
 
 
