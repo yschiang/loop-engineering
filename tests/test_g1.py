@@ -41,7 +41,7 @@ from test_writes import (
     git,
 )
 
-from loopctl import clock, gates, store
+from loopctl import budget, clock, gates, store
 from loopctl.cli import main
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1352,7 +1352,15 @@ def test_g15_b_the_limit_is_the_remaining_active_budget(env, monkeypatch):
     assert green["cause"] == "active_budget"
     assert 1.0 < green["limit_s"] <= 2.0
     activity = next(a for a in st["activities"] if a["kind"] == "evidence")
-    assert activity["end"] is not None
+    assert activity["evidence"] == green["id"] and activity["end"] is not None
+    end = datetime.fromisoformat(activity["end"])
+    spent = end - datetime.fromisoformat(activity["start"])
+    assert timedelta(seconds=green["limit_s"]) <= spent < timedelta(seconds=green["limit_s"] + 2)  # not 5 s
+    assert green["elapsed_s"] >= green["limit_s"]
+    # That time is charged to the active budget: all of what was left is used up.
+    without = {**st, "activities": [a for a in st["activities"] if a is not activity]}
+    assert budget.active_used(st, end) - budget.active_used(without, end) == spent
+    assert budget.remaining(st, end) <= timedelta(milliseconds=1)
     assert f"evidence_timeout:{green['id']}" not in st["blockers"]  # expiry routing is T7.1's (b7)
     env.assess()
     assert env.g1()["status"] != "passed"
