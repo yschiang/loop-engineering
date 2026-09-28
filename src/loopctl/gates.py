@@ -46,6 +46,9 @@ G1_BLOCKERS = ("original_red_unavailable:", "history_rewritten", "integration_sc
 DOCS = ("*.md", "*.rst", "docs/*")  # "only documentation changed" after the last attempt (G05)
 
 
+RECOVERY_KINDS: dict[str, str] = {}  # T6.1: blocker prefix -> the decide kind that clears it
+
+
 def human(blockers: list[str], kinds: list[str] | None = None) -> dict[str, Any]:
     return {"action": "human", "blockers": blockers, "decision_kinds": kinds or []}
 
@@ -490,3 +493,11 @@ def assess(feature: str, token: str | None) -> dict[str, Any]:
     if result["status"] == "blocked":
         raise Rejected("g1_blocked", 3, g1=result)
     return {"g1": result}
+
+
+# --- T6.1: G1 passed → push → pr_ensure → observe pr / ci → G3 (interface stub) ------------
+
+
+def github_route(state: State, now: Any) -> dict[str, Any]:
+    """The next action once G1 passed at H (pure)."""
+    return human(["g1_passed"])

@@ -5,6 +5,7 @@ T2.1 decides by phase only. Later tasks add their own checks without reordering 
 T2.3 adds `safety` (readbacks and pending recovery decisions, which come before any other
 action, design §2/§10) and worker dispatch for approved / implementing.
 T3.1 hands over to G1 (`evidence_green` / `assess`) where dispatch has no task left.
+T6.1 continues where G1 passed: push → pr_ensure → observe pr / ci (G3).
 Anything not decided here stops and hands over to a human.
 """
 
@@ -13,7 +14,7 @@ from typing import Any
 from loopctl import assignments, clock, decisions, gates, observe, writes
 
 State = dict[str, Any]
-RECOVERY_KINDS = {**writes.RECOVERY_KINDS, **observe.RECOVERY_KINDS}
+RECOVERY_KINDS = {**writes.RECOVERY_KINDS, **observe.RECOVERY_KINDS, **gates.RECOVERY_KINDS}
 
 
 def human(blockers: list[str], decision_kinds: list[str] | None = None) -> dict[str, Any]:
@@ -49,7 +50,9 @@ def next_action(state: State, blocked: list[str]) -> dict[str, Any]:
     if phase in ("approved", "implementing"):
         action = assignments.route(state, clock.now())  # T2.3: worker dispatch
         if action == human(["tasks_complete"]):
-            return gates.route(state)  # T3.1: Green and G1 once every task is done
+            action = gates.route(state)  # T3.1: Green and G1 once every task is done
+            if action == human(["g1_passed"]):
+                return gates.github_route(state, clock.now())  # T6.1: push, PR, CI
         return action
     if phase == "pass":
         return {"action": "done", "status": "pass"}

@@ -30,6 +30,7 @@ from loopctl import state as state_mod
 
 State = dict[str, Any]
 SOURCES = ("worker", "native")
+GITHUB_SOURCES = ("pr", "ci")  # T6.1
 READ_FAILURES_MAX = 3  # D16; workflow.yaml limits.read_failures_max
 RECOVERY_KINDS = {"read_exhausted": "resolve_read"}
 

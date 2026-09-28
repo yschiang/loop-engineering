@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Route-driven fake `gh` (T6.1). Same environment contract as tests/fakes/bin/herdr:
+FAKE_SCENARIO=<tests/fakes/scenarios/gh/<name>.json or a derived copy>, FAKE_LOG=<jsonl>.
+
+GitHub reads paginate and fan out per workflow run, so calls are not matched in one global
+order (herdr's `calls`) but by route: a small fake GitHub whose answers are keyed by argv.
+
+Scenario format:
+  {"routes": [{"id": "runs", "match": ["api", "--include", "-H", "*", "repos/o/r/actions/runs?**"],
+               "capture": {"var": "regex"},
+               "responses": [{"status": 200, "headers": {"Link": "<…>; rel=\\"next\\""}, "body": {json}},
+                             {"stdout": "text" | {json}, "stderr": "", "exit": 0},
+                             …],
+               "repeat": true}]}
+- A call is served by the first route whose `match` fits (fnmatch per argv element, a trailing
+  "**" matches any rest; "{var}" / "{env:NAME}" are substituted in patterns too). The route's
+  n-th call (counted in FAKE_LOG) gets responses[n]; the last response repeats unless
+  "repeat": false (then the call exits 98, logged as exhausted).
+- A `status` response is rendered like `gh api --include`: "HTTP/2.0 <status> <reason>",
+  the headers, a blank line, the JSON body. Status >= 400 exits 1 with
+  "gh: <reason> (HTTP <status>)" on stderr (the body still goes to stdout, as gh does).
+- `sleep` (seconds) delays everything after the log entry; `effects` are herdr's
+  ({"write": path, "text"|"json"|"jsonl": …} or {"run": argv}), substituted like stdout.
+- Every invocation is appended to FAKE_LOG as {"tool": "gh", "argv", "route", "n", "vars"};
+  an argv no route matches is logged with "unexpected": true and exits 97.
+"""
+
+import fnmatch
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+REASONS = {200: "OK", 201: "Created", 204: "No Content", 403: "Forbidden", 404: "Not Found",
+           410: "Gone", 422: "Unprocessable Entity", 500: "Internal Server Error", 502: "Bad Gateway",
+           503: "Service Unavailable"}
+
+tool = Path(sys.argv[0]).name
+argv = sys.argv[1:]
+routes = json.loads(Path(os.environ["FAKE_SCENARIO"]).read_text()).get("routes", [])
+log = Path(os.environ["FAKE_LOG"])
+done = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+env_vars = {k: v for entry in done for k, v in entry.get("vars", {}).items()}
+
+
+def sub(value):
+    if isinstance(value, str):
+        def repl(m: re.Match[str]) -> str:
+            if m.group(1):
+                return os.environ.get(m.group(2), m.group(0))
+            return env_vars.get(m.group(2), m.group(0))
+        return re.sub(r"\{(env:)?(\w+)\}", repl, value)
+    if isinstance(value, list):
+        return [sub(v) for v in value]
+    if isinstance(value, dict):
+        return {k: sub(v) for k, v in value.items()}
+    return value
+
+
+def matches(patterns: list[str], args: list[str]) -> bool:
+    patterns = sub(patterns)
+    if patterns and patterns[-1] == "**":
+        patterns = patterns[:-1]
+        args = args[: len(patterns)]
+    return len(patterns) == len(args) and all(map(fnmatch.fnmatchcase, args, patterns))
+
+
+def append(entry: dict) -> None:
+    with log.open("a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+route = next((r for r in routes if matches(r["match"], argv)), None)
+if route is None:
+    append({"tool": tool, "argv": argv, "vars": {}, "unexpected": True})
+    print(f"fake {tool}: unexpected call {argv}", file=sys.stderr)
+    sys.exit(97)
+
+n = sum(1 for entry in done if entry.get("route") == route["id"])
+responses = route["responses"]
+if n >= len(responses) and route.get("repeat", True) is False:
+    append({"tool": tool, "argv": argv, "route": route["id"], "n": n, "vars": {}, "exhausted": True})
+    print(f"fake {tool}: route {route['id']} has no response #{n}", file=sys.stderr)
+    sys.exit(98)
+spec = responses[min(n, len(responses) - 1)]
+
+captured = {}
+joined = " ".join(argv)
+for name, pattern in route.get("capture", {}).items():
+    m = re.search(pattern, joined)
+    if m:
+        captured[name] = m.group(1 if m.re.groups else 0)
+env_vars.update(captured)
+append({"tool": tool, "argv": argv, "route": route["id"], "n": n, "vars": captured})
+time.sleep(float(spec.get("sleep", 0)))
+
+for effect in spec.get("effects", []):
+    if "run" in effect:
+        subprocess.run(sub(effect["run"]), check=True, capture_output=True)
+        continue
+    path = Path(sub(effect["write"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if "text" in effect:
+        path.write_text(sub(effect["text"]))
+    elif "json" in effect:
+        path.write_text(json.dumps(sub(effect["json"])))
+    else:
+        path.write_text("".join(json.dumps(sub(e)) + "\n" for e in effect["jsonl"]))
+
+if "status" in spec:
+    status = int(spec["status"])
+    reason = REASONS.get(status, "Status")
+    headers = {"Content-Type": "application/json; charset=utf-8", **sub(spec.get("headers", {}))}
+    head = f"HTTP/2.0 {status} {reason}\r\n" + "".join(f"{k}: {v}\r\n" for k, v in headers.items())
+    body = sub(spec.get("body", {}))
+    sys.stdout.write(head + "\r\n" + (body if isinstance(body, str) else json.dumps(body)) + "\n")
+    if status >= 400:
+        sys.stderr.write(f"gh: {reason} (HTTP {status})\n")
+        sys.exit(1)
+    sys.exit(0)
+
+out = sub(spec.get("stdout", ""))
+sys.stdout.write(out if isinstance(out, str) else json.dumps(out) + "\n")
+sys.stderr.write(sub(spec.get("stderr", "")))
+sys.exit(spec.get("exit", 0))
