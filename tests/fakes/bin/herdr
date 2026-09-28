@@ -7,7 +7,9 @@ Scenario format:
   {"calls": [{"id": "...", "tool": "herdr", "match": ["agent", "start", "*", "**"],
               "capture": {"var": "regex"}, "stdout": "text" | {json}, "stderr": "", "exit": 0,
               "sleep": 0.0,
-              "effects": [{"write": "path", "text": "..." | "json": {...} | "jsonl": [{...}]}]}]}
+              "effects": [{"write": "path", "text": "..." | "json": {...} | "jsonl": [{...}]}
+                          | {"run": ["git", "..."]}]}]}
+- `run` (T2.3) executes a real argv (e.g. `git worktree add`), substituted like the rest.
 - `sleep` (seconds, T2.3) delays everything after the log entry: a caller that kills the call
   at its time limit leaves no effects and no output.
 - Calls are matched strictly in order; `match` is fnmatch per argv element, a trailing "**"
@@ -21,6 +23,7 @@ import fnmatch
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -76,6 +79,9 @@ append({"tool": tool, "argv": argv, "vars": captured})
 time.sleep(float(spec.get("sleep", 0)))
 
 for effect in spec.get("effects", []):
+    if "run" in effect:
+        subprocess.run(sub(effect["run"]), check=True, capture_output=True)
+        continue
     path = Path(sub(effect["write"]))
     path.parent.mkdir(parents=True, exist_ok=True)
     if "text" in effect:
