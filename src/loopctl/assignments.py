@@ -230,7 +230,7 @@ def _assigned_earlier(state: State, attempt: str) -> bool:
         return False
     if f"{attempt}.prompt" in state["writes"]:
         return _superseded(state, f"{attempt}.prompt")
-    return "approval" in start and start["approval"] != writes.approval_of(state)
+    return not writes.prepared_under_current(state, start)
 
 
 def route(state: State, now: datetime) -> dict[str, Any]:

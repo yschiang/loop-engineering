@@ -140,13 +140,18 @@ def approval_of(st: State) -> str | None:
     return (st.get("approval") or {}).get("decision")
 
 
+def prepared_under_current(st: State, op: dict[str, Any]) -> bool:
+    """An op persisted without its approval (before ops recorded it) fails closed."""
+    return "approval" in op and op["approval"] == approval_of(st)
+
+
 def stale(st: State, op_id: str) -> bool:
-    """Never sent, and prepared under an approval that is no longer the current one. A stop is
-    always allowed (D47); a Blocked op stays for a human."""
+    """Never sent, and not prepared under the current approval. A stop is always allowed
+    (D47); a Blocked op stays for a human."""
     op = (st.get("writes") or {}).get(op_id)
     return (
         op is not None and op.get("kind") in KINDS and op["kind"] != "stop" and op.get("status") in ("prepared", "failed")
-        and not op.get("blocked") and "approval" in op and op["approval"] != approval_of(st)
+        and not op.get("blocked") and not prepared_under_current(st, op)
     )
 
 
@@ -168,8 +173,8 @@ def _supersede_stale(st: State, at: str) -> None:
             continue
         op = st["writes"][op_id]
         op["status"] = "superseded"
-        op["superseded"] = {"reason": "approval_changed", "approval": op["approval"], "current": approval_of(st),
-                            "at": at}
+        op["superseded"] = {"reason": "approval_changed" if "approval" in op else "approval_unrecorded",
+                            "approval": op.get("approval"), "current": approval_of(st), "at": at}
         a = (st.get("attempts") or {}).get(op_id.removesuffix(".agent_start"))
         if op["kind"] == "agent_start" and a is not None and not a.get("end"):
             a["end"] = {"evidence": "superseded", "at": at}

@@ -581,6 +581,56 @@ def test_an_attempt_assigned_under_an_earlier_approval_is_stopped_and_a_fresh_at
     assert h.unexpected() == []
 
 
+def unstamp(h: Harness) -> None:
+    """The ops as persisted before they recorded their approval (before 84ab56e)."""
+    from loopctl.observe import commit
+
+    def strip(st: dict) -> dict:
+        for op in st["writes"].values():
+            op.pop("approval", None)
+        return st
+
+    commit(FEATURE, "test:unstamp", strip)
+
+
+@pytest.mark.parametrize("approval", ["approve-1", "approve-2"])
+def test_a_never_sent_op_persisted_without_its_approval_is_superseded_not_sent(h, monkeypatch, approval):
+    prepared_prompt(h, monkeypatch)
+    unstamp(h)
+    if approval == "approve-2":
+        reapprove(h)
+    h.expect(c_send_keys(), c_process_info(running=False), c_agent_start(h, "T1-a2"))
+
+    # its approval cannot be established: fail closed, whatever the current approval is
+    code, out = h.write("prompt", "T1-a1.prompt")
+    assert (code, out["result"].get("error")) == (1, "op_superseded"), out
+    assert h.herdr("agent", "prompt") == []
+    assert superseded(h, "T1-a1.prompt") == {"reason": "approval_unrecorded", "approval": None, "current": approval}
+    assert h.state()["writes"]["worktree"]["status"] == "succeeded"  # a sent op is never superseded
+    assert h.next() == {"action": "write", "op": "stop", "id": "T1-a1.stop"}
+    assert h.write("stop", "T1-a1.stop")[0] == 0
+    assert h.write("stop", "T1-a1.stop")[0] == 0
+    written(h, "agent_start", "T1-a2.agent_start")
+    assert h.state()["writes"]["T1-a2.agent_start"]["approval"] == approval
+    assert h.unexpected() == []
+
+
+def test_an_unknown_op_persisted_without_its_approval_is_still_read_back(h):
+    h.dispatch(until="agent_start")
+    h.expect(c_prompt(**CLIENT_EXITED))
+    assert h.write("prompt", "T1-a1.prompt")[1]["result"]["op"]["status"] == "unknown"
+    unstamp(h)
+    reapprove(h)
+    h.expect(c_wait_output())
+
+    assert h.next() == {"action": "write", "op": "prompt", "id": "T1-a1.prompt"}
+    code, out = h.write("prompt", "T1-a1.prompt")
+    assert code == 0 and out["result"]["performed"] == "readback", out
+    assert h.state()["writes"]["T1-a1.prompt"]["status"] == "succeeded"
+    assert len(h.herdr("agent", "prompt")) == 1
+    assert h.unexpected() == []
+
+
 def test_an_existing_op_is_not_sent_once_routing_no_longer_offers_it(h, monkeypatch):
     prepared_prompt(h, monkeypatch)
     h.expect(c_send_keys(), c_process_info(running=False))
