@@ -3,13 +3,19 @@
 Checks the structure, and runs each job's steps before the artifact upload locally in a
 scratch checkout: the SHA check must fail on a HEAD other than the PR head, and the uploaded
 file must carry the §6.1 fields. Real CI behaviour is evidenced by B1's G3 run.
+
+Workflow text is untrusted: steps are run only when the workflow passes the policy blob
+binding and every step before the upload is an approved command, and then only in the
+scratch dir with a minimal environment.
 """
 
+import ast
 import copy
 import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -45,6 +51,19 @@ UPLOAD = f"upload of {ARTIFACT} before tests"
 RUN_ID, RUN_ATTEMPT, MERGE_SHA = "4242", "2", "f" * 40
 EXPRESSION = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
 
+# The approved commands before the upload: a SHA check from SHA_CHECK_COMMANDS, or a producer
+# `python3 - <<'EOF'` that only dumps literal field names mapped to PRODUCER_ENV values into a
+# file in the working directory. An approved step has no other key (env, shell,
+# continue-on-error, working-directory would change what runs or whether it counts).
+STEP_KEYS = {"name", "run"}
+PRODUCER = re.compile(r"python3 - <<'EOF'\n(?P<body>.*)\nEOF\n?", re.DOTALL)
+PRODUCER_ENV = {"GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB", "GITHUB_SHA", "HEAD_SHA"}
+JOB_ENV = {"HEAD_SHA"}  # the only workflow env a run step receives
+FILE_NAME = re.compile(r"[\w-][\w.-]*", re.ASCII)
+FIELD = re.compile(r"[a-z_]+")
+BASH = shutil.which("bash") or "/bin/bash"
+NOT_RUN = "step before the upload is not an approved command (not run): "
+
 
 def blob_sha(data: bytes) -> str:
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
@@ -54,8 +73,56 @@ def _uses(step: dict, action: str) -> bool:
     return str(step.get("uses", "")).startswith(action + "@")
 
 
+def _is_env_value(node: ast.expr) -> bool:
+    match node:
+        case ast.Subscript(ast.Attribute(ast.Name("os"), "environ"), ast.Constant(str(name))):
+            return name in PRODUCER_ENV
+    return False
+
+
+def _is_producer(run: str) -> bool:
+    heredoc = PRODUCER.fullmatch(run)
+    if not heredoc or any(line.strip() == "EOF" for line in heredoc["body"].splitlines()):
+        return False
+    try:
+        body = ast.parse(heredoc["body"]).body
+    except SyntaxError:
+        return False
+    match body:
+        case [
+            ast.Import([ast.alias("json", None), ast.alias("os", None)]),
+            ast.Expr(
+                ast.Call(
+                    ast.Attribute(ast.Name("json"), "dump"),
+                    [ast.Dict(keys, values), ast.Call(ast.Name("open"), [ast.Constant(str(path)), ast.Constant("w")], [])],
+                    [],
+                )
+            ),
+        ]:
+            return (
+                FILE_NAME.fullmatch(path) is not None
+                and all(isinstance(k, ast.Constant) and FIELD.fullmatch(str(k.value)) for k in keys)
+                and all(map(_is_env_value, values))
+            )
+    return False
+
+
+def _is_approved(step: dict) -> bool:
+    run = str(step.get("run", ""))
+    return set(step) <= STEP_KEYS and (run.strip() in SHA_CHECK_COMMANDS or _is_producer(run))
+
+
+def _sandbox_env(home: Path) -> dict[str, str]:
+    """Nothing inherited from the test runner: an explicit PATH to git and python3, HOME in
+    the scratch dir, no system git config."""
+    tools = [shutil.which(tool) for tool in ("git", "python3")]
+    path = dict.fromkeys([*(str(Path(t).parent) for t in tools if t), "/usr/bin", "/bin"])
+    return {"PATH": os.pathsep.join(path), "HOME": str(home), "LC_ALL": "C", "GIT_CONFIG_NOSYSTEM": "1"}
+
+
 def _git(cwd: Path, *args: str) -> str:
-    return subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True).stdout.strip()
+    run = subprocess.run(["git", "-C", str(cwd), *args], env=_sandbox_env(cwd), check=True, capture_output=True, text=True)
+    return run.stdout.strip()
 
 
 def _checkout(work: Path) -> tuple[str, str]:
@@ -67,7 +134,8 @@ def _checkout(work: Path) -> tuple[str, str]:
 
 
 def _run_step(name: str, job: dict, step: dict, pr_head: str, work: Path) -> int:
-    """Run one `run:` step the way Actions does (bash -e), with ${{ }} and env substituted."""
+    """Run one `run:` step the way Actions does (bash -e), with ${{ }} substituted, in `work`
+    with the sandbox env, the simulated GITHUB_* values and the job's JOB_ENV values."""
     context = {
         "github.event.pull_request.head.sha": pr_head,
         "github.job": name,
@@ -79,22 +147,29 @@ def _run_step(name: str, job: dict, step: dict, pr_head: str, work: Path) -> int
         return EXPRESSION.sub(lambda m: context.get(m.group(1), m.group(0)), text)
 
     env = {
-        **os.environ,
+        **_sandbox_env(work),
         "GITHUB_RUN_ID": RUN_ID,
         "GITHUB_RUN_ATTEMPT": RUN_ATTEMPT,
         "GITHUB_JOB": name,
         "GITHUB_SHA": MERGE_SHA,
-        **{k: expand(str(v)) for k, v in {**job.get("env", {}), **step.get("env", {})}.items()},
+        **{k: expand(str(v)) for k, v in job.get("env", {}).items() if k in JOB_ENV},
     }
     script = expand(step["run"])
-    bash = ["bash", "-e", "-c", script]
+    bash = [BASH, "--noprofile", "--norc", "-e", "-c", script]
     return subprocess.run(bash, cwd=work, env=env, capture_output=True, timeout=30, check=False).returncode
 
 
 def _run_before_upload(name: str, job: dict, check: int, upload: int) -> list[str]:
     """The SHA check fails only on a HEAD other than the PR head; the steps before the upload
-    produce the uploaded file with the validation §6.1 fields."""
+    produce the uploaded file with the validation §6.1 fields. Nothing is run unless every
+    `run:` step before the upload is approved and the upload path is a plain file name."""
     steps = job["steps"]
+    unapproved = [NOT_RUN + str(s.get("name", s["run"])) for s in steps[:upload] if "run" in s and not _is_approved(s)]
+    if unapproved:
+        return unapproved
+    path = steps[upload].get("with", {}).get("path")
+    if not FILE_NAME.fullmatch(str(path)):
+        return [f"upload of {ARTIFACT}: path {path!r} is not a file name in the checkout (not run)"]
     problems = []
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
@@ -106,9 +181,8 @@ def _run_before_upload(name: str, job: dict, check: int, upload: int) -> list[st
         for step in steps[:upload]:
             if "run" in step and _run_step(name, job, step, head, work) != 0:
                 return [*problems, f"step before the upload fails: {step.get('name', step['run'])}"]
-        path = steps[upload].get("with", {}).get("path")
         produced = work / str(path)
-        if not path or not produced.is_file():
+        if not produced.is_file():
             return [*problems, f"upload of {ARTIFACT}: path {path!r} is not a file written before the upload"]
         try:
             record = json.loads(produced.read_text())
@@ -124,7 +198,7 @@ def _run_before_upload(name: str, job: dict, check: int, upload: int) -> list[st
     return problems
 
 
-def job_problems(name: str, job: dict) -> list[str]:
+def job_problems(name: str, job: dict, *, run_steps: bool) -> list[str]:
     problems = []
     steps = job.get("steps", [])
     platform = RUNNER_PLATFORM.get(job.get("runs-on"))
@@ -153,7 +227,7 @@ def job_problems(name: str, job: dict) -> list[str]:
         uses = step.get("uses")
         if uses and not re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", uses):
             problems.append(f"action not pinned to a full commit SHA: {uses}")
-    if len(found) == len(ordered):  # only an ordered prefix is run: never the test commands
+    if run_steps and len(found) == len(ordered):  # only approved steps before the upload are run
         problems += _run_before_upload(name, job, found[SHA_CHECK], found[UPLOAD])
     return problems
 
@@ -168,7 +242,8 @@ def problems(ci: dict, policy: dict, ci_bytes: bytes) -> list[str]:
     if "concurrency" in ci:
         found.append("concurrency must not be set")
     g3 = policy["g3"]
-    if g3.get("workflow_blob_sha") != blob_sha(ci_bytes):
+    bound = g3.get("workflow_blob_sha") == blob_sha(ci_bytes)
+    if not bound:  # an unbound workflow is checked, never run
         found.append("g3.workflow_blob_sha does not match the workflow file blob")
     jobs = ci.get("jobs", {})
     for check in g3["required_checks"]:
@@ -176,7 +251,7 @@ def problems(ci: dict, policy: dict, ci_bytes: bytes) -> list[str]:
         if name not in jobs:
             found.append(f"job {name}: required check has no job of the same name")
             continue
-        found += [f"job {name}: {p}" for p in job_problems(name, jobs[name])]
+        found += [f"job {name}: {p}" for p in job_problems(name, jobs[name], run_steps=bound)]
         runs = [s.get("run", "") for s in jobs[name].get("steps", [])]
         found += [
             f"job {name}: missing step: {cmd}"
@@ -280,6 +355,16 @@ def _empty_object_artifact(ci, policy):
     _step_running(ci, "tested-sha.json")["run"] = "echo '{}' > tested-sha.json"
 
 
+def _producer_writes_empty_object(ci, policy):
+    step = _step_running(ci, "tested-sha.json")
+    step["run"] = "python3 - <<'EOF'\nimport json, os\njson.dump({}, open(\"tested-sha.json\", \"w\"))\nEOF\n"
+
+
+def _upload_path_outside_checkout(ci, policy):
+    steps = ci["jobs"]["unit-linux"]["steps"]
+    next(s for s in steps if _uses(s, "actions/upload-artifact"))["with"]["path"] = "../tested-sha.json"
+
+
 def _artifact_records_merge_sha(ci, policy):
     step = _step_running(ci, "tested-sha.json")
     step["run"] = step["run"].replace('os.environ["HEAD_SHA"]', 'os.environ["GITHUB_SHA"]')
@@ -307,10 +392,12 @@ def _upload_other_file(ci, policy):
         (_sha_check_on_head_parent, f"job unit-linux: missing step: {SHA_CHECK}"),
         (_sha_check_negated_on_head_parent, f"job unit-linux: missing step: {SHA_CHECK}"),
         (_sha_check_inequality, f"job unit-linux: missing step: {SHA_CHECK}"),
-        (_empty_artifact, "job unit-linux: tested-sha.json field run_id"),
-        (_empty_object_artifact, "job unit-linux: tested-sha.json field run_id"),
+        (_empty_artifact, f"job unit-linux: {NOT_RUN}Write tested-sha.json"),
+        (_empty_object_artifact, f"job unit-linux: {NOT_RUN}Write tested-sha.json"),
+        (_producer_writes_empty_object, "job unit-linux: tested-sha.json field run_id"),
         (_artifact_records_merge_sha, "job unit-linux: tested-sha.json field tested_sha"),
         (_upload_other_file, "job unit-linux: upload of tested-sha-${{ github.job }}-${{ github.run_attempt }}: path 'other.json'"),
+        (_upload_path_outside_checkout, f"job unit-linux: upload of {ARTIFACT}: path '../tested-sha.json' is not a file name"),
     ],
     ids=lambda v: getattr(v, "__name__", "").lstrip("_") or None,
 )
@@ -332,3 +419,91 @@ def test_t7_sha_check_is_still_run_if_the_accepted_commands_admit_a_non_comparin
     found = problems(ci, policy, ci_bytes)
     expected = "job unit-linux: git rev-parse HEAD check does not fail when HEAD differs from the PR head SHA"
     assert expected in found, found
+
+
+# Workflow text is untrusted: a step is run only if it is an approved command, only when the
+# workflow passes the policy binding, and never with the test runner's environment.
+PLANTED = "LOOPCTL_T7_PLANTED_SECRET"
+JOB_NOT_RUN = f"job unit-linux: {NOT_RUN}"
+
+
+def _insert_before_upload(ci, step: dict) -> None:
+    steps = ci["jobs"]["unit-linux"]["steps"]
+    steps.insert(next(i for i, s in enumerate(steps) if _uses(s, "actions/upload-artifact")), step)
+
+
+def test_t7_unapproved_step_writing_outside_the_scratch_dir_is_not_run(tmp_path):
+    marker = tmp_path / "outside-scratch"
+    ci, policy, ci_bytes = load()
+    ci = copy.deepcopy(ci)
+    _insert_before_upload(ci, {"name": "Plant marker", "run": f"touch '{marker}'"})
+    found = problems(ci, policy, ci_bytes)
+    assert not marker.exists()
+    assert JOB_NOT_RUN + "Plant marker" in found, found
+
+
+def test_t7_producer_reading_an_unlisted_env_value_is_not_run(monkeypatch):
+    secret = "planted-" + "5" * 16
+    monkeypatch.setenv(PLANTED, secret)
+    ci, policy, ci_bytes = load()
+    ci = copy.deepcopy(ci)
+    step = _step_running(ci, "tested-sha.json")
+    step["run"] = step["run"].replace('os.environ["HEAD_SHA"]', f'os.environ["{PLANTED}"]')
+    found = problems(ci, policy, ci_bytes)
+    assert not any(secret in p for p in found), found
+    assert JOB_NOT_RUN + step["name"] in found, found
+
+
+@pytest.mark.parametrize("where", ["job", "step"])
+def test_t7_bash_env_from_the_workflow_is_not_sourced(tmp_path, where):
+    marker = tmp_path / "sourced"
+    script = tmp_path / "bash-env.sh"
+    script.write_text(f"touch '{marker}'\n")
+    ci, policy, ci_bytes = load()
+    ci = copy.deepcopy(ci)
+    target = ci["jobs"]["unit-linux"] if where == "job" else _step_running(ci, "tested-sha.json")
+    target.setdefault("env", {})["BASH_ENV"] = str(script)
+    found = problems(ci, policy, ci_bytes)
+    assert not marker.exists()
+    if where == "step":
+        assert JOB_NOT_RUN + target["name"] in found, found
+
+
+def test_t7_sha_check_that_may_fail_without_failing_the_job_is_not_run():
+    ci, policy, ci_bytes = load()
+    ci = copy.deepcopy(ci)
+    step = _step_running(ci, "git rev-parse HEAD")
+    step["continue-on-error"] = True
+    found = problems(ci, policy, ci_bytes)
+    assert JOB_NOT_RUN + step["name"] in found, found
+
+
+def test_t7_workflow_failing_the_policy_binding_is_not_run(monkeypatch):
+    module = sys.modules[__name__]
+    ran: list[str] = []
+    for helper in ("_checkout", "_run_step"):
+        real = getattr(module, helper)
+        monkeypatch.setattr(module, helper, lambda *a, _real=real, _name=helper: ran.append(_name) or _real(*a))
+    ci, policy, ci_bytes = load()
+    policy = copy.deepcopy(policy)
+    _blob_mismatch(ci, policy)
+    found = problems(ci, policy, ci_bytes)
+    assert ran == [], ran
+    assert any(p.startswith("g3.workflow_blob_sha does not match") for p in found), found
+
+
+def test_t7_step_run_gets_no_inherited_environment(tmp_path, monkeypatch):
+    """Test-authored steps run under the same restrictions as the approved workflow steps."""
+    monkeypatch.setenv(PLANTED, "planted-" + "6" * 16)
+    step = {"run": "env > env.txt"}
+    assert _run_step("unit-linux", {"env": {"HEAD_SHA": HEAD_SHA}}, step, "a" * 40, tmp_path) == 0
+    env = dict(line.split("=", 1) for line in (tmp_path / "env.txt").read_text().splitlines() if "=" in line)
+    names = sorted(env)  # a failure prints only names, never an inherited value
+    assert PLANTED not in names
+    assert set(names) - {"PWD", "SHLVL", "_", "OLDPWD"} <= {
+        "PATH", "HOME", "LC_ALL", "GIT_CONFIG_NOSYSTEM",
+        "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB", "GITHUB_SHA", "HEAD_SHA",
+    }, names
+    home, head = env["HOME"], env["HEAD_SHA"]
+    assert home == str(tmp_path)
+    assert head == "a" * 40
