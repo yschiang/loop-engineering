@@ -96,7 +96,9 @@ def _parser() -> _Parser:
     rg.add_argument("--token")
     rg.add_argument("--locator", required=True, help="native path, recorded as given")
     rg.add_argument("--version", required=True)
-    rg.add_argument("--digest", help="required when the locator is not a readable file")
+    rg.add_argument(
+        "--digest", help="binding/policy: required when the locator is not a readable file"
+    )
     rg.add_argument("--producer", choices=decisions.PRODUCERS, help="plan only")
     rg.add_argument("--calibrated-from", help="plan only: calibration source")
     rg.add_argument("--role", choices=decisions.BINDING_ROLES, help="binding only")

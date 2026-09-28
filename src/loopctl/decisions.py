@@ -198,9 +198,14 @@ def artifact(
     calibrated_from: str | None = None,
     role: str | None = None,
 ) -> dict[str, Any]:
-    """A registration entry: the native locator as given, version, digest, content ref."""
+    """A registration entry: the native locator as given, version, digest, content ref.
+
+    A plan is registered only with readable content: dispatch and the gates read it back,
+    so a digest never stands in for it (AC-O03, AC-O04)."""
     if kind == "plan" and not producer:
         raise Rejected("missing_fields", fields=["producer"])
+    if kind == "plan" and content is None:
+        raise Rejected("locator_unreadable", locator=locator)
     if kind == "binding" and not role:
         raise Rejected("missing_fields", fields=["role"])
     entry: dict[str, Any] = {

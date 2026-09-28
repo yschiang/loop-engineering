@@ -323,6 +323,30 @@ def test_d6_unreadable_locator_or_digest_mismatch_is_rejected(capsys, home, repo
     assert store.load(FEATURE)[0] == rev_before
 
 
+def test_d6_unreadable_plan_with_a_digest_is_rejected_and_never_approvable(
+    capsys, home, repo, fakes
+):
+    """A digest does not stand in for the plan's content: the adopted plan must be read
+    back (AC-O03) and an unreadable required reference stops the run (AC-O04)."""
+    token = started(capsys)
+    rev_before, _ = store.load(FEATURE)
+    missing = "docs/superpowers/plans/P03-missing.md"
+    code, out = run(
+        capsys, "register", "plan", "--feature", FEATURE, f"--token={token}",
+        "--locator", missing, "--version", "v1", "--digest", "sha256:" + "1" * 64,
+        "--producer", "implementer", "--calibrated-from", SPEC,
+    )
+    assert (code, out["result"].get("error")) == (1, "locator_unreadable")
+    rev, state = store.load(FEATURE)
+    assert rev == rev_before and state["plan"] is None
+
+    code, out = decide(capsys, token, "approve_plan", target=missing)
+    assert (code, out["result"]["error"]) == (1, "plan_not_registered")
+    _, state = store.load(FEATURE)
+    assert state["approval"] is None and state["phase"] == "planning"
+    assert fakes.calls() == []
+
+
 def test_registering_a_changed_plan_after_approval_needs_a_new_approve_plan(
     capsys, home, repo, fakes
 ):
