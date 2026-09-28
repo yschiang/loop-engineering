@@ -1021,6 +1021,37 @@ def test_g10_a_behaviour_changing_correction_needs_its_own_bound_red(env, kind, 
         assert g1["units"]["batch:B1:F-1"]["via"] == "na"
 
 
+@pytest.mark.parametrize("variant", ["import_other_finding", "na_other_finding", "na_later_attempt"])
+def test_g10_an_exemption_covers_only_its_own_finding_and_attempt(env, variant):
+    """A pure import or an accepted N/A exempts the attempt it judged, for the findings that
+    attempt answers; any other behaviour-changing attempt of the batch still needs its Red."""
+    if variant == "import_other_finding":
+        _integration(env, "a")  # I1-a1: F-I of batch BI, a pure import
+        env.dispatch("R1-a1", batch="BI", findings=("F-R",), scope=["src/a.py", "tests/test_a.py"])
+        env.write("src/a.py", "def a():\n    return 2\n\n\ndef b():\n    return 1\n")  # behaviour, no Red
+        env.commit("F-R: add b")
+        env.complete("R1-a1")
+        exempt, needs = "batch:BI:F-I", "batch:BI:F-R"
+    else:
+        env.start()
+        env.task_done()
+        docs = ("F-D",) if variant == "na_other_finding" else ("F-1",)
+        _correction(env, "B1-a1", "B1", docs, "g2_fix", None, docs_only=True)
+        env.na("batch:B1", "B1-a1")
+        fix = ("F-R",) if variant == "na_other_finding" else ("F-1",)
+        _correction(env, "B1-a2", "B1", fix, "g2_fix", None)  # behaviour, no Red
+        exempt, needs = f"batch:B1:{docs[0]}", f"batch:B1:{fix[0]}"
+    assert env.green()[0] == 0
+    assert env.assess()[0] == 3
+    g1 = env.g1()
+    assert g1["status"] == "blocked"
+    assert f"original_red_unavailable:{needs}" in g1["reasons"], g1["reasons"]
+    assert g1["units"][needs]["status"] == "blocked"
+    if exempt != needs:
+        assert (g1["units"][exempt]["status"], g1["units"][exempt]["via"]) == (
+            "passed", "import" if variant == "import_other_finding" else "na")
+
+
 # --- g11: an abandoned attempt's Red does not transfer -------------------------------------------
 
 

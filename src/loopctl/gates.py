@@ -6,8 +6,10 @@ T5.1 (G2) and T6.2 (Pass) add theirs without changing the G1 rules (tasks.md sha
 G1 at the current head H (the feature branch in the source repository):
   units: every task of the approved plan (`task:<T>`; an empty task set fails) and every
   finding of every correction batch found in `assignments` (`batch:<B>:<F>`). A unit passes
-  with one eligible original Red, an accepted independent N/A (keyed `task:<T>` /
-  `batch:<B>` in `state.na`), or — integration batches only — a merge with no author edits.
+  with one eligible original Red, or when every eligible attempt it answers for (a task's
+  attempts; the batch's attempts that list the finding) is exempt on its own: an integration
+  merge with no author edits, or the one attempt an accepted independent N/A judged (keyed
+  `task:<T>` / `batch:<B>` in `state.na`; a batch record covers the findings its attempt lists).
   A Red is eligible only if every check holds, each on its own (D51-R07):
     integrity  producer, raw objects vs digests, exit re-derived from the raw junit,
                provenance (attempt, task, batch, findings, worktree) vs the assignment,
@@ -250,10 +252,23 @@ class _G1:
                     out.append(r)
         return out
 
+    def _covering(self, unit: str) -> list[str]:
+        """The eligible attempts this unit answers for: a task's attempts, or the batch's attempts
+        that list the finding (an attempt listing no finding answers for every one)."""
+        kind, _, rest = unit.partition(":")
+        found = [a for a in self._attempts_of(unit) if a in self.eligible]
+        if kind == "task":
+            return found
+        finding = rest.split(":", 1)[1]
+        return [a for a in found if finding in (self.asg[a].get("finding_ids") or [finding])]
+
+    def _pure_import(self, attempt: str) -> bool:
+        c = self.integration.get(attempt)
+        return c is not None and not (c["author"]["conflict"] or c["author"]["additional"])
+
     def _unit(self, unit: str) -> dict[str, Any]:
         out: dict[str, Any] = {"status": "passed", "reasons": [], "red": None, "via": None, "invalid": {}}
         eligible = [a for a in self._attempts_of(unit) if a in self.eligible]
-        checks = [self.integration[a] for a in eligible if a in self.integration]
         rejected = [(a, c) for a in eligible if (c := self.integration.get(a)) and c["status"] != "ok"]
         if rejected:
             for a, c in rejected:
@@ -270,14 +285,18 @@ class _G1:
         invalid = [f"red_invalid:{rid}:{w}" for rid, whys in out["invalid"].items() for w in whys]
         if out["red"]:
             return self._contradiction(out, unit, invalid)
-        if checks and all(not (c["author"]["conflict"] or c["author"]["additional"]) for c in checks):
+        # without a Red, each attempt the unit answers for must be exempt on its own
+        covering = self._covering(unit)
+        imports = {a for a in covering if self._pure_import(a)}
+        if covering and set(covering) <= imports:
             return {**out, "via": "import"}  # a pure import needs no Red for upstream behaviour
-        na = self._na(unit, eligible)
+        na = self._na(unit, covering)
         if na is not None:
-            status, reasons = na
-            if status == "passed":
+            status, reasons, judged = na
+            if status != "passed":
+                return {**out, "status": status, "reasons": [*reasons, *invalid]}
+            if set(covering) <= imports | {judged}:
                 return {**out, "via": "na"}
-            return {**out, "status": status, "reasons": [*reasons, *invalid]}
         return {**out, "status": "blocked", "reasons": [f"original_red_unavailable:{unit}", *invalid]}
 
     def _contradiction(self, out: dict[str, Any], unit: str, invalid: list[str]) -> dict[str, Any]:
@@ -418,17 +437,22 @@ class _G1:
         return out
 
     # N/A (design §7; the same independence checks as G2)
-    def _na(self, unit: str, eligible: list[str]) -> tuple[str, list[str]] | None:
+    def _na(self, unit: str, covering: list[str]) -> tuple[str, list[str], str] | None:
+        """The N/A record's verdict for this unit and the one attempt it judged. A batch record
+        applies only to the findings its attempt lists."""
         kind, _, rest = unit.partition(":")
         key = f"task:{rest}" if kind == "task" else f"batch:{rest.split(':', 1)[0]}"
         rec = (self.st.get("na") or {}).get(key)
         if rec is None:
             return None
+        judged = str(rec.get("attempt"))
+        if judged in self.eligible and judged in self._attempts_of(unit) and judged not in covering:
+            return None  # an eligible attempt of the batch that answers for other findings
         reviewer = rec.get("reviewer") or {}
         if reviewer.get("role") != "reviewer":
-            return "failed", [f"na_self_declared:{unit}"]
+            return "failed", [f"na_self_declared:{unit}"], judged
         if rec.get("status") == "pending":
-            return "pending", [f"na_pending:{unit}"]
+            return "pending", [f"na_pending:{unit}"], judged
         found: list[tuple[str, str]] = []
         approved = ((self.pol.get("profiles") or {}).get("reviewer") or {}).get("model")
         if not approved or reviewer.get("model") != approved:
@@ -443,11 +467,11 @@ class _G1:
             found += [("blocked", f"na_rejected:{unit}"), ("blocked", f"original_red_unavailable:{unit}")]
         elif rec.get("status") != "accepted":
             found.append(("failed", f"na_status:{unit}:{rec.get('status')}"))
-        if rec.get("attempt") not in eligible or rec.get("head") != self.eligible.get(rec.get("attempt")):
+        if judged not in covering or rec.get("head") != self.eligible.get(judged):
             found.append(("failed", f"na_diff_mismatch:{unit}"))
         if not found:
-            return "passed", []
-        return worst([s for s, _ in found]), [r for _, r in found]
+            return "passed", [], judged
+        return worst([s for s, _ in found]), [r for _, r in found], judged
 
     # commits of H that no eligible attempt made (G05: documentation after the code)
     def _unattributed(self, base: dict[str, Any]) -> tuple[str, list[str]]:
