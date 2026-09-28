@@ -236,11 +236,54 @@ def test_d4_scope_change_while_implementing_revokes_approval_and_stops_the_whole
         "action": "human", "blockers": ["plan_not_approved"], "decision_kinds": ["approve_plan"]
     }
 
-    # The run continues only after a new approval.
-    approve(capsys, token, id="approve_plan-2", reason="approved after scope change")
+    # The unchanged plan is the old contract: approving it again is refused (design §8
+    # "approve_plan (new digest)"; AC-O07).
+    rev_before, _ = store.load(FEATURE)
+    code, out = decide(capsys, token, "approve_plan", id="approve_plan-2")
+    assert (code, out["result"].get("error")) == (1, "plan_superseded")
+    assert out["result"]["scope_change"] == "scope_change-1"
+    rev, state = store.load(FEATURE)
+    assert rev == rev_before
+    assert state["approval"] is None and state["phase"] == "awaiting_approval"
+    assert "approve_plan-2" not in state["decisions"]
+
+    # The run continues only after the revised plan is registered and approved.
+    (repo / PLAN).write_text("# P03 ingest plan\n\n- T1: AC-1 via test_ingest, test_retry\n")
+    code, out = register_plan(capsys, token, version="v2")
+    assert code == 0, out
+    approve(capsys, token, id="approve_plan-3", version="v2", reason="approved after scope change")
     _, state = store.load(FEATURE)
     assert state["phase"] == "approved"
-    assert state["approval"]["decision"] == "approve_plan-2"
+    assert state["approval"]["decision"] == "approve_plan-3"
+    assert state["approval"]["plan"]["version"] == "v2"
+    assert fakes.calls() == []
+
+
+def test_d4_reregistering_the_superseded_plan_binding_does_not_make_it_approvable(
+    capsys, home, repo, fakes
+):
+    token = started(capsys)
+    register_plan(capsys, token)
+    approve(capsys, token)
+    at_phase("implementing")
+    code, out = decide(capsys, token, "scope_change", target="AC-1", reason="retries too")
+    assert code == 0, out
+
+    for locator in (PLAN, "docs/superpowers/plans/P03-copy.md"):  # same version and bytes
+        (repo / locator).write_bytes((repo / PLAN).read_bytes())
+        code, out = register_plan(capsys, token, locator=locator)
+        assert code == 0, out
+        rev_before, _ = store.load(FEATURE)
+        code, out = decide(capsys, token, "approve_plan", id=f"approve-{locator}", target=locator)
+        assert (code, out["result"].get("error")) == (1, "plan_superseded")
+        rev, state = store.load(FEATURE)
+        assert rev == rev_before and state["approval"] is None
+
+    # Same bytes under a new version is a new plan binding (Lead ruling: version/digest).
+    code, out = register_plan(capsys, token, version="v2")
+    assert code == 0, out
+    approve(capsys, token, id="approve_plan-2", version="v2")
+    assert store.load(FEATURE)[1]["phase"] == "approved"
     assert fakes.calls() == []
 
 

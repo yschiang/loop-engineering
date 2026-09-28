@@ -120,6 +120,19 @@ def plan_binding(plan: dict[str, Any]) -> dict[str, Any]:
     return {k: plan[k] for k in PLAN_BINDING}
 
 
+def superseded_by(state: State, plan: dict[str, Any]) -> str | None:
+    """The scope_change that made this plan version and digest the old contract, if any.
+
+    After a scope change only a newly registered plan version or digest is approvable
+    (design §8 "approve_plan (new digest)"; AC-O07); the same bytes and version under
+    another locator are still the old contract."""
+    for d in state.get("decisions", {}).values():
+        old = d.get("supersedes") if d["kind"] == "scope_change" else None
+        if old and (old["version"], old["digest"]) == (plan["version"], plan["digest"]):
+            return str(d["id"])
+    return None
+
+
 def bound_digests(state: State) -> dict[str, str]:
     plan = state.get("plan")
     out = {"plan": plan["digest"]} if plan else {}
@@ -142,6 +155,9 @@ def _check(state: State, rec: dict[str, Any]) -> None:
             raise Rejected(
                 "plan_version_mismatch", registered=[plan["locator"], plan["version"]]
             )
+        superseded = superseded_by(state, plan)
+        if superseded:
+            raise Rejected("plan_superseded", scope_change=superseded)
     elif kind in ("accept", "return"):
         acceptance = state.get("acceptance") or {}
         if state["phase"] != "pass" or acceptance.get("status") != "pending":
@@ -171,7 +187,11 @@ def decide(state: State, rec: dict[str, Any], at: str) -> State:
     if rec["id"] in recorded:
         raise Duplicate(recorded[rec["id"]])
     _check(state, rec)
-    new = {**state, "decisions": {**recorded, rec["id"]: {**rec, "at": at, "seq": len(recorded) + 1}}}
+    entry = {**rec, "at": at, "seq": len(recorded) + 1}
+    if rec["kind"] == "scope_change" and state.get("plan"):
+        # The registered plan is now the old contract; approval needs a new one.
+        entry["supersedes"] = {k: state["plan"][k] for k in ("locator", "version", "digest")}
+    new = {**state, "decisions": {**recorded, rec["id"]: entry}}
     if rec["kind"] == "approve_plan":
         plan = state["plan"]
         new["approval"] = {
