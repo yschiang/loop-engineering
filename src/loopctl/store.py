@@ -241,9 +241,13 @@ def _refs(value: Any) -> Iterator[str]:
 
 
 def _check_refs(state: State) -> None:
-    missing = sorted({r for r in _refs(state) if not _object_path(r).is_file()})
+    """Every typed reference must name a fully saved object (DUR-04)."""
+    refs = set(_refs(state))
+    missing = sorted(r for r in refs if not _object_path(r).is_file())
     if missing:
         raise MissingObject(f"state references missing objects: {missing}")
+    for ref in sorted(refs):
+        get_object(ref)  # a corrupt object is untrusted, not saved
 
 
 def _history_bytes(rev: int, tid: str, prev: bytes | None, state: State) -> tuple[bytes, bytes]:
@@ -336,6 +340,7 @@ def put_object(data: bytes) -> str:
         finally:
             tmp.unlink()
         _fsync_dir(final.parent)
+    get_object(ref)  # an existing corrupt file is kept and rejected, never reported as saved
     return ref
 
 

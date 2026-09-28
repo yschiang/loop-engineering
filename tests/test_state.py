@@ -318,6 +318,47 @@ def test_s6_document_digests_are_not_object_refs_but_missing_evidence_refs_are_r
     assert rev == 4
 
 
+def _corrupt_object(home: Path, data: bytes) -> str:
+    """Save data as an object, then truncate the object file in place."""
+    ref = store.put_object(data)
+    (home / "objects" / ref.removeprefix("sha256:")).write_bytes(data[:3])
+    return ref
+
+
+def test_s6_put_object_rejects_a_corrupt_existing_object_and_keeps_its_bytes(home):
+    _corrupt_object(home, b"raw red output\n")
+    before = snapshot(home)
+
+    with pytest.raises(store.UntrustedState, match="object_corrupt"):
+        store.put_object(b"raw red output\n")
+    assert snapshot(home) == before
+
+
+def test_s6_commit_rejects_a_reference_to_a_corrupt_object_without_changing_any_file(
+    capsys, home
+):
+    init(capsys)
+    claim(capsys, "alice")
+    ref = _corrupt_object(home, b"raw red output\n")
+    before = snapshot(home)
+
+    with pytest.raises(store.UntrustedState, match="object_corrupt"):
+        store.commit(FEATURE, 2, "t-ev", lambda s: {**s, "evidence": {"red": store.object_ref(ref)}})
+    assert snapshot(home) == before
+    rev, state = store.load(FEATURE)
+    assert rev == 2 and "evidence" not in state
+
+
+def test_s6_first_commit_rejects_a_reference_to_a_corrupt_object_and_creates_nothing(home):
+    ref = _corrupt_object(home, b"raw red output\n")
+    before = snapshot(home)
+
+    with pytest.raises(store.UntrustedState, match="object_corrupt"):
+        store.commit(FEATURE, 0, "t-1", lambda s: {"evidence": {"red": store.object_ref(ref)}})
+    assert snapshot(home) == before
+    assert not fdir(home).exists()
+
+
 def test_s7_uninitialised_feature_is_reported_absent_and_nothing_is_taken_over(
     capsys, home, fakes
 ):
