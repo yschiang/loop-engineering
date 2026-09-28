@@ -5,8 +5,9 @@ scratch checkout: the SHA check must fail on a HEAD other than the PR head, and 
 file must carry the §6.1 fields. Real CI behaviour is evidenced by B1's G3 run.
 
 Workflow text is untrusted: steps are run only when the workflow passes the policy blob
-binding and every step before the upload is an approved command, and then only in the
-scratch dir with a minimal environment.
+binding, sets no workflow or job key or env name outside the allow-lists, and every step
+before the upload is an approved command, and then only in the scratch dir with a minimal
+environment.
 """
 
 import ast
@@ -58,11 +59,18 @@ EXPRESSION = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
 STEP_KEYS = {"name", "run"}
 PRODUCER = re.compile(r"python3 - <<'EOF'\n(?P<body>.*)\nEOF\n?", re.DOTALL)
 PRODUCER_ENV = {"GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB", "GITHUB_SHA", "HEAD_SHA"}
+# The simulated run applies no other workflow or job setting, so any other key or env name
+# (BASH_ENV, defaults.run.shell, a job `if`, ...) is a named problem and nothing is run.
+WORKFLOW_KEYS = {"name", "on", True, "permissions", "jobs"}  # YAML 1.1 reads a bare `on` key as True
+JOB_KEYS = {"runs-on", "timeout-minutes", "env", "steps"}
+WORKFLOW_ENV: frozenset[str] = frozenset()
 JOB_ENV = {"HEAD_SHA"}  # the only workflow env a run step receives
+STEP_ENV = {"LOOPCTL_EXPECT_PLATFORM", "BASE_SHA"}  # steps after the upload; approved steps have no env
 FILE_NAME = re.compile(r"[\w-][\w.-]*", re.ASCII)
 FIELD = re.compile(r"[a-z_]+")
 BASH = shutil.which("bash") or "/bin/bash"
 NOT_RUN = "step before the upload is not an approved command (not run): "
+NOT_RUN_ALL = "(steps not run)"
 
 
 def blob_sha(data: bytes) -> str:
@@ -105,6 +113,13 @@ def _is_producer(run: str) -> bool:
                 and all(map(_is_env_value, values))
             )
     return False
+
+
+def _unlisted(where: str, mapping: object, allowed: set | frozenset) -> list[str]:
+    """Names only, never values: env values may be secrets."""
+    if not isinstance(mapping, dict):
+        return [f"{where} is not a mapping {NOT_RUN_ALL}"]
+    return [f"{where} not allowed {NOT_RUN_ALL}: {key}" for key in mapping if key not in allowed]
 
 
 def _is_approved(step: dict) -> bool:
@@ -159,10 +174,10 @@ def _run_step(name: str, job: dict, step: dict, pr_head: str, work: Path) -> int
     return subprocess.run(bash, cwd=work, env=env, capture_output=True, timeout=30, check=False).returncode
 
 
-def _run_before_upload(name: str, job: dict, check: int, upload: int) -> list[str]:
+def _run_before_upload(name: str, job: dict, check: int, upload: int, *, run: bool) -> list[str]:
     """The SHA check fails only on a HEAD other than the PR head; the steps before the upload
-    produce the uploaded file with the validation §6.1 fields. Nothing is run unless every
-    `run:` step before the upload is approved and the upload path is a plain file name."""
+    produce the uploaded file with the validation §6.1 fields. Nothing is run unless `run`,
+    every `run:` step before the upload is approved and the upload path is a plain file name."""
     steps = job["steps"]
     unapproved = [NOT_RUN + str(s.get("name", s["run"])) for s in steps[:upload] if "run" in s and not _is_approved(s)]
     if unapproved:
@@ -170,6 +185,8 @@ def _run_before_upload(name: str, job: dict, check: int, upload: int) -> list[st
     path = steps[upload].get("with", {}).get("path")
     if not FILE_NAME.fullmatch(str(path)):
         return [f"upload of {ARTIFACT}: path {path!r} is not a file name in the checkout (not run)"]
+    if not run:
+        return []
     problems = []
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
@@ -227,8 +244,13 @@ def job_problems(name: str, job: dict, *, run_steps: bool) -> list[str]:
         uses = step.get("uses")
         if uses and not re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", uses):
             problems.append(f"action not pinned to a full commit SHA: {uses}")
+    unlisted = _unlisted("job key", job, JOB_KEYS) + _unlisted("job env", job.get("env", {}), JOB_ENV)
+    for step in steps:
+        label = step.get("name", step.get("run", step.get("uses")))
+        unlisted += _unlisted(f"step env of {label}", step.get("env", {}), STEP_ENV)
+    problems += unlisted
     if run_steps and len(found) == len(ordered):  # only approved steps before the upload are run
-        problems += _run_before_upload(name, job, found[SHA_CHECK], found[UPLOAD])
+        problems += _run_before_upload(name, job, found[SHA_CHECK], found[UPLOAD], run=not unlisted)
     return problems
 
 
@@ -241,17 +263,20 @@ def problems(ci: dict, policy: dict, ci_bytes: bytes) -> list[str]:
         found.append("permissions must be contents: read")
     if "concurrency" in ci:
         found.append("concurrency must not be set")
+    unlisted = _unlisted("workflow key", ci, WORKFLOW_KEYS) + _unlisted("workflow env", ci.get("env", {}), WORKFLOW_ENV)
+    found += unlisted
     g3 = policy["g3"]
     bound = g3.get("workflow_blob_sha") == blob_sha(ci_bytes)
     if not bound:  # an unbound workflow is checked, never run
         found.append("g3.workflow_blob_sha does not match the workflow file blob")
+    run_steps = bound and not unlisted
     jobs = ci.get("jobs", {})
     for check in g3["required_checks"]:
         name = check["name"]
         if name not in jobs:
             found.append(f"job {name}: required check has no job of the same name")
             continue
-        found += [f"job {name}: {p}" for p in job_problems(name, jobs[name], run_steps=bound)]
+        found += [f"job {name}: {p}" for p in job_problems(name, jobs[name], run_steps=run_steps)]
         runs = [s.get("run", "") for s in jobs[name].get("steps", [])]
         found += [
             f"job {name}: missing step: {cmd}"
@@ -454,19 +479,68 @@ def test_t7_producer_reading_an_unlisted_env_value_is_not_run(monkeypatch):
     assert JOB_NOT_RUN + step["name"] in found, found
 
 
-@pytest.mark.parametrize("where", ["job", "step"])
+@pytest.mark.parametrize("where", ["workflow", "job", "step"])
 def test_t7_bash_env_from_the_workflow_is_not_sourced(tmp_path, where):
     marker = tmp_path / "sourced"
     script = tmp_path / "bash-env.sh"
     script.write_text(f"touch '{marker}'\n")
     ci, policy, ci_bytes = load()
     ci = copy.deepcopy(ci)
-    target = ci["jobs"]["unit-linux"] if where == "job" else _step_running(ci, "tested-sha.json")
+    target = {"workflow": ci, "job": ci["jobs"]["unit-linux"]}.get(where) or _step_running(ci, "tested-sha.json")
     target.setdefault("env", {})["BASH_ENV"] = str(script)
     found = problems(ci, policy, ci_bytes)
     assert not marker.exists()
+    expected = {
+        "workflow": f"workflow env not allowed {NOT_RUN_ALL}: BASH_ENV",
+        "job": f"job unit-linux: job env not allowed {NOT_RUN_ALL}: BASH_ENV",
+        "step": f"job unit-linux: step env of Write tested-sha.json not allowed {NOT_RUN_ALL}: BASH_ENV",
+    }[where]
+    assert expected in found, found
     if where == "step":
         assert JOB_NOT_RUN + target["name"] in found, found
+
+
+def _job_env(ci, name: str) -> None:
+    ci["jobs"]["unit-linux"]["env"][name] = "x"
+
+
+def _pytest_step_env(ci, name: str) -> None:
+    _step_running(ci, "uv run pytest")["env"][name] = "x"
+
+
+# Settings the simulated run does not apply change what the real steps do, so each one is a
+# named problem and nothing is run: only allow-listed keys and env names count as evidence.
+@pytest.mark.parametrize(
+    "mutate,expected",
+    [
+        (lambda ci: _job_env(ci, "GIT_DIR"), f"job unit-linux: job env not allowed {NOT_RUN_ALL}: GIT_DIR"),
+        (lambda ci: ci.update(env={"GIT_DIR": "x"}), f"workflow env not allowed {NOT_RUN_ALL}: GIT_DIR"),
+        (
+            lambda ci: _pytest_step_env(ci, "BASH_ENV"),
+            f"job unit-linux: step env of uv run pytest not allowed {NOT_RUN_ALL}: BASH_ENV",
+        ),
+        (
+            lambda ci: ci["jobs"]["unit-linux"].update(defaults={"run": {"shell": "sh -e {0}"}}),
+            f"job unit-linux: job key not allowed {NOT_RUN_ALL}: defaults",
+        ),
+        (lambda ci: ci.update(defaults={"run": {"shell": "sh -e {0}"}}), f"workflow key not allowed {NOT_RUN_ALL}: defaults"),
+        (lambda ci: ci["jobs"]["unit-linux"].update({"if": "false"}), f"job unit-linux: job key not allowed {NOT_RUN_ALL}: if"),
+        (lambda ci: ci["jobs"]["unit-linux"].update(env="${{ fromJSON('{}') }}"), f"job unit-linux: job env is not a mapping {NOT_RUN_ALL}"),
+    ],
+    ids=["job_env", "workflow_env", "step_env", "job_defaults", "workflow_defaults", "job_if", "job_env_expression"],
+)
+def test_t7_setting_not_on_the_allow_list_is_named_and_nothing_is_run(monkeypatch, mutate, expected):
+    module = sys.modules[__name__]
+    ran: list[str] = []
+    for helper in ("_checkout", "_run_step"):
+        real = getattr(module, helper)
+        monkeypatch.setattr(module, helper, lambda *a, _real=real, _name=helper: ran.append(_name) or _real(*a))
+    ci, policy, ci_bytes = load()
+    ci = copy.deepcopy(ci)
+    mutate(ci)
+    found = problems(ci, policy, ci_bytes)
+    assert expected in found, found
+    assert ran == [], ran
 
 
 def test_t7_sha_check_that_may_fail_without_failing_the_job_is_not_run():
