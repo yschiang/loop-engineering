@@ -37,3 +37,8 @@ def limit(state: State) -> timedelta:
 
 def remaining(state: State, now: datetime) -> timedelta:
     return limit(state) - active_used(state, now)
+
+
+def timed_out(state: State, attempt: str) -> bool:
+    """T7.1: the attempt was stopped past its role timeout (interface only)."""
+    return False
