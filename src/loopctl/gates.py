@@ -8,8 +8,9 @@ G1 at the current head H (the feature branch in the source repository):
   finding of every correction batch found in `assignments` (`batch:<B>:<F>`). A unit passes
   with one eligible original Red, or when every eligible attempt it answers for (a task's
   attempts; the batch's attempts that list the finding) is exempt on its own: an integration
-  merge with no author edits, or the one attempt an accepted independent N/A judged (keyed
-  `task:<T>` / `batch:<B>` in `state.na`; a batch record covers the findings its attempt lists).
+  merge with no author edits, or an attempt that an accepted independent N/A judged. `state.na`
+  holds one record per judged attempt, `attempt:<A>`; a record first written as `task:<T>` /
+  `batch:<B>` judges the one attempt it names. Either covers only the findings its attempt lists.
   A Red is eligible only if every check holds, each on its own (D51-R07):
     integrity  producer, raw objects vs digests, exit re-derived from the raw junit,
                provenance (attempt, task, batch, findings, worktree) vs the assignment,
@@ -291,13 +292,14 @@ class _G1:
         bare = {a for a in covering if a not in out["reds"] and not self._pure_import(a)}
         via = "red" if out["reds"] else "import"  # a pure import needs no Red for upstream behaviour
         if bare or not covering:
-            na = self._na(unit, covering)
-            if na is None:
+            nas = self._na(unit, covering, bare)
+            if not nas:
                 return unavailable
-            status, reasons, judged = na
-            if status != "passed":
-                return {**out, "status": status, "reasons": [*reasons, *invalid]}
-            if not bare <= {judged}:
+            failing = [(s, why) for s, why, _ in nas if s != "passed"]
+            if failing:
+                reasons = _unique([x for _, why in failing for x in why])
+                return {**out, "status": worst([s for s, _ in failing]), "reasons": [*reasons, *invalid]}
+            if not bare <= {judged for _, _, judged in nas}:
                 return unavailable
             via = "red" if out["reds"] else "na"
         verdicts = {rid: self._contradiction(rid) for rid in out["reds"].values()}
@@ -447,17 +449,32 @@ class _G1:
         return out
 
     # N/A (design §7; the same independence checks as G2)
-    def _na(self, unit: str, covering: list[str]) -> tuple[str, list[str], str] | None:
-        """The N/A record's verdict for this unit and the one attempt it judged. A batch record
-        applies only to the findings its attempt lists."""
+    def _na(self, unit: str, covering: list[str], bare: set[str]) -> list[tuple[str, list[str], str]]:
+        """The verdict of each N/A record that could exempt this unit, with the attempt it judged.
+        `attempt:<A>` judges A; a `task:<T>` / `batch:<B>` record judges the attempt it names. A
+        record applies only to the findings its attempt lists, and is not consulted for an attempt
+        that needs no exemption."""
         kind, _, rest = unit.partition(":")
-        key = f"task:{rest}" if kind == "task" else f"batch:{rest.split(':', 1)[0]}"
-        rec = (self.st.get("na") or {}).get(key)
-        if rec is None:
-            return None
-        judged = str(rec.get("attempt"))
-        if judged in self.eligible and judged in self._attempts_of(unit) and judged not in covering:
-            return None  # an eligible attempt of the batch that answers for other findings
+        first = f"task:{rest}" if kind == "task" else f"batch:{rest.split(':', 1)[0]}"
+        mine = self._attempts_of(unit)
+        out = []
+        for key, rec in sorted((self.st.get("na") or {}).items()):
+            named = str(rec.get("attempt"))
+            if key == first:
+                judged = named
+            elif key.startswith("attempt:") and key.removeprefix("attempt:") in mine:
+                judged = key.removeprefix("attempt:")
+            else:
+                continue
+            if judged in self.eligible and judged in mine and judged not in covering:
+                continue  # an eligible attempt of the batch that answers for other findings
+            if judged in covering and judged not in bare:
+                continue  # it has its own Red or is a pure import
+            out.append(self._na_verdict(unit, rec, judged, named, covering))
+        return out
+
+    def _na_verdict(self, unit: str, rec: dict[str, Any], judged: str, named: str,
+                    covering: list[str]) -> tuple[str, list[str], str]:
         reviewer = rec.get("reviewer") or {}
         if reviewer.get("role") != "reviewer":
             return "failed", [f"na_self_declared:{unit}"], judged
@@ -477,7 +494,7 @@ class _G1:
             found += [("blocked", f"na_rejected:{unit}"), ("blocked", f"original_red_unavailable:{unit}")]
         elif rec.get("status") != "accepted":
             found.append(("failed", f"na_status:{unit}:{rec.get('status')}"))
-        if judged not in covering or rec.get("head") != self.eligible.get(judged):
+        if named != judged or judged not in covering or rec.get("head") != self.eligible.get(judged):
             found.append(("failed", f"na_diff_mismatch:{unit}"))
         if not found:
             return "passed", [], judged

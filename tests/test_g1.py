@@ -1097,6 +1097,48 @@ def test_g10_an_exemption_covers_only_its_own_finding_and_attempt(env, variant):
             "passed", "import" if variant == "import_other_finding" else "na")
 
 
+def _docs_fix(env: Env, attempt: str) -> None:
+    """A docs-only correction attempt for F-1 of B1: nothing to Red, so N/A eligibility."""
+    env.dispatch(attempt, batch="B1", findings=("F-1",), scope=FIX_SCOPE)
+    env.write("docs/usage.md", f"# Usage\n\n{attempt}: double works for any integer.\n")
+    env.commit(f"{attempt}: docs")
+    env.complete(attempt)
+
+
+@pytest.mark.parametrize("variant", ["per_attempt", "batch_and_attempt", "one_missing", "one_rejected",
+                                     "names_another_attempt"])
+def test_g10_each_docs_only_attempt_of_a_batch_is_exempt_by_its_own_na(env, variant):
+    """B1-a1 carries F-1's Red; B1-a2 and B1-a3 only touch docs, each judged by its own N/A
+    (`attempt:<A>`, or a `batch:<B>` record naming one attempt)."""
+    env.start()
+    env.task_done()
+    red = _correction(env, "B1-a1", "B1", ("F-1",), "g2_fix", ("F-1",))
+    _docs_fix(env, "B1-a2")
+    _docs_fix(env, "B1-a3")
+    env.na("batch:B1" if variant == "batch_and_attempt" else "attempt:B1-a2", "B1-a2")
+    if variant == "one_rejected":
+        env.na("attempt:B1-a3", "B1-a3", "rejected", behavior_change=True)
+    elif variant == "names_another_attempt":
+        env.na("attempt:B1-a3", "B1-a2")
+    elif variant != "one_missing":
+        env.na("attempt:B1-a3", "B1-a3")
+    assert env.green()[0] == 0
+    env.assess()
+    g1, unit = env.g1(), "batch:B1:F-1"
+    if variant in ("per_attempt", "batch_and_attempt"):
+        assert g1["status"] == "passed", g1["reasons"]
+        assert (g1["units"][unit]["status"], g1["units"][unit]["reds"]) == ("passed", {"B1-a1": red})
+    elif variant == "one_missing":
+        assert g1["status"] == "blocked"
+        assert f"original_red_unavailable:{unit}" in g1["reasons"], g1["reasons"]
+    elif variant == "one_rejected":
+        assert g1["status"] == "blocked"
+        assert {f"na_rejected:{unit}", f"original_red_unavailable:{unit}"} <= set(g1["reasons"]), g1["reasons"]
+    else:
+        assert g1["status"] != "passed"
+        assert f"na_diff_mismatch:{unit}" in g1["reasons"], g1["reasons"]
+
+
 # --- g11: an abandoned attempt's Red does not transfer -------------------------------------------
 
 
