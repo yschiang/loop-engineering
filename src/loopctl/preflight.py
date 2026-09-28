@@ -26,6 +26,8 @@ from loopctl import clock, tools
 from loopctl.tools import herdr
 
 ROLES = ("implementer", "reviewer")
+# Design §6 profile table: both roles use Herdr 0.9.1, and a receipt binds only that version.
+HERDR_VERSION = "herdr 0.9.1"
 NEGATIVES = ("write_outside", "git_push", "gh", "herdr", "loopctl_decide")
 # runtime -> (Herdr agent kind, stop keys); Claude Code needs a second ctrl+c to exit.
 RUNTIMES: dict[str, tuple[str, list[str]]] = {
@@ -265,6 +267,8 @@ def _probe(
     shell_cwd: str | None = None
     try:
         receipt["herdr_version"] = herdr.version(read_s)
+        if receipt["herdr_version"] != HERDR_VERSION:  # checked before anything is dispatched
+            return [f"herdr_version_unsupported:{receipt['herdr_version']}"]
         pane_info = herdr.open_worktree(
             requested["source_checkout"] or worktree, worktree, f"loopctl-preflight-{role}", write_s, session=session
         )
@@ -297,6 +301,8 @@ def _probe(
         reasons.append("native_record_missing")
     elif not turn:
         reasons.append("no_native_turn")
+    if native is not None and not native.version:
+        reasons.append("runtime_version_missing")
 
     observed_models = sorted({m for m in native.models if m}) if native else []
     if turn and native and (observed_models != [profile["model"]] or set(native.providers) - {profile["provider"]}):
@@ -353,7 +359,7 @@ def _probe(
             reasons.append("stop_unconfirmed")
 
     receipt.update(
-        runtime_version=native.version if native else None,
+        runtime_version=(native.version or None) if native else None,
         native_session_id=native.session_id if native else None,
         model={"requested": profile["model"], "observed": observed_models, "verified": turn and "model_mismatch" not in reasons},
         effort={"requested": profile["effort"], "observed": observed_effort},

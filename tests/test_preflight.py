@@ -561,3 +561,46 @@ def test_opencode_exports_newest_session_of_the_requested_worktree_first(probe, 
     exports = [c["argv"] for c in fakes.calls() if c["tool"] == "opencode" and c["argv"][0] == "export"]
     assert exports == [["export", "ses_fakeReviewer1"]]
     assert receipt["native_session_id"] == "ses_fakeReviewer1"
+
+
+# ---- Herdr and runtime versions (T1.1 attempt 5, review-2 T1.1-01) ----
+
+
+@pytest.mark.parametrize(
+    "stdout,reason",
+    [
+        ("herdr 0.8.0\n", "herdr_version_unsupported:herdr 0.8.0"),
+        ("herdr 0.9.2\n", "herdr_version_unsupported:herdr 0.9.2"),
+        ("", "herdr_version_unsupported:"),
+    ],
+    ids=["older", "newer", "unreadable"],
+)
+@pytest.mark.parametrize("role", ROLES)
+def test_herdr_version_other_than_approved_is_unverified_before_dispatch(
+    probe, fakes, capsys, tmp_path, role, stdout, reason
+):
+    """Design §6: the transport is Herdr 0.9.1 and a receipt binds only that version."""
+    s = scenario(role)
+    call(s, "version")["stdout"] = stdout
+    fakes.use(s)
+    code, envelope, receipt = preflight(capsys, role, tmp_path / "out" / f"{role}.json")
+    assert_blocked(code, envelope, receipt)
+    assert receipt["reasons"] == [reason]
+    assert receipt["herdr_version"] == stdout.strip()
+    assert [c["argv"] for c in fakes.calls()] == [["--version"]]  # nothing dispatched
+
+
+@pytest.mark.parametrize("value", [None, ""], ids=["missing", "empty"])
+@pytest.mark.parametrize("role", ROLES)
+def test_native_record_without_runtime_version_is_unverified(probe, fakes, capsys, tmp_path, role, value):
+    s = scenario(role)
+    if role == "implementer":
+        for entry in claude_entries(s):
+            entry.pop("version", None) if value is None else entry.update(version=value)
+    else:
+        info = opencode_export(s)["info"]
+        info.pop("version") if value is None else info.update(version=value)
+    code, envelope, receipt = run_probe(capsys, fakes, tmp_path, role, s)
+    assert_blocked(code, envelope, receipt)
+    assert receipt["reasons"] == ["runtime_version_missing"]
+    assert receipt["runtime_version"] is None
