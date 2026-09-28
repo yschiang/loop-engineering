@@ -885,6 +885,8 @@ def evaluate_g3(state: State, at: str) -> dict[str, Any]:
     else:
         if pf["head"]["sha"] != head:
             statuses, reasons = [*statuses, "pending"], [*reasons, f"pr_head_differs:{pf['head']['sha']}"]
+        elif pr.get("head_sha") != head:  # G3 at H binds the PR identity recorded at H (design §8)
+            statuses, reasons = [*statuses, "pending"], [*reasons, f"pr_identity_at:{pr.get('head_sha')}"]
         if mergeable is None:  # still being computed: waits inside the CI window (T7.1 times it out)
             statuses, reasons = [*statuses, "pending"], [*reasons, "mergeable_unknown"]
     return done(max(statuses, key=G3_ORDER.index), reasons)
@@ -893,19 +895,26 @@ def evaluate_g3(state: State, at: str) -> dict[str, Any]:
 # --- effects of a pr / ci observation (the mutate of its commit; deterministic) ----------------
 
 
-def _check_pr_identity(st: State) -> None:
-    """A PR whose head or base repo / branch moved is Blocked, never re-bound (design §4)."""
+def _check_pr_identity(st: State, head: str, at: str) -> None:
+    """A PR whose head or base repo / branch moved is Blocked, never re-bound (design §4). The
+    one PR at a new H (pushed to its branch) keeps its identity: the read that shows it open, at
+    H, with the same repos and branches refreshes the recorded head_sha; pr_ensure never runs
+    again (no second PR)."""
     pr, found = st["pr"], current_pr(st)
     fact = found["fact"] if found else {}
     if not fact.get("found"):
         block(st, f"pr_missing:{pr['number']}")
         return
-    if fact.get("state") != "open":
+    changed = fact.get("state") != "open"
+    if changed:
         block(st, f"pr_not_open:{pr['number']}")
     for field, value in (("head_repo", fact["head"]["repo"]), ("head_branch", fact["head"]["ref"]),
                          ("base_repo", fact["base"]["repo"]), ("base_branch", fact["base"]["ref"])):
         if value != pr[field]:
+            changed = True
             block(st, f"pr_identity_changed:{field}")
+    if not changed and fact["head"]["sha"] == head and pr.get("head_sha") != head:
+        pr.update(head_sha=head, head_read={"seq": found["seq"], "at": at})  # type: ignore[index]
 
 
 def _detect_integration(st: State, head: str) -> None:
@@ -991,7 +1000,7 @@ def after_github(source: str) -> Any:
         if outcome != "fetched" or head is None:
             return
         if source == "pr":
-            _check_pr_identity(st)
+            _check_pr_identity(st, head, at)
         _detect_integration(st, head)
         _update_binding(st, head, at)
         g3 = evaluate_g3(st, at)
@@ -1062,9 +1071,14 @@ def github_route(state: State, now: datetime) -> dict[str, Any]:
         return human([f"integration_required:{k}" for k in keys])  # the path is T5.1's
     ctx = observation_context(state)
     pr_key, ci_key = f"pr:{pr['number']}", f"ci:{state['repo']}:{head}"
+    pol, _ = registered_policy(state)
+    poll = limit(pol or {}, "poll_github_s", 60)
     found = current_pr(state)
     if found is None or (found["fact"].get("context") or {}).get("contract") != ctx["contract"]:
         return _observe_action("pr", pr_key)
+    read_at = (found["fact"].get("head") or {}).get("sha")
+    if head not in (pr.get("head_sha"), read_at) and _due(state, pr_key, poll, now) == 0:
+        return _observe_action("pr", pr_key)  # a new H: the one PR is read at H before anything else
     cif = current_ci(state, head)
     g3 = (state.get("gates") or {}).get("g3") or {}
     if cif is None or cif["fact"].get("context") != ctx or g3.get("head") != head:
@@ -1073,8 +1087,6 @@ def github_route(state: State, now: datetime) -> dict[str, Any]:
         return human(["g3_passed"])  # T5.1 / T6.2 continue from here
     if g3["status"] != "pending":
         return human([f"g3_{g3['status']}", *g3["reasons"]])
-    pol, _ = registered_policy(state)
-    poll = limit(pol or {}, "poll_github_s", 60)
     waits = {key: _due(state, key, poll, now) for key in (pr_key, ci_key)}
     for source, key in (("pr", pr_key), ("ci", ci_key)):
         if waits[key] == 0:

@@ -1061,6 +1061,66 @@ def test_h10_g1_passed_then_push_then_pr_ensure_records_the_pr_identity(env):
     assert env.unexpected() == []
 
 
+def g1_passed_at_a_new_head(env: GhEnv) -> str:
+    """A correction's new head H2 with G1 passed (T3.1's records, store API as g1_fixture)."""
+    env.write("src/extra.py", "EXTRA = 1\n")
+    env.h = env.commit("T1-a2: correction")
+    at = env.clock().isoformat()
+    green = {"id": "green-2", "n": 2, "kind": "green", "status": "passed", "head": env.h, "checkout_head": env.h,
+             "results_seen": 2, "started_at": at, "ended_at": at}
+    g1 = {**env.g1(), "head": env.h, "green": "green-2", "green_seen": "green-2", "results_seen": 2,
+          "heads": [*env.g1()["heads"], env.h], "assessed_at": at}
+    env.mutate("g1-h2", lambda s: {**s, "evidence": {**s["evidence"], "green-2": green},
+                                   "gates": {**s["gates"], "g1": g1}})
+    return env.h
+
+
+@pytest.mark.parametrize("case", ["github_at_h2", "github_still_at_h1", "retargeted"])
+def test_h10_a_new_head_refreshes_the_recorded_pr_identity_without_a_second_pr(env, case):
+    """Design §4 / §8: after each new H the one PR is read and checked against H, and its
+    recorded identity (head_sha) is refreshed before anything goes on at H; never re-created."""
+    started(env)
+    env.open_pr()
+    h1 = env.h
+    assert env.to_g3([run(env)])["status"] == "passed"
+    h2 = g1_passed_at_a_new_head(env)
+    env.clock.advance(seconds=60)
+    env.push()  # push.H2: the same PR follows the branch
+    assert env.remote_ref() == h2
+    github = pr_json(env, head_sha=h1) if case == "github_still_at_h1" else pr_json(env)
+    if case == "retargeted":
+        github = pr_json(env, base_ref="release")
+    env.gh.set("pr_get", api(f"repos/{REPO}/pulls/{PR}"), page(github))
+    env.ci([run(env)])
+    assert env.next() == {"action": "observe", "source": "pr", "purpose": "pr", "read_key": f"pr:{PR}"}
+    assert env.observe("pr")[0] == 0
+    pr = env.state()["pr"]
+    if case == "retargeted":
+        assert pr["head_sha"] == h1 and "pr_identity_changed:base_branch" in env.blockers()
+    elif case == "github_still_at_h1":
+        assert pr["head_sha"] == h1  # not yet at H2 on GitHub: nothing to record
+        assert env.next() == {"action": "observe", "source": "ci", "purpose": "ci", "read_key": env.ci_key}
+        assert env.observe("ci")[0] == 0
+        g3 = env.g3()
+        assert g3["status"] == "pending" and f"pr_head_differs:{h1}" in g3["reasons"], g3
+        env.gh.set("pr_get", api(f"repos/{REPO}/pulls/{PR}"), page(pr_json(env)))
+        env.clock.advance(seconds=60)
+        assert env.next() == {"action": "observe", "source": "pr", "purpose": "pr", "read_key": f"pr:{PR}"}
+        assert env.observe("pr")[0] == 0
+    if case != "retargeted":
+        pr = env.state()["pr"]
+        assert (pr["number"], pr["head_sha"], pr["origin"], pr["op"]) == (PR, h2, "created", "pr_ensure")
+        assert pr["head_read"]["seq"] == env.state()["observations"]["current"][f"pr:{PR}"]["pr"]["seq"]
+        if case == "github_at_h2":
+            assert env.next() == {"action": "observe", "source": "ci", "purpose": "ci", "read_key": env.ci_key}
+            assert env.observe("ci")[0] == 0
+        assert env.g3()["status"] == "passed" and env.g3()["head"] == h2
+        assert env.next() == {"action": "human", "blockers": ["g3_passed"], "decision_kinds": []}
+    assert (len(env.calls("pr_query")), len(env.calls("pr_create"))) == (1, 1)  # one pr_ensure, one PR
+    assert sorted(env.state()["writes"]) == sorted(["worktree", f"push.{h1}", "pr_ensure", f"push.{h2}"])
+    assert env.unexpected() == []
+
+
 @pytest.mark.parametrize("status", ["failed", "pending"])
 def test_h10_no_push_and_no_pr_call_before_g1_passed(env, status):
     env.start()
