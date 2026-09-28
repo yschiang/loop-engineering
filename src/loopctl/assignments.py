@@ -390,12 +390,20 @@ def _has_argv(value: Any) -> bool:
 
 
 def _git_facts(asg: dict[str, Any], timeout_s: float) -> dict[str, Any]:
+    """HEAD, its lineage, and every path the worker changed since dispatch: commits plus
+    staged, unstaged and untracked non-ignored files, as G1 sees them (the `.loopctl/` result
+    location excluded)."""
+    from loopctl.tools import evidence as git_reads
+
     head = _git(asg["worktree"], timeout_s, "rev-parse", "HEAD")
     if head is None:
         return {"head": None, "ancestor": False, "changed": []}
+    try:
+        head, changed = git_reads.worktree_changes(asg["worktree"], asg["head"], timeout_s)
+    except git_reads.GitError as e:  # a failed read proves nothing about the result: not a rejection
+        raise Rejected("worktree_unreadable", 3, worktree=asg["worktree"]) from e
     ancestor = _git(asg["worktree"], timeout_s, "merge-base", "--is-ancestor", asg["head"], head) is not None
-    changed = (_git(asg["worktree"], timeout_s, "diff", "--name-only", asg["head"], head) or "").splitlines()
-    return {"head": head, "ancestor": ancestor, "changed": [p for p in changed if p]}
+    return {"head": head, "ancestor": ancestor, "changed": changed}
 
 
 def diffs(env: Any, asg: dict[str, Any], handle: dict[str, Any], producer: str, git: dict[str, Any]) -> list[str]:

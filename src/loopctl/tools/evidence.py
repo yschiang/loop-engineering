@@ -109,25 +109,39 @@ def merge_tree(repo: str, head: str, base_tip: str, timeout_s: float) -> tuple[s
     return fields[0], sorted(set(fields[1:])) if code == 1 else []
 
 
-def snapshot(worktree: str, ref: str, message: str, timeout_s: float) -> dict[str, str]:
-    """Record the worktree as it is now: HEAD plus every change, untracked non-ignored files
-    included, except loopctl's own `.loopctl/` result location. A clean worktree is HEAD
-    itself; otherwise a commit whose only parent is HEAD. `ref` keeps it alive for G1."""
+def worktree_tree(worktree: str, timeout_s: float) -> tuple[str, str]:
+    """(HEAD, tree of the worktree as it is now): HEAD plus every change, untracked non-ignored
+    files included, except loopctl's own `.loopctl/` result location. Built in a temporary
+    index; the worktree's own index is not touched."""
     head = git(worktree, timeout_s, "rev-parse", "HEAD")
     fd, index = tempfile.mkstemp(prefix="loopctl-index-")
     os.close(fd)
     os.unlink(index)
-    env = {**os.environ, **_IDENTITY, "GIT_INDEX_FILE": index}
+    env = {**os.environ, "GIT_INDEX_FILE": index}
     try:
         _git(worktree, ["read-tree", "HEAD"], timeout_s, env=env)
         _git(worktree, ["add", "-A", "--", ".", ":(exclude).loopctl"], timeout_s, env=env)
-        tree = _git(worktree, ["write-tree"], timeout_s, env=env)[1].strip()
-        commit = head
-        if tree != git(worktree, timeout_s, "rev-parse", "HEAD^{tree}"):
-            commit = _git(worktree, ["commit-tree", tree, "-p", head, "-m", message], timeout_s, env=env)[1].strip()
+        return head, _git(worktree, ["write-tree"], timeout_s, env=env)[1].strip()
     finally:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(index)
+
+
+def worktree_changes(worktree: str, since: str, timeout_s: float) -> tuple[str, list[str]]:
+    """(HEAD, paths changed since `since`): the commits since then plus what `worktree_tree`
+    records on top of HEAD — the same change set G1 scope-checks (snapshot and range)."""
+    head, tree = worktree_tree(worktree, timeout_s)
+    return head, sorted(set(changed(worktree, since, head, timeout_s)) | set(changed(worktree, since, tree, timeout_s)))
+
+
+def snapshot(worktree: str, ref: str, message: str, timeout_s: float) -> dict[str, str]:
+    """Record the worktree as it is now (`worktree_tree`). A clean worktree is HEAD itself;
+    otherwise a commit whose only parent is HEAD. `ref` keeps it alive for G1."""
+    head, tree = worktree_tree(worktree, timeout_s)
+    commit = head
+    if tree != git(worktree, timeout_s, "rev-parse", "HEAD^{tree}"):
+        env = {**os.environ, **_IDENTITY}
+        commit = _git(worktree, ["commit-tree", tree, "-p", head, "-m", message], timeout_s, env=env)[1].strip()
     git(worktree, timeout_s, "update-ref", ref, commit)
     return {"commit": commit, "tree": tree, "parent": head, "ref": ref}
 

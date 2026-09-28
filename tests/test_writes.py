@@ -749,6 +749,43 @@ def test_w6_mismatching_results_are_rejected_kept_and_listed(h, mismatch):
     assert h.revision() == rev + 1  # only the rejection record
 
 
+@pytest.mark.parametrize("left", ["modified", "staged", "untracked"])
+def test_w6_out_of_scope_changes_left_in_the_worktree_are_rejected(h, left):
+    h.dispatch()
+    h.work()  # the committed part is in scope
+    if left == "untracked":
+        (h.wt / "docs").mkdir(exist_ok=True)
+        (h.wt / "docs" / "unrelated.md").write_text("not in T1 scope\n")
+        path = "docs/unrelated.md"
+    else:
+        (h.wt / SPEC).write_text("# Ingest spec, edited by the worker\n")
+        path = SPEC
+        if left == "staged":
+            git(h.wt, "add", SPEC)
+    h.put_result(h.envelope())
+
+    code, out = h.import_result()
+    assert (code, out["result"].get("error")) == (1, "result_rejected"), out
+    assert out["result"]["diffs"] == [f"scope:{path}"]
+    attempt = h.state()["attempts"]["T1-a1"]
+    assert attempt["result"] is None and attempt["rejected"][-1]["diffs"] == [f"scope:{path}"]
+
+
+def test_w6_the_result_file_and_ignored_files_are_not_worker_edits(h):
+    h.dispatch()
+    with (h.repo / ".git" / "info" / "exclude").open("a") as f:  # shared by the linked worktree
+        f.write("build/\n")
+    h.work()
+    (h.wt / "build").mkdir()
+    (h.wt / "build" / "out.txt").write_text("generated\n")
+    (h.wt / "src" / "ingest.py").write_text("def parse(line):\n    return line.strip().lower()\n")  # uncommitted, in scope
+    h.put_result(h.envelope())
+
+    code, out = h.import_result()
+    assert code == 0, out
+    assert out["result"]["result"]["status"] == "completed"
+
+
 def test_w6_a_rejected_result_after_a_finished_turn_goes_to_a_human(h):
     h.dispatch()
     h.work()
