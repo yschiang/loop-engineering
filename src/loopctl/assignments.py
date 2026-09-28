@@ -188,8 +188,21 @@ def _running(state: State, attempt: str, now: datetime) -> dict[str, Any]:
         if waits[source] == 0:
             return _observe(source, attempt)
     if a["result"] is None and observe.native_turn_complete(state, attempt):
-        return human([f"result_missing:{attempt}"])
+        return human([f"result_rejected:{attempt}" if a["rejected"] else f"result_missing:{attempt}"])
     return {"action": "wait", "poll_after_s": min(waits.values()), "reason": f"attempt_running:{attempt}"}
+
+
+def _free_pane(state: State, now: datetime) -> dict[str, Any] | None:
+    """An ended writer's idle agent still holds the worktree pane: stop it (and confirm the
+    stop) before another agent is started there."""
+    ended = [(a["n"], k) for k, a in (state.get("attempts") or {}).items() if a.get("end")]
+    if not ended:
+        return None
+    last = max(ended)[1]
+    started = (state.get("writes") or {}).get(f"{last}.agent_start") or {}
+    if started.get("status") != "succeeded":
+        return None
+    return _op_step(state, "stop", f"{last}.stop", now)
 
 
 def _next_task(state: State, doc: dict[str, Any]) -> tuple[str | None, bool]:
@@ -215,6 +228,8 @@ def route(state: State, now: datetime) -> dict[str, Any]:
             if step := _op_step(state, kind, f"{active}.{kind}", now):
                 return step
         return _running(state, active, now)
+    if step := _free_pane(state, now):
+        return step
     task_id, blocked = _next_task(state, doc)
     if task_id is None:
         return human(["tasks_complete"])  # G1 (T3.1) takes over from here
@@ -256,16 +271,16 @@ def op_spec(state: State, kind: str, op_id: str, pol: dict[str, Any], feature: s
     from loopctl.preflight import RUNTIMES
     from loopctl.tools import herdr
 
-    if state.get("blockers"):
-        raise Rejected("feature_blocked", 3, blockers=state["blockers"])
-    if state.get("phase") not in ("approved", "implementing"):
-        raise Rejected("not_routable", op=op_id, phase=state.get("phase"))
     attempts = state.get("attempts") or {}
-    if kind == "stop":
+    if kind == "stop":  # stopping a started agent is always allowed, even while Blocked (D47)
         attempt = op_id.removesuffix(".stop")
         started = (state.get("writes") or {}).get(f"{attempt}.agent_start") or {}
-        if op_id == attempt or attempt not in attempts or attempts[attempt].get("end") or started.get("status") != "succeeded":
+        if op_id == attempt or attempt not in attempts or started.get("status") != "succeeded":
             raise Rejected("not_routable", op=op_id)
+    elif state.get("blockers"):
+        raise Rejected("feature_blocked", 3, blockers=state["blockers"])
+    elif state.get("phase") not in ("approved", "implementing"):
+        raise Rejected("not_routable", op=op_id, phase=state.get("phase"))
     else:
         allowed = route(state, clock.now())
         if allowed != _write(kind, op_id):

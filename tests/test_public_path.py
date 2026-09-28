@@ -15,7 +15,9 @@ from test_writes import (
     TASK_SCOPE,
     Harness,
     c_agent_start,
+    c_process_info,
     c_prompt,
+    c_send_keys,
     c_worktree_create,
     finished_turn,
     marker,
@@ -83,6 +85,10 @@ def test_d3_first_assignment_after_approval_carries_ac_ids_and_verification(h):
     assert (nxt["action"], nxt["source"], nxt["read_key"]) == ("observe", "native", "native:T1-a1")
     code, out = h.observe("native")
     assert code == 0, out
+    assert h.next() == {"action": "write", "op": "stop", "id": "T1-a1.stop"}  # free the pane
+    h.expect(c_send_keys(), c_process_info(running=False))
+    assert h.write("stop", "T1-a1.stop")[0] == 0
+    assert h.write("stop", "T1-a1.stop")[0] == 0
 
     assert h.next() == {"action": "write", "op": "agent_start", "id": "T2-a1.agent_start"}
     h.expect(c_agent_start(h, "T2-a1"))

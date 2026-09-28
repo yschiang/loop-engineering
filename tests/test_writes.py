@@ -574,6 +574,14 @@ def test_w5_writer_end_needs_authoritative_evidence(h, evidence):
         code, out = h.observe("native")
         assert code == 0, out
         assert h.state()["attempts"]["T1-a1"]["end"]["evidence"] == "result_and_native_turn"
+        # The writer has ended; its idle TUI still holds the pane, so it is stopped (and the
+        # stop confirmed) before the next agent is started in that pane.
+        assert h.next() == {"action": "write", "op": "stop", "id": "T1-a1.stop"}
+        h.expect(c_send_keys(), c_process_info(running=False))
+        assert h.write("stop", "T1-a1.stop")[0] == 0
+        assert h.next() == {"action": "write", "op": "stop", "id": "T1-a1.stop"}  # its readback
+        assert h.write("stop", "T1-a1.stop")[0] == 0
+        assert h.state()["attempts"]["T1-a1"]["end"]["evidence"] == "result_and_native_turn"
         assert h.next() == {"action": "write", "op": "agent_start", "id": "T2-a1.agent_start"}
     elif evidence == "stop_confirmed":
         h.expect(c_send_keys(), c_process_info(running=False))
@@ -629,6 +637,30 @@ def test_w6_mismatching_results_are_rejected_kept_and_listed(h, mismatch):
     assert store.get_object(kept["object"][store.OBJECT_KEY]) == path.read_bytes()
     assert expected in kept["diffs"]
     assert h.revision() == rev + 1  # only the rejection record
+
+
+def test_w6_a_rejected_result_after_a_finished_turn_goes_to_a_human(h):
+    h.dispatch()
+    h.work()
+    h.put_result(h.envelope(cwd=str(h.repo)))
+    assert h.import_result()[0] == 1
+    h.transcript(finished_turn(h, "done, see the result file"))
+    h.observe("worker")
+    h.observe("native")
+    nxt = h.next()
+    assert nxt["action"] == "human" and nxt["blockers"] == ["result_rejected:T1-a1"]
+    assert dispatched_ops(h) == ["T1-a1.agent_start"]
+
+
+def test_stop_stays_allowed_while_the_feature_is_blocked(h):
+    unknown_prompt(h)
+    h.expect(c_send_keys(), c_process_info(running=False))
+    code, out = h.write("stop", "T1-a1.stop")
+    assert code == 0 and out["result"]["op"]["status"] == "unknown", out
+    code, out = h.write("stop", "T1-a1.stop")
+    assert code == 0 and out["result"]["op"]["status"] == "succeeded", out
+    assert h.state()["attempts"]["T1-a1"]["end"]["evidence"] == "stop_confirmed"
+    assert "write_unknown:T1-a1.prompt" in h.state()["blockers"]  # other blockers stay
 
 
 # --- w7 -------------------------------------------------------------------------------------
