@@ -127,6 +127,10 @@ def _active(state: State) -> str | None:
 
 def _op_step(state: State, kind: str, op_id: str, now: datetime) -> dict[str, Any] | None:
     op = (state.get("writes") or {}).get(op_id)
+    if op is not None and op["status"] in ("prepared", "failed") and kind != "stop" and (
+        "approval" in op and op["approval"] != writes.approval_of(state)
+    ):
+        return human([f"approval_changed:{op_id}"])  # prepared under an earlier approval: never sent
     if op is None or op["status"] in ("prepared", "failed"):
         return _write(kind, op_id)
     if op["status"] == "succeeded":

@@ -56,6 +56,12 @@ class _Skip(Exception):
     """The transition no longer applies (another process got there first)."""
 
 
+class _Refused(Exception):
+    def __init__(self, rejected: Rejected) -> None:
+        super().__init__(rejected.error)
+        self.rejected = rejected
+
+
 def _herdr() -> Any:
     from loopctl.tools import herdr
 
@@ -116,6 +122,29 @@ def _call_readbacks(op: dict[str, Any]) -> list[dict[str, Any]]:
     """Readbacks of the latest call attempt (a human-authorized read is not counted)."""
     n = len(op["attempts"])
     return [r for r in op["readbacks"] if r["attempt"] == n and not r.get("decision")]
+
+
+def approval_of(st: State) -> str | None:
+    return (st.get("approval") or {}).get("decision")
+
+
+def refusal(st: State, op_id: str) -> Rejected | None:
+    """Why a prepared or retryable op may not be sent now (design §2, §8): the approval it was
+    prepared under is no longer the current one, the feature is Blocked, or routing no longer
+    offers it. A stop is always allowed (D47); readback of a sent op never comes here."""
+    from loopctl import next as next_step
+
+    op = st["writes"][op_id]
+    if op["kind"] == "stop":
+        return None
+    if "approval" in op and op["approval"] != approval_of(st):
+        return Rejected("approval_changed", 3, op=op_id, prepared_under=op["approval"], approval=approval_of(st))
+    if st.get("blockers"):
+        return Rejected("feature_blocked", 3, blockers=st["blockers"])
+    allowed = next_step.next_action(st, [])
+    if allowed != {"action": "write", "op": op["kind"], "id": op_id}:
+        return Rejected("not_routable", op=op_id, next=allowed)
+    return None
 
 
 def pending_resolution(st: State, op_id: str) -> dict[str, Any] | None:
@@ -206,6 +235,7 @@ def _prepare(feature: str, kind: str, op_id: str, spec: dict[str, Any], pol: dic
         st["writes"][op_id] = {
             "kind": kind, "status": "prepared", "prepared": prepared, "prepared_at": at, "attempts": [],
             "readbacks": [], "facts": {}, "resolved_by": None, "resolutions": {}, "blocked": None,
+            "approval": approval_of(st),
         }
         if st.get("phase") == "approved":
             st["phase"] = "implementing"
@@ -250,6 +280,8 @@ def _call(feature: str, op_id: str) -> dict[str, Any]:
         o = st["writes"][op_id]
         if o["status"] not in ("prepared", "failed") or len(o["attempts"]) != n - 1 or o.get("blocked"):
             raise _Skip
+        if (refused := refusal(st, op_id)) is not None:
+            raise _Refused(refused)
         o["status"] = "in_flight"
         o["attempts"].append(
             {"n": n, "started_at": started, "ended_at": None, "outcome": None, "reason": None, "receipt": None}
@@ -258,6 +290,8 @@ def _call(feature: str, op_id: str) -> dict[str, Any]:
 
     try:
         commit(feature, f"write:{op_id}:consume:{n}:{secrets.token_hex(6)}", consume)
+    except _Refused as e:
+        raise e.rejected from None
     except _Skip:
         op = store.load(feature)[1]["writes"][op_id]
         if op["status"] == "succeeded":

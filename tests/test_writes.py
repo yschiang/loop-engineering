@@ -427,6 +427,116 @@ def test_w1_two_processes_writing_the_same_prompt_op_call_herdr_once(h):
     assert len(op["attempts"]) == 1
 
 
+# --- a prepared or retryable op is sent only while it is still allowed (design §2, §4, §8) --
+
+
+class Crash(Exception):
+    """The writing process vanished after persisting the op, before calling Herdr."""
+
+
+def prepared_prompt(h: Harness, monkeypatch) -> None:
+    from loopctl import writes
+
+    h.dispatch(until="agent_start")
+
+    def crash(feature: str, op_id: str) -> dict:
+        raise Crash(op_id)
+
+    with monkeypatch.context() as m:
+        m.setattr(writes, "_call", crash)
+        with pytest.raises(Crash):
+            h.write("prompt", "T1-a1.prompt")
+    op = h.state()["writes"]["T1-a1.prompt"]
+    assert (op["status"], op["attempts"]) == ("prepared", [])
+
+
+def scope_change(h: Harness) -> None:
+    code, out = h.decide("scope_change", id="scope-1", target="AC-1", reason="AC-1 must also cover retries")
+    assert code == 0, out
+    assert h.state()["phase"] == "awaiting_approval"
+
+
+@pytest.mark.parametrize("status", ["prepared", "failed"])
+def test_an_existing_op_is_not_sent_once_approval_is_revoked(h, monkeypatch, status):
+    if status == "prepared":
+        prepared_prompt(h, monkeypatch)
+    else:
+        h.dispatch(until="agent_start")
+        not_ready = {"stdout": {"error": {"code": "agent_not_ready", "message": "agent is not ready for prompts"},
+                                "id": "cli:agent:prompt"}, "exit": 1}
+        h.expect(c_prompt(**not_ready))
+        code, out = h.write("prompt", "T1-a1.prompt")
+        assert code == 0 and out["result"]["op"]["status"] == "failed", out
+    sent = len(h.herdr("agent", "prompt"))
+    scope_change(h)
+    h.expect(c_prompt())
+
+    code, out = h.write("prompt", "T1-a1.prompt")
+    assert (code, out["result"].get("error")) == (3, "approval_changed"), out
+    assert len(h.herdr("agent", "prompt")) == sent  # 0 sends after the approval was revoked
+    op = h.state()["writes"]["T1-a1.prompt"]
+    assert op["status"] == status and len(op["attempts"]) == sent
+
+    # stopping the started agent stays allowed (D47)
+    h.calls = []
+    h.fakes.log.unlink()
+    h.expect(c_send_keys(), c_process_info(running=False))
+    assert h.write("stop", "T1-a1.stop")[0] == 0
+    code, out = h.write("stop", "T1-a1.stop")
+    assert code == 0 and out["result"]["op"]["status"] == "succeeded", out
+    assert h.unexpected() == []
+
+
+def test_an_op_prepared_under_an_earlier_approval_goes_to_a_human(h, monkeypatch):
+    prepared_prompt(h, monkeypatch)
+    scope_change(h)
+    plan = h.repo / PLAN
+    plan.write_text(plan.read_text() + "\nT1 also covers retries.\n")
+    tok = f"--token={h.token}"
+    code, out = h.cli("register", "plan", "--locator", PLAN, "--version", "v2", "--producer", "implementer",
+                      "--calibrated-from", SPEC, "--feature", FEATURE, tok)
+    assert code == 0, out
+    code, out = h.decide("approve_plan", id="approve-2", target=PLAN, version="v2")
+    assert code == 0, out
+
+    assert h.next() == {"action": "human", "blockers": ["approval_changed:T1-a1.prompt"], "decision_kinds": []}
+    code, out = h.write("prompt", "T1-a1.prompt")
+    assert (code, out["result"].get("error")) == (3, "approval_changed"), out
+    assert out["result"]["prepared_under"] == "approve-1" and out["result"]["approval"] == "approve-2"
+    assert h.herdr("agent", "prompt") == []
+
+
+def test_an_existing_op_is_not_sent_once_routing_no_longer_offers_it(h, monkeypatch):
+    prepared_prompt(h, monkeypatch)
+    h.expect(c_send_keys(), c_process_info(running=False))
+    h.write("stop", "T1-a1.stop")
+    code, out = h.write("stop", "T1-a1.stop")
+    assert code == 0 and out["result"]["op"]["status"] == "succeeded", out
+    assert h.state()["attempts"]["T1-a1"]["end"] is not None
+    assert h.next() != {"action": "write", "op": "prompt", "id": "T1-a1.prompt"}
+    h.expect(c_prompt())
+
+    code, out = h.write("prompt", "T1-a1.prompt")
+    assert (code, out["result"].get("error")) == (1, "not_routable"), out
+    assert h.herdr("agent", "prompt") == []
+    assert h.state()["writes"]["T1-a1.prompt"]["status"] == "prepared"
+
+
+def test_an_unknown_op_is_still_read_back_once_approval_is_revoked(h):
+    h.dispatch(until="agent_start")
+    h.expect(c_prompt(**CLIENT_EXITED))
+    code, out = h.write("prompt", "T1-a1.prompt")
+    assert out["result"]["op"]["status"] == "unknown", out
+    scope_change(h)
+    h.expect(c_wait_output())
+
+    code, out = h.write("prompt", "T1-a1.prompt")
+    assert code == 0 and out["result"]["performed"] == "readback", out
+    assert h.state()["writes"]["T1-a1.prompt"]["status"] == "succeeded"
+    assert len(h.herdr("agent", "prompt")) == 1
+    assert h.unexpected() == []
+
+
 # --- w2 -------------------------------------------------------------------------------------
 
 
