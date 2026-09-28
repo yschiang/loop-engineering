@@ -79,6 +79,14 @@ def changed(repo: str, a: str, b: str, timeout_s: float) -> list[str]:
     return sorted(p for p in out.split("\0") if p)
 
 
+def range_changed(repo: str, a: str, b: str, timeout_s: float) -> list[str]:
+    """Paths any single commit of a..b changes (a merge against its first parent): a change a
+    later commit reverts is still in the range."""
+    out = _git(repo, ["log", "--no-renames", "--diff-merges=first-parent", "--name-only", "-z", "--format=",
+                      f"{a}..{b}"], timeout_s)[1]
+    return sorted({p.strip("\n") for p in out.split("\0")} - {""})
+
+
 def show(repo: str, rev: str, path: str, timeout_s: float) -> str | None:
     """The file at rev, or None when the path does not exist there."""
     code, out = _git(repo, ["cat-file", "-p", f"{rev}:{path}"], timeout_s, ok=(0, 128))
@@ -137,8 +145,8 @@ def staged(worktree: str, timeout_s: float) -> list[str]:
 
 def worktree_changes(worktree: str, since: str, timeout_s: float) -> tuple[str, list[str]]:
     """(HEAD, paths changed since `since`): the commits since then plus what `worktree_tree`
-    records on top of HEAD — the same change set G1 scope-checks (snapshot and range) — plus
-    what the worktree's own index stages on top of HEAD."""
+    records on top of HEAD — the endpoint change set; G1 also scope-checks each commit of the
+    range (`range_changed`) — plus what the worktree's own index stages on top of HEAD."""
     head, tree = worktree_tree(worktree, timeout_s)
     found = set(changed(worktree, since, head, timeout_s)) | set(changed(worktree, since, tree, timeout_s))
     return head, sorted(found | set(staged(worktree, timeout_s)))

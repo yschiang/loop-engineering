@@ -14,7 +14,7 @@ G1 at the current head H (the feature branch in the source repository):
                snapshot commit/tree/parent/ref vs git;
     lineage    its attempt has a completed result whose commit C is an ancestor of H
                (a stopped or abandoned attempt's Red does not transfer);
-    scope      snapshot changes and the attempt's range (dispatch head..C) are in scope
+    scope      snapshot changes and each commit of the attempt's range (dispatch head..C) are in scope
                (integration: author edits only — conflict resolutions included —, imports
                verified against merge-tree);
     mapping    the snapshot commit is in the attempt's own history, or the failing tests'
@@ -363,8 +363,8 @@ class _G1:
         check = self.integration.get(r["attempt"])
         if check is not None:  # integration: verified imports are not author edits
             paths = [p for p in paths if not self._imported(check, snap, p)]
-        else:
-            paths += self.changed(asg["head"], c)
+        else:  # every commit of the range, so an out-of-scope change reverted later still counts
+            paths += self.changed(asg["head"], c) + self.t.range_changed(self.repo, asg["head"], c, self.s)
         return [f"scope:{p}" for p in _unique(sorted(paths)) if not in_scope(p, asg["scope"])]
 
     def _imported(self, check: dict[str, Any], rev: str, path: str) -> bool:

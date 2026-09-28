@@ -565,6 +565,28 @@ def test_g3b_a_attempt_commit_outside_the_task_scope(env):
     assert g1["status"] == "blocked"
 
 
+def test_g3b_a_attempt_commit_outside_the_scope_that_a_later_commit_reverts(env):
+    """The attempt's range is every commit in it, not the endpoint diff (design §7)."""
+    env.start()
+    env.dispatch("T1-a1")
+    env.write("tests/test_double.py", RED_DOUBLE)
+    red = env.captured("T1-a1")
+    env.write("src/calc.py", IMPL_DOUBLE)
+    env.write("docs/usage.md", "# Usage\n\nchanged by T1\n")
+    env.commit("double and docs")
+    env.write("docs/usage.md", FILES["docs/usage.md"])
+    head = env.commit("revert the docs")
+    assert git(env.wt, "diff", "--name-only", env.b0, head).split() == ["src/calc.py", "tests/test_double.py"]
+    env.complete("T1-a1")
+    env.fixture_replay(red)
+    assert env.green()[0] == 0
+    assert env.assess()[0] == 3
+    g1 = env.g1()
+    assert f"red_invalid:{red}:scope:docs/usage.md" in g1["reasons"]
+    assert "original_red_unavailable:task:T1" in g1["reasons"]
+    assert g1["status"] == "blocked"
+
+
 SIBLING_TEST = "from calc import double\n\n\ndef test_double_three():\n    assert double(3) == 6\n"
 
 
