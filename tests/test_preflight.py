@@ -196,8 +196,9 @@ def test_f5a_all_negatives_denied_and_stop_confirmed_is_verified(probe, fakes, c
         "observed": [receipt["profile"]["model"]],
         "verified": True,
     }
-    assert receipt["effort"] == {"requested": receipt["profile"]["effort"], "observed": receipt["profile"]["effort"]}
-    assert receipt["effort_verified"] is True
+    if role == "implementer":  # the reviewer's effort is not in the OpenCode record: test_opencode_effort_*
+        assert receipt["effort"] == {"requested": receipt["profile"]["effort"], "observed": receipt["profile"]["effort"]}
+        assert receipt["effort_verified"] is True
     assert receipt["herdr_version"] == "herdr 0.9.1"
     assert receipt["runtime_version"] in {"2.1.300", "1.18.32"}
     assert receipt["native_session_id"]
@@ -257,7 +258,7 @@ def test_f6a_native_location_matches_request(probe, fakes, capsys, tmp_path):
     assert_verified(code, envelope, receipt)
     requested = {"repo": "yschiang/loop-engineering", "worktree": str(probe.resolve()), "branch": "main"}
     location = receipt["location"]
-    assert location["requested"] == requested
+    assert location["requested"] == {**requested, "source_checkout": str(probe.resolve())}
     assert {k: location["actual"][k] for k in requested} == requested
     assert location["actual"]["cwd"] == str(probe.resolve())
     assert location["items"] == {"repo": True, "worktree": True, "branch": True}
@@ -352,3 +353,101 @@ def test_herdr_session_c_invalid_name_is_usage_error(probe, fakes, capsys, tmp_p
     assert envelope["result"]["message"].startswith("argument --herdr-session")
     assert receipt is None
     assert fakes.calls() == []
+
+
+# ---- Herdr worktree source and OpenCode agent profile (T1.1 attempt 3, real Herdr walk-through) ----
+
+
+def option(argv: list[str], name: str) -> str:
+    return argv[argv.index(name) + 1]
+
+
+def open_argv(fakes) -> list[str]:
+    return next(a for a in herdr_argvs(fakes) if a[:2] == ["worktree", "open"])
+
+
+def test_open_main_checkout_uses_it_as_cwd_and_path(probe, fakes, capsys, tmp_path):
+    code, envelope, receipt = run_probe(capsys, fakes, tmp_path, "implementer", scenario("implementer"))
+    assert_verified(code, envelope, receipt)
+    main_checkout = str(probe.resolve())
+    argv = open_argv(fakes)
+    assert option(argv, "--cwd") == option(argv, "--path") == main_checkout
+    assert receipt["location"]["requested"]["source_checkout"] == main_checkout
+
+
+def test_open_linked_worktree_uses_source_checkout_as_cwd(probe, fakes, capsys, tmp_path, monkeypatch):
+    linked = (tmp_path / "linked").resolve()
+    git(probe, "worktree", "add", "-q", "-b", "feature", str(linked))
+    shutil.copy(probe / "workflow.yaml", linked)  # keep the probe fixture's fast limits
+    monkeypatch.chdir(linked)
+    code, envelope, receipt = run_probe(capsys, fakes, tmp_path, "implementer", scenario("implementer"))
+    assert_verified(code, envelope, receipt)
+    argv = open_argv(fakes)
+    assert option(argv, "--cwd") == str(probe.resolve())
+    assert option(argv, "--path") == str(linked)
+    assert receipt["location"]["requested"] == {
+        "repo": "yschiang/loop-engineering",
+        "worktree": str(linked),
+        "branch": "feature",
+        "source_checkout": str(probe.resolve()),
+    }
+    assert receipt["location"]["items"] == {"repo": True, "worktree": True, "branch": True}
+
+
+def test_opencode_starts_named_agent_with_model_and_no_variant(probe, fakes, capsys, tmp_path):
+    code, envelope, receipt = run_probe(capsys, fakes, tmp_path, "reviewer", scenario("reviewer"))
+    assert_verified(code, envelope, receipt)
+    start = next(a for a in herdr_argvs(fakes) if a[:2] == ["agent", "start"])
+    assert start[start.index("--") + 1 :] == ["--agent", "loopctl-reviewer", "-m", "openai/gpt-6-astra"]
+    assert all("--variant" not in a for a in herdr_argvs(fakes))
+
+
+def test_opencode_effort_unverified_while_model_verified(probe, fakes, capsys, tmp_path):
+    code, envelope, receipt = run_probe(capsys, fakes, tmp_path, "reviewer", scenario("reviewer"))
+    assert_verified(code, envelope, receipt)
+    assert receipt["model"] == {"requested": "gpt-6-astra", "observed": ["gpt-6-astra"], "verified": True}
+    assert receipt["effort"] == {"requested": "xhigh", "observed": None}
+    assert receipt["effort_verified"] is False
+
+
+def edit_agent_config(repo: Path, change) -> None:
+    path = repo / "profiles" / "reviewer.opencode.json"
+    config = json.loads(path.read_text())
+    change(config)
+    path.write_text(json.dumps(config))
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda c: c["agent"]["loopctl-reviewer"].update(model="openai/gpt-6-luna"),
+        lambda c: c["agent"]["loopctl-reviewer"].update(reasoningEffort="high"),
+        lambda c: c["agent"]["loopctl-reviewer"].pop("reasoningEffort"),
+        lambda c: c.pop("agent"),
+    ],
+    ids=["model", "reasoningEffort", "reasoningEffort_missing", "agent_missing"],
+)
+def test_opencode_agent_config_mismatch_is_unverified_before_launch(repo, fakes, capsys, tmp_path, change):
+    edit_agent_config(repo, change)
+    code, envelope, receipt = preflight(capsys, "reviewer", tmp_path / "out" / "reviewer.json")
+    assert_blocked(code, envelope, receipt)
+    assert receipt["reasons"] == ["opencode_agent_config_mismatch"]
+    assert fakes.calls() == []
+
+
+def test_opencode_agent_config_follows_workflow_profile(repo, fakes, capsys, tmp_path):
+    edit_policy(repo, lambda p: p["profiles"]["reviewer"].update(effort="high"))
+    code, envelope, receipt = preflight(capsys, "reviewer", tmp_path / "out" / "reviewer.json")
+    assert_blocked(code, envelope, receipt)
+    assert receipt["reasons"] == ["opencode_agent_config_mismatch"]
+    assert fakes.calls() == []
+
+
+@pytest.mark.parametrize("agent", ["build", None])
+def test_opencode_native_agent_differs_is_unverified(probe, fakes, capsys, tmp_path, agent):
+    s = scenario("reviewer")
+    for message in opencode_export(s)["messages"][1:]:
+        message["info"]["agent"] = agent
+    code, envelope, receipt = run_probe(capsys, fakes, tmp_path, "reviewer", s)
+    assert_blocked(code, envelope, receipt)
+    assert receipt["reasons"] == ["opencode_agent_mismatch"]

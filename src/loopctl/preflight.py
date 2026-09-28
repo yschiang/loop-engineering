@@ -33,6 +33,9 @@ RUNTIMES: dict[str, tuple[str, list[str]]] = {
     "opencode": ("opencode", ["ctrl+c"]),
 }
 TIMEOUT_KEY = {"implementer": "worker_attempt_min", "reviewer": "review_attempt_min"}
+# The OpenCode TUI takes no effort flag (`--variant` is `opencode run` only); model and
+# reasoningEffort live in this agent entry of the profile's config and are checked statically.
+OPENCODE_AGENT = "loopctl-reviewer"
 # ponytail: keyword match on the runtime's own refusal text; tighten if a runtime words it differently.
 DENIAL = re.compile(r"permission|denied|not allowed|rejected", re.IGNORECASE)
 LOCATION_ITEMS = ("repo", "worktree", "branch")
@@ -49,6 +52,7 @@ class Native:
     models: list[str] = field(default_factory=list)
     providers: list[str] = field(default_factory=list)
     efforts: list[str] = field(default_factory=list)
+    agents: list[str | None] = field(default_factory=list)  # OpenCode only
     calls: list[tuple[str, bool, str]] = field(default_factory=list)  # (input, is_error, output)
 
 
@@ -126,7 +130,7 @@ def _opencode_native(marker: str, timeout_s: float) -> Native | None:
             turn_complete=bool(assistants) and assistants[-1]["info"].get("finish") == "stop",
             models=[a["info"].get("modelID") for a in assistants],
             providers=[a["info"].get("providerID") for a in assistants],
-            efforts=[x for a in assistants if (x := a["info"].get("variant"))],
+            agents=[a["info"].get("agent") for a in assistants],  # no effort: the export carries none
             calls=[
                 (_text(s.get("input")), s.get("status") == "error", _text(s.get("error") or s.get("output") or ""))
                 for s in tool_states
@@ -182,6 +186,14 @@ def _only_shell(info: dict[str, Any]) -> bool:
     return bool(procs) and all(p.get("pid") == info.get("shell_pid") for p in procs)
 
 
+def _opencode_agent(config: Path) -> dict[str, Any]:
+    try:
+        entry = json.loads(config.read_text())["agent"][OPENCODE_AGENT]
+    except (ValueError, KeyError, TypeError):
+        return {}
+    return entry if isinstance(entry, dict) else {}
+
+
 def static_reasons(policy: dict[str, Any], role: str, root: Path) -> list[str]:
     """Checks on the approved settings alone; any reason means unverified before launching."""
     profiles = policy.get("profiles") or {}
@@ -195,6 +207,11 @@ def static_reasons(policy: dict[str, Any], role: str, root: Path) -> list[str]:
         settings = profile.get("settings")
         if not (settings and (root / settings).is_file()):
             reasons.append(f"profile_settings_missing:{role}")
+        elif profile.get("runtime") == "opencode":
+            agent = _opencode_agent(root / settings)
+            wanted = (f"{profile.get('provider')}/{profile.get('model')}", profile.get("effort"))
+            if (agent.get("model"), agent.get("reasoningEffort")) != wanted:
+                reasons.append("opencode_agent_config_mismatch")
         if profile.get("runtime") not in RUNTIMES:
             reasons.append(f"runtime_unsupported:{profile.get('runtime')}")
     return reasons
@@ -216,6 +233,10 @@ def _probe(
     negatives = _negatives(probe)
     before = {n["name"]: _digest(Path(n["resource"])) for n in negatives}
     requested = {"repo": policy.get("repo"), **{k: v for k, v in _location(str(root), read_s).items() if k != "repo"}}
+    worktree = requested["worktree"] or str(root)
+    # Herdr opens a worktree from the repo's main working tree: the parent of the common git dir.
+    common = _git(worktree, read_s, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    requested["source_checkout"] = str(Path(common).resolve().parent) if common else None
     receipt.update(settings_digest=_sha256(settings.read_bytes()), marker=marker, probe_dir=str(probe), agent_name=name)
 
     reasons: list[str] = []
@@ -225,12 +246,12 @@ def _probe(
     try:
         receipt["herdr_version"] = herdr.version(read_s)
         pane_info = herdr.open_worktree(
-            requested["worktree"] or str(root), f"loopctl-preflight-{role}", write_s, session=session
+            requested["source_checkout"] or worktree, worktree, f"loopctl-preflight-{role}", write_s, session=session
         )
         pane = pane_info["pane_id"]
         if profile["runtime"] == "opencode":
             herdr.pane_run(pane, f"export OPENCODE_CONFIG={shlex.quote(str(settings))}", write_s, session=session)
-            args = ["--model", f"{profile['provider']}/{profile['model']}", "--variant", profile["effort"]]
+            args = ["--agent", OPENCODE_AGENT, "-m", f"{profile['provider']}/{profile['model']}"]
             read: Callable[[], Native | None] = lambda: _opencode_native(marker, read_s)
         else:
             session_id = str(uuid.uuid4())
@@ -260,6 +281,8 @@ def _probe(
     observed_models = sorted({m for m in native.models if m}) if native else []
     if turn and native and (observed_models != [profile["model"]] or set(native.providers) - {profile["provider"]}):
         reasons.append("model_mismatch")
+    if turn and native and profile["runtime"] == "opencode" and set(native.agents) != {OPENCODE_AGENT}:
+        reasons.append("opencode_agent_mismatch")
     efforts = sorted(set(native.efforts)) if native else []
     observed_effort = efforts[0] if len(efforts) == 1 else (efforts or None)
     if turn and observed_effort is not None and observed_effort != profile["effort"]:

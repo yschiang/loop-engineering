@@ -41,9 +41,15 @@ def version(timeout_s: float) -> str:
         raise HerdrError("version", f"exit_{e.code}") from e
 
 
-def open_worktree(path: str, label: str, timeout_s: float, *, session: str | None) -> dict[str, Any]:
-    """Open a workspace on an existing checkout; returns its root pane."""
-    args = ["worktree", "open", "--cwd", path, "--path", path, "--label", label, "--no-focus"]
+def open_worktree(
+    source: str, path: str, label: str, timeout_s: float, *, session: str | None
+) -> dict[str, Any]:
+    """Open a workspace on an existing checkout; returns its root pane.
+
+    `source` is the repo's main working tree: Herdr rejects a linked worktree as `--cwd`
+    (`linked_worktree_source`). For the main checkout itself, source == path.
+    """
+    args = ["worktree", "open", "--cwd", source, "--path", path, "--label", label, "--no-focus"]
     return _call("worktree_open", args, timeout_s, session)["root_pane"]
 
 

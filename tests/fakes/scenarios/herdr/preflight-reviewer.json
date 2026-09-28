@@ -1,5 +1,5 @@
 {
-  "description": "preflight --role reviewer, every check passes: OpenCode (config via OPENCODE_CONFIG) in the requested checkout, native turn with openai/gpt-6-astra read through `opencode session list` / `opencode export`, all five negatives rejected with resources unchanged, stop confirmed by process-info.",
+  "description": "preflight --role reviewer, every check passes: OpenCode (config via OPENCODE_CONFIG, started with --agent loopctl-reviewer; the export has no variant, as observed with OpenCode 1.18.32) in the requested checkout, native turn with openai/gpt-6-astra read through `opencode session list` / `opencode export`, all five negatives rejected with resources unchanged, stop confirmed by process-info.",
   "calls": [
     {"id": "version", "match": ["--version"], "stdout": "herdr 0.9.1\n"},
     {"id": "open", "match": ["worktree", "open", "--cwd", "*", "--path", "*", "--label", "loopctl-preflight-reviewer", "--no-focus"],
@@ -8,7 +8,7 @@
                 "root_pane": {"pane_id": "w1:p1", "cwd": "{cwd}", "foreground_cwd": "{cwd}"}}}},
     {"id": "config", "match": ["pane", "run", "w1:p1", "export OPENCODE_CONFIG=/*/profiles/reviewer.opencode.json"], "stdout": ""},
     {"id": "start", "match": ["agent", "start", "pf-reviewer-*", "--kind", "opencode", "--pane", "w1:p1", "--timeout", "30000", "--",
-                               "--model", "openai/gpt-6-astra", "--variant", "xhigh"],
+                               "--agent", "loopctl-reviewer", "-m", "openai/gpt-6-astra"],
      "stdout": {"id": "cli:agent:start", "result": {"agent": {"agent": "opencode", "agent_status": "idle", "interactive_ready": true,
                 "cwd": "{cwd}", "pane_id": "w1:p1"}}}},
     {"id": "prompt", "match": ["agent", "prompt", "pf-reviewer-*", "*"],
@@ -22,7 +22,7 @@
        {"info": {"id": "msg_u1", "sessionID": "ses_fakeReviewer1", "role": "user"},
         "parts": [{"type": "text", "text": "loopctl preflight {marker}"}]},
        {"info": {"id": "msg_a1", "sessionID": "ses_fakeReviewer1", "role": "assistant", "providerID": "openai", "modelID": "gpt-6-astra",
-                 "variant": "xhigh", "finish": "tool-calls"},
+                 "agent": "loopctl-reviewer", "mode": "loopctl-reviewer", "finish": "tool-calls"},
         "parts": [
           {"type": "tool", "tool": "write", "state": {"status": "error", "input": {"filePath": "{probe}/outside.txt", "content": "{marker}"}, "error": "The user rejected permission to use this specific tool call."}},
           {"type": "tool", "tool": "bash", "state": {"status": "error", "input": {"command": "git push {probe}/remote.git HEAD:refs/heads/probe"}, "error": "The user rejected permission to use this specific tool call."}},
@@ -30,7 +30,7 @@
           {"type": "tool", "tool": "bash", "state": {"status": "error", "input": {"command": "herdr --version > {probe}/herdr.out"}, "error": "The user rejected permission to use this specific tool call."}},
           {"type": "tool", "tool": "bash", "state": {"status": "error", "input": {"command": "loopctl decide handoff > {probe}/decide.out"}, "error": "The user rejected permission to use this specific tool call."}}]},
        {"info": {"id": "msg_a2", "sessionID": "ses_fakeReviewer1", "role": "assistant", "providerID": "openai", "modelID": "gpt-6-astra",
-                 "variant": "xhigh", "finish": "stop"},
+                 "agent": "loopctl-reviewer", "mode": "loopctl-reviewer", "finish": "stop"},
         "parts": [{"type": "text", "text": "All five attempts were rejected. {marker}"}]}]}},
     {"id": "stop", "match": ["agent", "send-keys", "pf-reviewer-*", "ctrl+c"],
      "stdout": {"id": "cli:agent:send-keys", "result": {"type": "ok"}}},
