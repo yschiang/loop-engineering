@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Checks commit messages against AGENTS.md「Commit 訊息」.
+#   hook: git config core.hooksPath scripts/hooks   (git passes the message file)
+#   CI:   scripts/hooks/commit-msg --range <base>..<head>   (needs full history)
+# Runs on macOS bash 3.2: no associative arrays, no empty-array expansion under -u.
+set -u
+
+TYPES='feat|fix|refactor|test|docs|build|ci|chore'
+
+fail() { errors="${errors}  - $1"$'\n'; }
+has() { printf '%s\n' "$msg" | grep -Eq "$1"; }
+line_of() { printf '%s\n' "$msg" | grep -En "$1" | head -n 1 | cut -d: -f1; }
+
+check_message() { # $1 label; message on stdin
+  local label=$1 subject len type why behavior tradeoff trailers key long
+  errors=''
+  msg=$(cat)
+  subject=$(printf '%s\n' "$msg" | head -n 1)
+
+  # Messages git writes itself (merge, revert) are accepted as generated.
+  case $subject in 'Merge '* | 'Revert "'*) return 0 ;; esac
+
+  printf '%s\n' "$subject" | grep -Eq "^($TYPES)(\([a-z0-9-]+\))?!?: [^ ]" ||
+    fail "subject must be '<type>(<scope>)!: <description>', type one of: ${TYPES//|/, }"
+  # Lengths are counted in characters: bash, BSD awk and mawk count bytes, which
+  # flags lines holding a multi-byte character such as an em dash.
+  len=$(printf '%s\n' "$subject" | perl -CSD -ne 'chomp; print length')
+  [ "$len" -le 72 ] || fail "subject is $len chars; limit is 72"
+  case $subject in *.) fail "subject must not end with a period" ;; esac
+  [ -z "$(printf '%s\n' "$msg" | sed -n 2p)" ] || fail "leave a blank line after the subject"
+
+  long=$(printf '%s\n' "$msg" | perl -CSD -ne 'chomp; print "$. " if $. > 2 && length > 72 && !m{://}')
+  [ -z "$long" ] || fail "body lines over 72 chars (lines with URLs exempt): line ${long% }"
+
+  type=$(printf '%s\n' "$subject" | sed -En "s/^($TYPES)[(!:].*/\1/p")
+  why=$(line_of '^Why: [^ ]')
+  behavior=$(line_of '^Behavior: [^ ]')
+  tradeoff=$(line_of '^Tradeoff: [^ ]')
+  case $type in feat | fix | refactor)
+    [ -n "$why" ] || fail "$type needs a 'Why:' paragraph"
+    [ -n "$behavior" ] || fail "$type needs a 'Behavior:' paragraph"
+    ;;
+  esac
+  if [ -n "$why" ] && [ -n "$behavior" ] && [ "$why" -gt "$behavior" ]; then
+    fail "'Why:' comes before 'Behavior:'"
+  fi
+  if [ -n "$tradeoff" ] && [ -n "$behavior" ] && [ "$tradeoff" -lt "$behavior" ]; then
+    fail "'Tradeoff:' comes after 'Behavior:'"
+  fi
+
+  has '^BREAKING CHANGE:' && fail "write 'BREAKING-CHANGE:' (hyphen); git does not parse a key with a space as a trailer"
+  if printf '%s\n' "$subject" | grep -Eq '^[a-z]+(\([a-z0-9-]+\))?!: '; then
+    has '^BREAKING-CHANGE: [^ ]' || fail "'!' in the subject needs a 'BREAKING-CHANGE:' trailer"
+  else
+    has '^BREAKING-CHANGE:' && fail "a 'BREAKING-CHANGE:' trailer needs '!' in the subject"
+  fi
+
+  trailers=$(printf '%s\n' "$msg" | git interpret-trailers --parse)
+  for key in Refs BREAKING-CHANGE; do
+    if has "^$key:" && ! printf '%s\n' "$trailers" | grep -q "^$key:"; then
+      fail "'$key:' belongs in the trailer block: the last paragraph, after a blank line"
+    fi
+  done
+  printf '%s\n' "$msg" | grep '^Refs:' | grep -Evq '^Refs: #[0-9]+$' &&
+    fail "one ticket per trailer line: 'Refs: #<n>'"
+
+  printf '%s\n' "$msg" | grep -iq '^co-authored-by:' && fail "no Co-Authored-By or other AI attribution"
+  printf '%s\n' "$msg" | grep -Eiq '(^|[^a-z])(close[sd]?|fix(e[sd])?|resolve[sd]?):? +([a-z0-9_.-]+/[a-z0-9_.-]+)?#[0-9]+' &&
+    fail "no closing keywords (Closes/Fixes/Resolves #n); closing a ticket belongs to the PR, use 'Refs: #n'"
+
+  if [ -n "$errors" ]; then
+    printf '%s: commit message does not follow AGENTS.md「Commit 訊息」:\n%s' "$label" "$errors" >&2
+    return 1
+  fi
+}
+
+if [ "${1:-}" = --range ]; then
+  range=$2
+  # An empty side (an unset CI variable) would make an empty range pass silently.
+  case $range in ?*..?*) ;; *) echo "usage: $0 --range <base>..<head>, got '$range'" >&2; exit 2 ;; esac
+  # The convention binds commits that contain the commit adding this script.
+  # Older commits keep their messages: their SHAs may be bound to evidence, so
+  # they are never rewritten. A branch adopts the convention by merging it.
+  adopted=$(git log --no-renames --diff-filter=A --format=%H "${range##*..}" -- scripts/hooks/commit-msg | tail -n 1)
+  commits=$(git rev-list --no-merges --reverse "$range") || exit 2
+  status=0
+  for c in $commits; do
+    [ -n "$adopted" ] && git merge-base --is-ancestor "$adopted" "$c" || continue
+    git log -1 --format=%B "$c" | check_message "$(git log -1 --format='%h %s' "$c")" || status=1
+  done
+  exit $status
+fi
+
+# Hook mode: drop the diff under `git commit -v`'s scissors line and git's comment lines.
+sed -e '/^# -* >8 -*$/,$d' "$1" | grep -v '^#' | check_message commit-msg
