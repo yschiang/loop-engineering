@@ -13,8 +13,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from loopctl import decisions, preflight, state, store
 from loopctl import next as next_step
-from loopctl import preflight, state, store
 
 EXIT_OK, EXIT_REJECTED, EXIT_USAGE, EXIT_BLOCKED, EXIT_UNTRUSTED = 0, 1, 2, 3, 5
 
@@ -78,6 +78,29 @@ def _parser() -> _Parser:
     cl = sub.add_parser("claim", help="take coordination; the token is printed once")
     cl.add_argument("--feature", required=True, type=_feature_id)
     cl.add_argument("--actor", required=True)
+    rg = sub.add_parser("register", help="register a native artifact: locator, version, digest")
+    rg.add_argument("kind", choices=decisions.REGISTER_KINDS)
+    rg.add_argument("--feature", required=True, type=_feature_id)
+    rg.add_argument("--token")
+    rg.add_argument("--locator", required=True, help="native path, recorded as given")
+    rg.add_argument("--version", required=True)
+    rg.add_argument("--digest", help="required when the locator is not a readable file")
+    rg.add_argument("--producer", choices=decisions.PRODUCERS, help="plan only")
+    rg.add_argument("--calibrated-from", help="plan only: calibration source")
+    rg.add_argument("--role", choices=decisions.BINDING_ROLES, help="binding only")
+    dc = sub.add_parser("decide", help="record a human decision (first-slice kinds only)")
+    dc.add_argument("kind")
+    dc.add_argument("--feature", type=_feature_id)
+    dc.add_argument("--token")
+    dc.add_argument("--id", help="decision id; resending the same decision is idempotent")
+    dc.add_argument("--actor", help="human:<name>; any other identity is rejected")
+    dc.add_argument("--target")
+    dc.add_argument("--version")
+    dc.add_argument("--reason")
+    dc.add_argument("--evidence", help="evidence file, stored as a content-addressed object")
+    dc.add_argument("--bind", help="resolve_operation: the observed result to bind")
+    dc.add_argument("--not-delivered", action="store_true", help="resolve_operation")
+    dc.add_argument("--category", help="reclassify_finding")
     pf = sub.add_parser("preflight", help="capability probe of a selected profile (design §6)")
     pf.add_argument("--role", required=True, choices=preflight.ROLES)
     pf.add_argument("--out", required=True, type=Path, help="receipt JSON path")
@@ -217,6 +240,10 @@ def _claim(args: argparse.Namespace) -> Outcome:
     )
 
 
+def _not_implemented(args: argparse.Namespace) -> Outcome:
+    return _rejected("not_implemented", command=args.command)
+
+
 def _preflight(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     receipt = preflight.run(args.role, args.out, Path.cwd(), args.herdr_session)
     result = {"receipt": str(args.out), "verdict": receipt["verdict"]}
@@ -242,6 +269,8 @@ def main(argv: list[str] | None = None) -> int:
             "init": _init,
             "claim": _claim,
             "next": _read,
+            "register": _not_implemented,
+            "decide": _not_implemented,
         }[args.command](args)
     sys.stdout.write(json.dumps(out) + "\n")
     return code
