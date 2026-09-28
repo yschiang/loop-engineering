@@ -1046,6 +1046,24 @@ def test_h9_mergeable_null_keeps_the_ci_wait_open_after_the_checks_end(env):
     assert ci_wait_ends(env) == [None]
 
 
+def test_h9_terminal_checks_end_the_ci_wait_while_g3_awaits_a_policy_change(env):
+    """Design §10: the wait ends when every required check is terminal; a new policy digest
+    awaiting its policy_change keeps G3 unknown but does not keep the checks running."""
+    started(env)
+    env.open_pr()
+    env.ci([run(env, status="in_progress", jobs=[job(status="in_progress")])], rules=[JOB])
+    assert env.observe("ci")[0] == 0
+    assert env.g3()["status"] == "pending" and ci_wait_ends(env) == [None]
+    env.reregister_policy(lambda d: d["limits"].update(poll_github_s=61))  # pc-1 approved the old digest
+    env.ci([run(env)], rules=[JOB])
+    env.clock.advance(seconds=60)
+    assert env.observe("ci")[0] == 0
+    g3 = env.g3()
+    assert (g3["status"], g3["reasons"]) == ("unknown", ["policy_change_required"]), g3
+    assert "g3_policy:policy_change_required" in env.blockers()
+    assert ci_wait_ends(env) == [env.clock().isoformat()]  # the required checks from the rules are terminal
+
+
 # --- h10: the PR positive path and pr_ensure -----------------------------------------------------
 
 

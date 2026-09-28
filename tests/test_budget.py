@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 from test_g1 import IMPL_DOUBLE, RED_DOUBLE, SLEEPER
 from test_g1 import Env as G1Env
-from test_github import GhEnv, job, run, started
+from test_github import JOB, GhEnv, job, run, started
 from test_writes import (
     CLIENT_EXITED,
     FEATURE,
@@ -443,6 +443,29 @@ def test_b4_a_ci_wait_past_30_minutes_is_g3_unknown_ci_timeout_and_blocked(gh, c
     assert gh.safety() is None
     st = gh.state()
     assert reruns(gh) == [] and gh.unexpected() == [] and st["batches"] == {}
+
+
+def test_b4_a_pending_check_at_the_deadline_times_out_while_g3_awaits_a_policy_change(gh):
+    """Design §10: an unfinished CI wait is `unknown(ci_timeout)` at its deadline even when G3
+    is already unknown for its policy; the policy reason stays alongside the timeout."""
+    started(gh)
+    gh.open_pr()
+    gh.ci([run(gh, **QUEUED)], rules=[JOB])
+    assert gh.observe("ci")[0] == 0
+    gh.reregister_policy(lambda d: d["limits"].update(poll_github_s=61))  # pc-1 approved the old digest
+    gh.clock.advance(minutes=1)
+    assert gh.observe("ci")[0] == 0
+    assert (gh.g3()["status"], gh.g3()["reasons"]) == ("unknown", ["policy_change_required"])
+    gh.clock.advance(minutes=28, seconds=59)
+    assert ci_timeout(gh) not in gh.next().get("blockers", [])
+    assert g3_shown(gh) == ("unknown", ["policy_change_required"])
+    gh.clock.advance(seconds=1)
+    code, out = next_out(gh)
+    assert code == 3, out
+    assert out["next"]["action"] == "human", out
+    assert {ci_timeout(gh), "g3_policy:policy_change_required"} <= set(out["next"]["blockers"]), out
+    assert g3_shown(gh) == ("unknown", ["policy_change_required", "ci_timeout"])
+    assert reruns(gh) == [] and gh.state()["batches"] == {}
 
 
 def follow(gh: GhEnv, steps: int = 8) -> dict:

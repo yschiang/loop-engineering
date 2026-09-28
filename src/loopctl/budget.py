@@ -151,9 +151,10 @@ def exhausted_units(state: State, t: dict[str, float]) -> list[str]:
 
 
 def ci_timeouts(state: State, now: datetime, t: dict[str, float]) -> list[str]:
-    """The head whose CI wait was not over by the end of its last window: G3 still pending
-    there (a check not terminal, mergeable not computed), or the terminal read came after it.
-    A late read stays timed out until a `ci_wait:<H>` extension opens a window it falls in."""
+    """The head whose CI wait was not over by the end of its last window: the wait is still
+    open (a check not terminal, mergeable not computed, or no required set known yet, whatever
+    G3 says), or the terminal read came after it. A late read stays timed out until a
+    `ci_wait:<H>` extension opens a window it falls in."""
     gs = state.get("gates") or {}
     g1, g3 = gs.get("g1") or {}, gs.get("g3") or {}
     head = g3.get("head")
@@ -163,8 +164,7 @@ def ci_timeouts(state: State, now: datetime, t: dict[str, float]) -> list[str]:
         if a.get("kind") != "ci_wait" or a.get("head") != head:
             continue
         deadline = max(end for _, end in ci_windows(state, a, t["ci_wait_min"]))
-        late = _at(a["end"]) >= deadline if a.get("end") else g3.get("status") == "pending"
-        if late and now >= deadline:
+        if (not a.get("end") or _at(a["end"]) >= deadline) and now >= deadline:
             return [head]
     return []
 
@@ -184,8 +184,8 @@ def blockers(state: State, now: datetime) -> list[str]:
 def timeout_gates(state: State, now: datetime) -> dict[str, dict[str, Any]]:
     """The gates a timeout leaves without a result (design §10), shown over the recorded gate
     while its blocker holds: G2 unknown once a unit's review attempts are used up by timeouts,
-    G3 unknown (`ci_timeout`) once the CI wait of its head ran out. Recorded gates are not
-    changed."""
+    G3 unknown (`ci_timeout`, after the reasons of a G3 already unknown) once the CI wait of its
+    head ran out. Recorded gates are not changed."""
     if state.get("phase") in SETTLED_PHASES:
         return {}
     t, gs, attempts = timeouts(state), state.get("gates") or {}, state.get("attempts") or {}
@@ -196,7 +196,9 @@ def timeout_gates(state: State, now: datetime) -> dict[str, dict[str, Any]]:
         out["g2"] = {**(gs.get("g2") or {}), "status": "unknown",
                      "reasons": [f"attempt_timeout_exhausted:{u}" for u in reviews]}
     if ci_timeouts(state, now, t):
-        out["g3"] = {**gs["g3"], "status": "unknown", "reasons": ["ci_timeout"]}
+        g3 = gs["g3"]
+        kept = list(g3.get("reasons") or []) if g3.get("status") == "unknown" else []
+        out["g3"] = {**g3, "status": "unknown", "reasons": [*kept, "ci_timeout"]}
     return out
 
 
