@@ -183,17 +183,20 @@ def blockers(state: State, now: datetime) -> list[str]:
 
 def timeout_gates(state: State, now: datetime) -> dict[str, dict[str, Any]]:
     """The gates a timeout leaves without a result (design §10), shown over the recorded gate
-    while its blocker holds: G2 unknown once a unit's review attempts are used up by timeouts.
-    Recorded gates are not changed."""
+    while its blocker holds: G2 unknown once a unit's review attempts are used up by timeouts,
+    G3 unknown (`ci_timeout`) once the CI wait of its head ran out. Recorded gates are not
+    changed."""
     if state.get("phase") in SETTLED_PHASES:
         return {}
-    gs, attempts = state.get("gates") or {}, state.get("attempts") or {}
-    reviews = [u for u in exhausted_units(state, timeouts(state))
+    t, gs, attempts = timeouts(state), state.get("gates") or {}, state.get("attempts") or {}
+    reviews = [u for u in exhausted_units(state, t)
                if any(a.get("role") == "reviewer" and unit(state, k) == u for k, a in attempts.items())]
     out: dict[str, dict[str, Any]] = {}
     if reviews:
         out["g2"] = {**(gs.get("g2") or {}), "status": "unknown",
                      "reasons": [f"attempt_timeout_exhausted:{u}" for u in reviews]}
+    if ci_timeouts(state, now, t):
+        out["g3"] = {**gs["g3"], "status": "unknown", "reasons": ["ci_timeout"]}
     return out
 
 

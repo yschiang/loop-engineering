@@ -393,6 +393,12 @@ def reruns(gh: GhEnv) -> list[dict]:
     return [c for c in gh.calls() if "rerun" in " ".join(c["argv"])]
 
 
+def g3_shown(gh: GhEnv) -> tuple[str, list[str]]:
+    _, out = gh.cli("status", "--feature", FEATURE)
+    g3 = out["result"]["gates"]["g3"]
+    return g3["status"], g3["reasons"]
+
+
 @pytest.mark.parametrize("case", ["queued", "mergeable_null"])
 def test_b4_a_ci_wait_past_30_minutes_is_g3_unknown_ci_timeout_and_blocked(gh, case):
     started(gh)
@@ -402,10 +408,12 @@ def test_b4_a_ci_wait_past_30_minutes_is_g3_unknown_ci_timeout_and_blocked(gh, c
     gh.clock.advance(minutes=29, seconds=59)
     code, out = next_out(gh)
     assert code == 0 and out["next"]["action"] in ("observe", "wait"), out
+    assert g3_shown(gh)[0] == "pending"
     gh.clock.advance(seconds=1)
     code, out = next_out(gh)
     assert code == 3, out
     assert out["next"] == {"action": "human", "blockers": [ci_timeout(gh)], "decision_kinds": ["budget_extension"]}
+    assert g3_shown(gh) == ("unknown", ["ci_timeout"])
     assert gh.safety() is None
     st = gh.state()
     assert reruns(gh) == [] and gh.unexpected() == [] and st["batches"] == {}
@@ -474,10 +482,12 @@ def test_b4_a_success_read_after_the_deadline_stays_blocked_until_a_ci_wait_exte
         code, out = gh.decide("budget_extension", id="ext-ci-1", target=f"ci_wait:{gh.h}", reason="checked the run")
         assert code == 0, out
         assert follow(gh) == {"action": "human", "blockers": ["g3_passed"], "decision_kinds": []}
+        assert g3_shown(gh) == ("passed", [])
     else:
         code, out = next_out(gh)
         assert code == 3, out
         assert out["next"] == {"action": "human", "blockers": [ci_timeout(gh)], "decision_kinds": ["budget_extension"]}
+        assert g3_shown(gh) == ("unknown", ["ci_timeout"])
     assert budget.active_used(gh.state(), gh.clock()) == timedelta(minutes=30)
     assert reruns(gh) == [] and gh.state()["batches"] == {}
 
