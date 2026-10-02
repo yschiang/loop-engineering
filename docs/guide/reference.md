@@ -140,7 +140,7 @@ Research 記錄「目前如何運作」，研究報告不是已批准的 spec。
 | 共用領域語言 | `CONTEXT.md` |
 | 還沒實作的需求原文 | 需求輸入，記錄來源版本；匯入時依能力拆開 |
 | 跨 feature 的共用限制 | 實作前在 project intent 列出並指向輸入；第一個讓它成立的 feature 把它帶進 spec |
-| 已經做好的行為 | `openspec/specs/<能力>/spec.md`，只由 archive 寫入，新專案開始時是空的 |
+| 已經做好的行為 | `openspec/specs/<能力>/spec.md`，只由「併入規格」（`openspec archive`）寫入，新專案開始時是空的 |
 | 架構、技術棧與重要取捨 | 既有 system design、ADR 或 `tech.md` |
 | Milestones、features、順序與完成條件 | roadmap |
 | 如何 setup、build、test；工程規則與必要 CI | repository 指引、scripts、CI 設定 |
@@ -179,7 +179,7 @@ Roadmap 會一直改，所以問題不是「切得越細越好」，而是哪些
 
 - Feature 的結果不一定要讓外部使用者看到，由系統其他部分或工程條件觀察也可以；重點是用自己的 AC 就能驗收，不必等之後的 Feature。業務上完整的能力由 Milestone 驗收。
 - Feature 在每個受影響的 repo 各一個 PR，每個 PR 都要審得動。某部分能單獨驗收，或 PR 太大，就拆成另一個 Feature。
-- 一個 task 一到幾個 commit，每個 commit 自己綠燈；PR、merge、併入現況都以 Feature 為單位。
+- 一個 task 一到幾個 commit，每個 commit 自己綠燈；PR、merge、併入規格都以 Feature 為單位。
 - PR 不限行數，但要審得動：每個 task 做完審一次，最後 G2 再看整個 PR。
 
 ## 多個 repo 的專案
@@ -218,7 +218,7 @@ repos:
 - spec、design、tasks 都在 root 的 `openspec/changes/<id>/`，寫在 root 的 branch `feature/<id>` 上；每個受影響的服務 repo 開同名 branch；每個 task 註明改哪個 repo。
 - 每個受影響的 repo 開一個 PR（root 也算一個），都連到同一張 ticket並互相連結。
 - G1、G3 在各 repo 執行；G2 對照 spec 審整組 PR；人驗收整個 Feature。
-- merge 依依賴順序、提供方先；每個 PR 單獨 merge 都要安全（向後相容）。全部 merge 後才在 root 把 spec 併入現況。
+- merge 依依賴順序、提供方先；每個 PR 單獨 merge 都要安全（向後相容）。全部 merge 後才在 root 併入規格。
 - 交接包與 PR Pass 驗收包列出每個受影響 repo 的 base branch、commit 與 PR；版本以這些 commit 為準。
 - 其中能單獨驗收的部分，拆成另一個 Feature。
 
@@ -230,7 +230,7 @@ repos:
 還沒開始做            決定做、正在做               做完了
 OpenSpec 之外     →   openspec/changes/<名稱>/  →  openspec/specs/
 （輸入、roadmap）      在 feature/<名稱> branch     merge 進 main 後
-                      寫 spec、design、實作        archive 時搬進來
+                      寫 spec、design、實作        併入規格時搬進來
 ```
 
 ### 跟著一條需求走
@@ -240,7 +240,7 @@ OpenSpec 之外     →   openspec/changes/<名稱>/  →  openspec/specs/
 1. **一開始**：它在需求輸入裡。roadmap 上只有一行：M1 的 Feature「Finalize 協議」，也就是示範專案 GitHub 上的 ticket #2。
 2. **排到要做**：建立這個 Feature 的 spec，位置例如 `openspec/changes/finalize-protocol/`。Project Lead Agent 把 FR-02 中這次要做的部分寫成 spec（內容寫完並持久化才回報 Ready），人確認。Crash 後重新發現檔案的部分屬於之後的「掃描 ingest」，到時用 MODIFIED 補上。
 3. **實作**：Engineer 帶 Implementer 寫 design 和 tasks，一個 task 一個 task 做，最後開 PR。
-4. **做完**：人驗收、merge 之後 archive，FR-02 這次做完的部分搬進 `openspec/specs/file-readiness/spec.md`，從此代表「系統已經做得到」。重新發現的部分，等掃描 ingest 做完再用 MODIFIED 補進去。
+4. **做完**：人驗收、merge 之後併入規格（archive），FR-02 這次做完的部分搬進 `openspec/specs/file-readiness/spec.md`，從此代表「系統已經做得到」。重新發現的部分，等掃描 ingest 做完再用 MODIFIED 補進去。
 
 所以 Agent 讀到 `openspec/specs/`，就知道系統現在做得到什麼；讀到 `openspec/changes/`，就知道接下來要做什麼。
 
@@ -248,7 +248,7 @@ OpenSpec 之外     →   openspec/changes/<名稱>/  →  openspec/specs/
 
 ```text
 openspec/
-├── specs/                   ← 系統現在做得到的事（做完的需求，只由 archive 寫入）
+├── specs/                   ← 系統現在做得到的事（做完的需求，只由併入規格寫入）
 └── changes/
     ├── finalize-protocol/   ← 一個 Feature 的資料夾，進行中
     │   ├── proposal.md      ←   為什麼做、做什麼、不做什麼
@@ -282,7 +282,7 @@ OpenSpec 把 `changes/` 底下每個 Feature 的資料夾叫 change，和上線�
 | 7. 逐 task 實作 | Implementer；Reviewer 做局部 review | 每個 task 一到幾個綠燈 commit | |
 | 8. PR | Implementer、Reviewer、CI | 三個 gates、PR Pass 驗收包 | 待驗收；Spec 改連 root PR |
 | 9. 驗收、merge | 驗收人（預設 Project Lead） | 接受紀錄；由人 merge | 已接受；勾選確認過的 AC |
-| 10. 收尾 | Project Lead Agent | `openspec archive`；更新 roadmap；Retro 候選 | 已完成；補封存連結；由人關閉。Agent 寫 ticket 都要授權 |
+| 10. 收尾 | Project Lead Agent | `openspec archive`；更新 roadmap；Retro 候選 | 已完成；補 `changes/archive/` 的連結；由人關閉。Agent 寫 ticket 都要授權 |
 
 兩個角色由同一人擔任時，只有第 4 步的 spec 確認延到第 6 步，和 design、plan 一起看一次，確認後開工；交接、列出 AC、標「就緒」仍在第 4 步完成。不同人擔任時分開，spec 被推翻時 Engineer 不會白做。
 
@@ -310,7 +310,7 @@ SA 要回答七個問題，它們是檢核表，不是七個章節：問題與�
 版本：<commit 或檔案 hash>
 ```
 
-需求 ID 每個能力一個前綴，用過不重用，archive 後也不變，讓 review 與證據能一直追溯。格式由 `openspec validate` 檢查；內容對不對由你和 Reviewer 判斷。
+需求 ID 每個能力一個前綴，用過不重用，併入規格後也不變，讓 review 與證據能一直追溯。格式由 `openspec validate` 檢查；內容對不對由你和 Reviewer 判斷。
 
 ## 交接
 
@@ -539,7 +539,7 @@ to-pr 按授權工作，核對每個 gate 的證據都對應目前版本；orche
 | Blocked：需求或 scope | Project Lead |
 | Blocked：環境、權限、爭議或到限 | 有權裁決的人 |
 
-驗收後的 Retro 與下一個 feature，以及 merge 後的 archive，都由 Project Lead 和 Project Lead Agent 處理。依賴與 stacked PR 的規則見[交接](#交接)。
+驗收後的 Retro 與下一個 feature，以及 merge 後的併入規格，都由 Project Lead 和 Project Lead Agent 處理。依賴與 stacked PR 的規則見[交接](#交接)。
 
 ## 驗收之後：收尾
 
@@ -557,7 +557,7 @@ feature loop 回來的結果只有兩種：
 
 確認 PR 已 merge 之後，再：
 
-3. **把 spec 併入現況**（`openspec archive`）：把這個 Feature 的需求差異併回 `openspec/specs/`，從此代表「系統已經做得到」。
+3. **併入規格**（`openspec archive`）：把這個 Feature 的需求差異併回 `openspec/specs/`，從此代表「系統已經做得到」。
 
 有依賴的 feature 等上游接受並 merge 後才開始實作；等待期間可以先準備它的 spec。Milestone 還需要自己的跨 feature 整合驗證，不能把一串 PR 綠燈直接加總成完成。
 
@@ -567,7 +567,7 @@ feature loop 回來的結果只有兩種：
 
 ## 查進度
 
-你問進度時，Project Lead Agent 應列出 roadmap 上每個 feature 的狀態：準備中、SA 已確認、feature loop 進行中（附 run ID）、PR Pass、已接受、已 merge 並 archive，或 Blocked 與原因。狀態來自文件、ticket、PR 與 controller 的唯讀狀態，不靠對話記憶。這個專案進度視圖的自動化列在 S2。
+你問進度時，Project Lead Agent 應列出 roadmap 上每個 feature 的狀態：準備中、SA 已確認、feature loop 進行中（附 run ID）、PR Pass、已接受、已 merge 並併入規格，或 Blocked 與原因。狀態來自文件、ticket、PR 與 controller 的唯讀狀態，不靠對話記憶。這個專案進度視圖的自動化列在 S2。
 
 ## 演練路線：用 cross-node-file-transfer 跟走一遍
 
@@ -577,11 +577,11 @@ feature loop 回來的結果只有兩種：
 2. **專案骨架（第一個 Feature）**：repo 骨架、CI 與工程規則。它沒有產品行為，但「乾淨 clone 能建置測試、PR 有必要 checks」可以單獨驗收，寫成工程能力（例如 `engineering-baseline`）的 spec，常稱 Sprint 0 或 bootstrap。在 orchestrate 可用前可以手動協調，歷程標明「人工協調」，再由人驗收。
 3. **交付第一個產品 Feature（A4、B1–B3）**：Project Lead Agent 準備 spec 與交接包，Project Lead 確認，Engineer 帶 Implementer 完成 PR；另一個 session 的 Reviewer 審查。
 4. **驗證修正循環**：有真實 blocking finding 時，留下 finding → fix → re-review 的歷程。review 沒找到問題就如實記錄，不製造缺陷湊演示。
-5. **驗收與收尾（B4、A5）**：驗收人接受後，Project Lead Agent 整理 Retro 候選、提出接下來的 Feature；確認 merge 後再把 spec 併入現況。
+5. **驗收與收尾（B4、A5）**：驗收人接受後，Project Lead Agent 整理 Retro 候選、提出接下來的 Feature；確認 merge 後再併入規格。
 6. **接續下一個 Feature**：核對依賴、人工接受、merge，以及下一個 Feature 引用的文件版本；保存各 Feature 的 branch／worktree、文件與交付證據。
 7. **展示 Milestone（C）**：執行跨 Feature 的整合情境。真正的 stacked PR 展示，要等 stacked PR 的規則決定、能力驗證之後再加入。
 
-Demo 結束時，觀眾應能沿一條路徑找到：「目標 → Milestone → Feature／AC → design／tasks → worktree／PR → TDD／review／CI → 人的決策 → 併入現況的 spec」。
+Demo 結束時，觀眾應能沿一條路徑找到：「目標 → Milestone → Feature／AC → design／tasks → worktree／PR → TDD／review／CI → 人的決策 → 併入規格後的 spec」。
 
 ## OpenSpec 和 Superpowers 怎麼分工
 
@@ -596,7 +596,7 @@ Demo 結束時，觀眾應能沿一條路徑找到：「目標 → Milestone →
 | B3 Verify | PR、ticket 留言 | 另一個模型的獨立 Reviewer |
 | A5 Retro | `openspec archive` → `openspec/specs/` | OpenSpec |
 
-- **OpenSpec 的好處**：需求只有一份、每條有 ID；`openspec validate` 檢查格式；進行中的在 `changes/`，archive 後才進 `specs/`，Agent 不會把還沒做的當成已經有。
+- **OpenSpec 的好處**：需求只有一份、每條有 ID；`openspec validate` 檢查格式；進行中的在 `changes/`，併入規格後才進 `specs/`，Agent 不會把還沒做的當成已經有。
 - **Superpowers 的好處**：計畫拆多細、測試先寫、Red 一定先紅這些紀律；OpenSpec 只給格式，不管這些。
 - **不要讓 Superpowers 另寫一份**：brainstorming 預設寫 `docs/superpowers/specs/…`、writing-plans 預設寫 `docs/superpowers/plans/…`。照預設走，同一個 Feature 會有兩份 spec 或兩份計畫，遲早對不上。用它們時要求內容寫進上表的 OpenSpec 檔案。
 

@@ -16,14 +16,14 @@ flowchart LR
     direction LR
     A1["Analyze<br/>釐清目的與需求"] --> A2["Architect<br/>設計方案"] --> A3["Roadmap<br/>安排交付"] --> A4["Specify<br/>開 Feature"]
     A4 -->|交接| F((("Feature ↻<br/>Implement → Validate")))
-    F -->|接受| A5["Retro<br/>歸檔與回顧"]
+    F -->|接受| A5["Retro<br/>併入規格與回顧"]
     A5 -->|Replan| A3
   end
   style Project fill:#eff6ff,stroke:#2563eb,color:#172554
   style F fill:#fff7ed,stroke:#c2410c,color:#431407
 ```
 
-外圈 Project 決定要做什麼：**Analyze**（釐清目的與需求）→ **Architect**（設計方案）→ **Roadmap**（安排交付，選接下來要做的 Feature）→ **Specify**（開 Feature：寫成可驗收的 spec，交接出去）。每個 Feature 各走自己的內圈，沒有依賴的可以同時進行；內圈把它做出來並證明是對的：**Implement**（寫實作 plan、交給 agent 執行）→ **Validate**（Review 與 CI、驗收）。接受後進 **Retro**（歸檔與回顧），把經驗帶回 Roadmap，再選下一個。Agent 做大部分工作，人在關鍵點確認。
+外圈 Project 決定要做什麼：**Analyze**（釐清目的與需求）→ **Architect**（設計方案）→ **Roadmap**（安排交付，選接下來要做的 Feature）→ **Specify**（開 Feature：寫成可驗收的 spec，交接出去）。每個 Feature 各走自己的內圈，沒有依賴的可以同時進行；內圈把它做出來並證明是對的：**Implement**（寫實作 plan、交給 agent 執行）→ **Validate**（Review 與 CI、驗收）。接受後進 **Retro**（併入規格與回顧），把經驗帶回 Roadmap，再選下一個。Agent 做大部分工作，人在關鍵點確認。
 
 ## 誰做什麼
 
@@ -31,7 +31,7 @@ Agent 做大部分工作；人在六個 ◆ 確認點做決定：
 
 | 誰 | 做什麼（◆ 是他要確認的點） |
 | --- | --- |
-| Project Lead | • [釐清目的與需求](#a1-analyze釐清目的與需求)（先研究 codebase）◆確認目的與需求<br>• [設計方案](#a2-architect設計方案) ◆確認設計方案<br>• [安排交付](#a3-roadmap安排交付)：排 roadmap、選接下來要做的 Feature ◆確認 roadmap<br>• [開 Feature](#a4-specify開-feature)：寫 Feature spec、交接 ◆確認 spec<br>• [歸檔與回顧](#a5-retro歸檔與回顧) |
+| Project Lead | • [釐清目的與需求](#a1-analyze釐清目的與需求)（先研究 codebase）◆確認目的與需求<br>• [設計方案](#a2-architect設計方案) ◆確認設計方案<br>• [安排交付](#a3-roadmap安排交付)：排 roadmap、選接下來要做的 Feature ◆確認 roadmap<br>• [開 Feature](#a4-specify開-feature)：寫 Feature spec、交接 ◆確認 spec<br>• [併入規格與回顧](#a5-retro併入規格與回顧) |
 | Engineer | • [寫實作 plan](#b1-design寫實作-plan) ◆確認開工<br>• [交給 agent 執行](#b2-build交給-agent-執行)<br>• [Review 與 CI](#b3-verifyreview-與-ci)<br>• 中小型 Feature 也常自己[開 Feature](#a4-specify開-feature) |
 | 驗收人：預設是 Project Lead；需求由別人提出時，是提出的人 | • [驗收](#b4-accept驗收)：看每條 AC 的證據與 demo ◆驗收：接受或退回 |
 | Agent：Project Lead Agent、Implementer、Reviewer | • 研究、寫文件、實作、審查<br>• 不做確認 |
@@ -95,7 +95,7 @@ flowchart LR
   A2 -->|◆確認設計方案| A3["A3 Roadmap<br/>安排交付"]
   A3 -->|◆確認 roadmap<br/>選接下來的 Feature| A4["A4 Specify<br/>開 Feature"]
   A4 -->|◆確認 spec<br/>兼任時併入 ◆確認開工<br/>交接包| IN[["內圈：Implement → Validate"]]
-  IN -->|◆驗收：接受| A5["A5 Retro<br/>歸檔與回顧"]
+  IN -->|◆驗收：接受| A5["A5 Retro<br/>併入規格與回顧"]
   A5 -->|Replan| A3
   style IN fill:#fff7ed,stroke:#c2410c,color:#431407
 ```
@@ -371,7 +371,7 @@ App 寫完檔案後，能拿到明確的發布結果：只有內容已發布才�
 
 **細節**：參考手冊的[需求放在哪](reference.md#需求放在哪)、[Spec 怎麼寫、放哪](reference.md#spec-怎麼寫放哪)、[交接](reference.md#交接)。
 
-### A5 Retro：歸檔與回顧
+### A5 Retro：併入規格與回顧
 
 **目的**：把做完的需求變成系統現況，並用這次的經驗調整後面的計畫。
 
@@ -379,7 +379,7 @@ App 寫完檔案後，能拿到明確的發布結果：只有內容已發布才�
 | --- | --- | --- | --- | --- |
 | 1 | Agent | 接受後，整理 1–3 個有證據的改善建議 | 同一個 session | Retro 候選（ticket 留言） |
 | 2 | Agent | 更新 roadmap，提出接下來的 Feature 候選 | 同一個 session | roadmap |
-| 3 | Agent | 所有 PR 都 merge 後，在 root 更新過的 main 上把 spec 併入現況，commit、push，再移除 feature worktree | 指令 `openspec archive <id> --yes`（[說明](https://github.com/Fission-AI/OpenSpec/blob/main/docs/cli.md)） | • 現況 spec<br>• 封存的 Feature 資料夾 |
+| 3 | Agent | 所有 PR 都 merge 後，在 root 更新過的 main 上併入規格（archive），commit、push，再移除 feature worktree | 指令 `openspec archive <id> --yes`（[說明](https://github.com/Fission-AI/OpenSpec/blob/main/docs/cli.md)） | • `openspec/specs/` 更新<br>• Feature 資料夾移到 `openspec/changes/archive/` |
 
 **每一步怎麼做、怎樣算完成**
 
@@ -393,12 +393,12 @@ App 寫完檔案後，能拿到明確的發布結果：只有內容已發布才�
    - 完成：
      - [ ] roadmap 草稿已更新，下一個候選標為「近期」
      - [ ] A5 做完後回到 A3 ◆確認 roadmap
-3. **併入現況**
+3. **併入規格**（archive）
    - 怎麼做：先確認每個受影響 repo 的 PR 都已 merge；在 root 的主要 checkout（不是 feature worktree）切到 main 並 pull，確認 merge 已在上面，再執行。
    - 完成：
      - [ ] `openspec/specs/` 和已 merge 的實作一致
-     - [ ] Feature 資料夾移進封存
-     - [ ] ticket 補上封存位置的固定 commit 連結，狀態「已完成」；關票由人決定
+     - [ ] Feature 資料夾移到 `openspec/changes/archive/`
+     - [ ] ticket 補上 `changes/archive/` 位置的固定 commit 連結，狀態「已完成」；關票由人決定
 
 有依賴的 Feature 要等上游接受並 merge 後才開始實作。
 

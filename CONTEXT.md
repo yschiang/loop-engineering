@@ -51,7 +51,7 @@ Agent 執行推理所使用的模型；與負責工具、session 及執行生命
 _Avoid_: 把輸入稱為 spec
 
 **Project spec**:
-系統目前已實作並被接受的行為，位於 `openspec/specs/`，只由 feature 驗收並 merge 後的 archive 寫入；新專案開始時為空。尚未實作的需求在需求輸入或 change 裡（D58）。
+系統目前已實作並被接受的行為，位於 `openspec/specs/`，只由 feature 驗收並 merge 後的「併入規格」（`openspec archive`）寫入；新專案開始時為空。尚未實作的需求在需求輸入或 change 裡（D58）。
 _Avoid_: 把目標需求或上游 spec 放進 project spec
 
 **Feature spec**:
