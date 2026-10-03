@@ -209,6 +209,7 @@ Effort 的依據（D69）：
 | `test_latest_receipt_wins_and_reads_back_by_digest` | 依序寫入 verified、unverified 兩份：`latest` 是 unverified 那份；兩份都在 `objects/`，內容的 sha256 等於索引裡的 ref | 1.1 的 stub `latest` 回 `None`：verdict 的比較不成立 | 通過 |
 | `test_tampered_receipt_is_reported_not_trusted` | 參數化：(a) 改動最新 object 的內容；(b) 刪掉最新 object；(c) `receipts/` 多一個編號更大、內容不完整的索引檔。三種的 `latest` 都丟 `ReceiptCorrupt`，訊息含該 ref 或檔名；(c) 不退回較舊的那份 | 先不核對 digest：(a) 的 `pytest.raises` 斷言不成立 | 通過 |
 | `test_roles_keep_separate_latest_receipts` | Implementer 寫 verified、Reviewer 寫 unverified：兩個 role 的 `latest` 各自是自己的 | 突變：把兩個 role 的索引目錄寫成同一個，`latest` 的比較不成立 | 通過 |
+| `test_misnumbered_index_record_is_not_trusted` | 逐 task 審查 T2.1-01 的回歸測試。參數化：(a) `1.json` 是 `{seq: 2, receipt: <完好的 verified ref>}`，另有不完整的 `2.json`（`{`）：`latest` 丟 `ReceiptCorrupt`，訊息含 `2.json`，不退回 `1.json` 那份；(b) 只有這個 `1.json`：`latest` 丟 `ReceiptCorrupt`，訊息含 `1.json`。兩種的 `list_records` 都把 `1.json` 列在 `skipped`：檔名的編號決定順序，存的 `seq` 與檔名不符的紀錄當成讀不了的紀錄（DD-8） | `latest` 以紀錄裡存的 `seq` 判斷讀不了的檔案是否較新，回傳 `1.json` 的 receipt：兩列的 `pytest.raises` 斷言都不成立 | 通過 |
 
 `tests/test_preflight_static.py`（都用 `approved_run`、`orca_env` 與 `environment(...)` scenario）：
 

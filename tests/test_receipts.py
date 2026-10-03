@@ -91,6 +91,27 @@ def test_tampered_receipt_is_reported_not_trusted(home: Path, tamper: str) -> No
         receipts.latest(REPO, "implementer")
 
 
+@pytest.mark.parametrize(
+    "newer",
+    [
+        pytest.param(True, id="newer-index-incomplete"),
+        pytest.param(False, id="alone"),
+    ],
+)
+def test_misnumbered_index_record_is_not_trusted(home: Path, newer: bool) -> None:
+    receipts.write(REPO, "implementer", receipt("implementer", "verified"))
+    index = index_dir(home, "implementer")
+    record = json.loads((index / "1.json").read_text())
+    (index / "1.json").write_text(json.dumps({**record, "seq": 2}))
+    if newer:
+        (index / "2.json").write_text("{")
+    named = "2.json" if newer else "1.json"
+
+    with pytest.raises(receipts.ReceiptCorrupt, match=re.escape(named)):
+        receipts.latest(REPO, "implementer")
+    assert "1.json" in store.list_records(index).skipped
+
+
 def test_roles_keep_separate_latest_receipts(home: Path) -> None:
     implementer = receipt("implementer", "verified")
     reviewer = receipt("reviewer", "unverified")

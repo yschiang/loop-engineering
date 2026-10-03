@@ -66,19 +66,17 @@ def latest(repo: str, role: str) -> dict[str, Any] | None:
     Raises ReceiptCorrupt, and never falls back to an older receipt, when
     the latest cannot be trusted: its object is missing or is not what its
     ref names, or an index file newer than the newest readable one cannot
-    be read."""
+    be read; the newest such file is named. list_records reads a record
+    only under the number its file name carries, so a record's own seq
+    cannot hide a newer file (DD-8)."""
     index = store.list_records(_index(repo, role))
-    newest = index.items[-1] if index.items else None
-    ref = None if newest is None else str(newest.get("receipt"))
-    shown = 0 if newest is None else newest.get("seq")
-    # append_record numbers every index record; one without is not its own.
-    if type(shown) is not int:
-        raise ReceiptCorrupt(str(ref))
-    for name in index.skipped:
-        if int(name.removesuffix(".json")) > shown:
-            raise ReceiptCorrupt(name)
-    if ref is None:
+    shown = index.items[-1]["seq"] if index.items else 0
+    newer = [name for name in index.skipped if int(name.removesuffix(".json")) > shown]
+    if newer:
+        raise ReceiptCorrupt(newer[-1])
+    if not index.items:
         return None
+    ref = str(index.items[-1].get("receipt"))
     try:
         value = json.loads(store.get_object(ref))
     except (store.ObjectError, ValueError):

@@ -679,8 +679,13 @@ def append_record(dir: Path, payload: dict[str, Any]) -> int:
 
 
 def list_records(dir: Path) -> Records:
-    """The records of `dir` in the order of their seq; a file that is not a
-    whole JSON object is skipped and named. No `dir` has no record."""
+    """The records of `dir` in the order of the numbers their file names
+    carry; a file that is not a whole JSON object whose seq is that number
+    is skipped and named. No `dir` has no record.
+
+    The file name is the authority: append_record links a record only
+    under its own seq, so a record holding another seq is not the one
+    written there, and its seq would misplace it among the others."""
     with _reporting("list_records"):
         try:
             names = os.listdir(dir)
@@ -693,12 +698,14 @@ def list_records(dir: Path) -> Records:
         )
         items: list[dict[str, Any]] = []
         skipped: list[str] = []
-        for _, name in numbered:
+        for seq, name in numbered:
             try:
                 record = json.loads((dir / name).read_bytes())
             except ValueError:
                 record = None
-            if isinstance(record, dict):
+            held = record.get("seq") if isinstance(record, dict) else None
+            # type() rather than isinstance: true is not the seq 1.
+            if type(held) is int and held == seq:
                 items.append(record)
             else:
                 skipped.append(name)
