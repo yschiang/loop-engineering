@@ -4,6 +4,7 @@ the stop and worker_done (design DD-4 steps 6-12a, DD-5, DD-6, DD-7)."""
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shlex
@@ -615,3 +616,64 @@ def test_probe_is_not_verified_until_judgement_is_complete(
     assert r.get("result", "verdict") == "unverified"
     assert r.get("blocked", "reasons") == ["judgement_incomplete"]
     assert r.code == 3
+
+
+@pytest.mark.parametrize(
+    ("writable_on_close", "stop_fails", "kinds"),
+    [
+        pytest.param(True, False, ["started", "closed"], id="terminal-record"),
+        pytest.param(False, False, ["started"], id="stop-record-too"),
+        pytest.param(True, True, ["started"], id="stop-record-fails-otherwise"),
+    ],
+)
+def test_terminal_record_failure_still_stops_the_worker(
+    cli: Cli,
+    approved_run: Callable[..., ApprovedRun],
+    orca_env: OrcaEnv,
+    fakes: Fakes,
+    probe: ProbeRepo,
+    clock: Clock,
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    writable_on_close: bool,
+    stop_fails: bool,
+    kinds: list[str],
+) -> None:
+    run = approved_run(REPO, FEATURE, policy_text())
+    probes = probes_dir(home)
+    # Once the terminal exists, its record cannot be written; in the second
+    # row neither can the record of the stop.
+    options = {"unwritable_probes": probes, "writable_on_close": writable_on_close}
+    fakes(probing(probe, orca_env, **options))
+    if stop_fails:
+        # The record of the stop fails with an error of its own, which the
+        # filesystem cannot tell apart from the first one (EACCES both).
+        append = store.append_record
+
+        def failing(directory: Path, payload: dict[str, Any]) -> int:
+            if payload.get("kind") in ("closed", "stop_unconfirmed"):
+                error = OSError(errno.EIO, os.strerror(errno.EIO))
+                raise store.IOFailure("write_record", error, committed=False)
+            return append(directory, payload)
+
+        monkeypatch.setattr(store, "append_record", failing)
+
+    try:
+        r = preflight(cli, run)
+    finally:
+        probes.chmod(0o700)
+
+    assert len(calls_of(fakes, "terminal", "close")) == 1
+    tools = [call["tool"] for call in fakes.calls()]
+    closed = next(
+        index
+        for index, call in enumerate(fakes.calls())
+        if call["tool"] == "orca" and call["argv"][:2] == ["terminal", "close"]
+    )
+    assert "ps" in tools[closed + 1 :]
+    assert r.exc is None
+    assert r.code == 6
+    assert r.get("result", "error") == "io_error"
+    assert r.get("result", "op") == "write_record"
+    assert r.get("result", "errno") == "EACCES"
+    assert [record["kind"] for record in store.list_records(probes).items] == kinds

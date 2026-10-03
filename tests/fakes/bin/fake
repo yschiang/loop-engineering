@@ -23,8 +23,10 @@ An entry is {match, stdout?, stderr?, exit?, effects?, repeat?, when?}:
 - when: {key: value} the state must hold; a key never set is null.
 - effects, in order: {"write": {"path", "text", "append"?}} writes a file;
   {"state": {key: value}} sets the state; {"snapshot": dir} logs the files
-  under dir with their text; {"kill_parent": true} ends the caller with
-  SIGKILL once the call is answered, to interrupt loopctl mid-run.
+  under dir with their text; {"chmod": {"path", "mode"}} sets the mode of
+  path, as the user can, to make it unwritable or unreadable;
+  {"kill_parent": true} ends the caller with SIGKILL once the call is
+  answered, to interrupt loopctl mid-run.
 - stdout, stderr, and the paths, texts and dirs of effects take {name} of
   every value captured so far.
 
@@ -136,6 +138,9 @@ def apply(
         elif "snapshot" in effect:
             directory = substitute(effect["snapshot"], captured)
             record.setdefault("snapshot", {})[directory] = snapshot(Path(directory))
+        elif "chmod" in effect:
+            chmod = effect["chmod"]
+            Path(substitute(chmod["path"], captured)).chmod(int(chmod["mode"]))
         elif "kill_parent" in effect:
             kill = bool(effect["kill_parent"])
         else:

@@ -655,6 +655,8 @@ def claude_probe(
     running_after_close: int = 0,
     versions: tuple[str, str] | None = None,
     snapshot: Path | None = None,
+    unwritable_probes: Path | None = None,
+    writable_on_close: bool = False,
 ) -> dict[str, list[dict[str, Any]]]:
     """The whole Orca conversation of a preflight that probes the Claude
     profile in `probe.implementer` (DD-4 steps 5-12a), the worker drawing
@@ -670,7 +672,11 @@ def claude_probe(
     close`, the first `running_after_close` process listings still show
     the worker. `versions` is what `claude --version` prints before and
     after the terminal is closed; `snapshot` logs that directory when the
-    terminal is created."""
+    terminal is created. `unwritable_probes` is the directory of the probe
+    records: `terminal create` leaves it readable but not writable, so the
+    preflight cannot record the terminal and goes from there to closing
+    it, and `terminal close` makes it writable again when
+    `writable_on_close`."""
     workspace = probe.implementer
     text = claude_transcript(workspace, marker, session, run, **(transcript or {}))
     project = claude_project(home, workspace)
@@ -689,6 +695,12 @@ def claude_probe(
         effects.append({"snapshot": str(snapshot)})
     effects += [{"write": {"path": str(path), "text": text}} for path in paths]
     effects.append({"write": {"path": str(inside), "text": "probe\n"}})
+    closing: list[dict[str, Any]] = [{"state": {"closed": True}}]
+    if unwritable_probes is not None:
+        probes = str(unwritable_probes)
+        effects.append({"chmod": {"path": probes, "mode": 0o500}})
+        if writable_on_close:
+            closing.append({"chmod": {"path": probes, "mode": 0o700}})
     terminal = {
         "executionHostId": "local",
         "handle": PROBE_HANDLE,
@@ -747,19 +759,21 @@ def claude_probe(
             "effects": effects,
         }
     )  # fmt: skip
-    orca.append(
-        {
-            "match": [
-                "orchestration", "worker-start",
-                "--spec", {"capture": "spec"},
-                "--terminal", PROBE_HANDLE,
-                "--worktree", {"capture": "worker_worktree"},
-                "--run", run, "--json",
-            ],
-            **start,
-        }
-    )  # fmt: skip
-    if failed_stage is None:
+    dispatched = unwritable_probes is None
+    if dispatched:
+        orca.append(
+            {
+                "match": [
+                    "orchestration", "worker-start",
+                    "--spec", {"capture": "spec"},
+                    "--terminal", PROBE_HANDLE,
+                    "--worktree", {"capture": "worker_worktree"},
+                    "--run", run, "--json",
+                ],
+                **start,
+            }
+        )  # fmt: skip
+    if dispatched and failed_stage is None:
         orca.append(
             {
                 "match": [
@@ -785,7 +799,7 @@ def claude_probe(
         {
             "match": ["terminal", "close", "--terminal", PROBE_HANDLE, "--json"],
             "stdout": orca_json(closed),
-            "effects": [{"state": {"closed": True}}],
+            "effects": closing,
         }
     )
     listed = ps_lines(marker, session, environment=True)

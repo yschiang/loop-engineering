@@ -9,6 +9,7 @@ probed (runtime_unsupported)."""
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import datetime
 import hashlib
@@ -366,16 +367,21 @@ def probe(
     if isinstance(handle, orca.Problem):
         return ["terminal_create_failed"]
     seen.terminal = handle
-    record(probes, "terminal", seen.marker, handle=handle)
-    paths = TaskPaths.of(repo, Path(workspace["path"]), seen.marker, found.run)
+    # From here on a worker runs, so every way out stops it (DD-4, DD-7).
+    # A failure is reported as it happened: when the stop cannot record its
+    # own end, the marker stays without one and is cleaned up after (DD-8).
     try:
+        record(probes, "terminal", seen.marker, handle=handle)
+        paths = TaskPaths.of(repo, Path(workspace["path"]), seen.marker, found.run)
         reasons, session, problem = dispatch(
             role, paths, approved.timeout_s, found, seen, probes, since
         )
         items.update(judge_claude(profile, workspace, session, problem, paths, seen))
-    finally:
-        stopped = stop(handle, seen.marker, seen.session, probes)
-    items["stop.confirmed"] = stopped
+    except BaseException:
+        with contextlib.suppress(store.IOFailure):
+            stop(handle, seen.marker, seen.session, probes)
+        raise
+    items["stop.confirmed"] = stop(handle, seen.marker, seen.session, probes)
     seen.after = agent_version(runtime)
     items["version.consistent"] = consistent(seen, problem)
     reasons += [
