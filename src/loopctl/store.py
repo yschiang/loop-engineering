@@ -636,9 +636,9 @@ def _replace_state(
     _sync_dir(path)
 
 
-# Write-once records outside the run state (design DD-1, DD-8). No record
-# is written or read and no lock is taken: append_record answers 1,
-# list_records no record, and locked_dir holds nothing.
+# Write-once records outside the run state (design DD-1, DD-8): numbered
+# `<seq>.json` files, as the history of a run. No lock is taken yet:
+# locked_dir holds nothing.
 
 
 @dataclasses.dataclass(frozen=True)
@@ -655,11 +655,54 @@ class Busy(Exception):
 
 
 def append_record(dir: Path, payload: dict[str, Any]) -> int:
-    return 1
+    """Write `payload` with its `seq` as the next record of `dir`, made on
+    first use; returns the seq once the record is synced.
+
+    Write-once: the record is linked into place whole, so a reader never
+    sees part of it, and a number another writer took first is never
+    overwritten; the next number is tried instead."""
+    with _reporting("write_record"):
+        dir.mkdir(parents=True, exist_ok=True)
+        seq = _latest_revision(dir) + 1
+        while True:
+            tmp = _write_tmp(dir, _dump({**payload, "seq": seq}))
+            try:
+                os.link(tmp, dir / f"{seq}.json")
+            except FileExistsError:
+                seq += 1
+                continue
+            finally:
+                os.unlink(tmp)
+            break
+        _sync_dir(dir)
+    return seq
 
 
 def list_records(dir: Path) -> Records:
-    return Records([], [])
+    """The records of `dir` in the order of their seq; a file that is not a
+    whole JSON object is skipped and named. No `dir` has no record."""
+    with _reporting("list_records"):
+        try:
+            names = os.listdir(dir)
+        except FileNotFoundError:
+            return Records([], [])
+        numbered = sorted(
+            (int(match[1]), name)
+            for name in names
+            if (match := HISTORY_RECORD.fullmatch(name))
+        )
+        items: list[dict[str, Any]] = []
+        skipped: list[str] = []
+        for _, name in numbered:
+            try:
+                record = json.loads((dir / name).read_bytes())
+            except ValueError:
+                record = None
+            if isinstance(record, dict):
+                items.append(record)
+            else:
+                skipped.append(name)
+    return Records(items, skipped)
 
 
 @contextlib.contextmanager
