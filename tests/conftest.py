@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
 import io
 import json
 import os
@@ -491,6 +492,64 @@ def started_run(cli: Callable[..., Result]) -> Callable[[str, str, str], str]:
         return token
 
     return start
+
+
+@dataclass
+class ApprovedRun:
+    """A claimed run and its policy file: `run` is its --repo and --feature
+    arguments, `digest` the digest of the file as written."""
+
+    run: list[str]
+    token: str
+    policy: Path
+    digest: str
+
+
+@pytest.fixture
+def approved_run(
+    cli: Callable[..., Result],
+    started_run: Callable[[str, str, str], str],
+    tmp_path: Path,
+) -> Callable[..., ApprovedRun]:
+    """`approved_run(repo, feature, policy_text)`: init and claim the run,
+    write `policy_text` as its workflow.yaml, register it, and approve it
+    with a human policy_change. `register=False` stops after the claim,
+    `approve=False` after the registration."""
+
+    def make(
+        repo: str,
+        feature: str,
+        policy_text: str,
+        *,
+        register: bool = True,
+        approve: bool = True,
+    ) -> ApprovedRun:
+        token = started_run(repo, feature, "agent:coordinator")
+        run = ["--repo", repo, "--feature", feature]
+        path = tmp_path / "policies" / feature / "workflow.yaml"
+        path.parent.mkdir(parents=True)
+        path.write_text(policy_text)
+        digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+        if register:
+            registered = cli(
+                "register", "policy", *run, "--token", token,
+                "--locator", str(path), "--version", "policy-1",
+                "--source", "#44 preflight policy",
+            )  # fmt: skip
+            assert registered.code == 0, registered
+        if register and approve:
+            approved = cli(
+                "decide", "policy_change", *run, "--token", token,
+                "--id", f"policy-{feature}", "--actor", "human:project-lead",
+                "--target", str(path), "--version", digest,
+                "--reason", "probe the profiles of this policy",
+                "--source", "#44 comment by the Project Lead",
+                "--impact", "preflight may probe these profiles",
+            )  # fmt: skip
+            assert approved.code == 0, approved
+        return ApprovedRun(run, token, path, digest)
+
+    return make
 
 
 REPO_FILES = {

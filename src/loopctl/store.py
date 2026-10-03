@@ -634,3 +634,34 @@ def _replace_state(
         raise
     progress.op = f"sync_{name}"
     _sync_dir(path)
+
+
+# Write-once records outside the run state (design DD-1, DD-8). No record
+# is written or read and no lock is taken: append_record answers 1,
+# list_records no record, and locked_dir holds nothing.
+
+
+@dataclasses.dataclass(frozen=True)
+class Records:
+    """The records of a directory in their order, and the names of the
+    files that could not be read as one."""
+
+    items: list[dict[str, Any]]
+    skipped: list[str]
+
+
+class Busy(Exception):
+    """Another holder has the lock of the directory (DD-8)."""
+
+
+def append_record(dir: Path, payload: dict[str, Any]) -> int:
+    return 1
+
+
+def list_records(dir: Path) -> Records:
+    return Records([], [])
+
+
+@contextlib.contextmanager
+def locked_dir(dir: Path) -> Iterator[None]:
+    yield

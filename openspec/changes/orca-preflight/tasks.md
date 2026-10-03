@@ -90,7 +90,7 @@ Effort 的依據（D69）：
 
 ## 1. 測試骨架與政策檔
 
-- [ ] 1.1 工具隔離與 fake 的能力、新模組的介面、pyyaml 執行依賴、`policy.load`、`preflight` 在政策未核准時拒絕；驗證：`uv run pytest tests/test_harness.py tests/test_policy.py` 與完整的完成條件通過
+- [x] 1.1 工具隔離與 fake 的能力、新模組的介面、pyyaml 執行依賴、`policy.load`、`preflight` 在政策未核准時拒絕；驗證：`uv run pytest tests/test_harness.py tests/test_policy.py` 與完整的完成條件通過
 
 **模式與 effort**：預設模式；xhigh／xhigh。
 

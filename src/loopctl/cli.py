@@ -14,7 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NoReturn
 
-from loopctl import clock, decisions, state, store
+from loopctl import clock, decisions, preflight, state, store
 from loopctl.next import unresolved
 
 Envelope = dict[str, Any]
@@ -339,6 +339,11 @@ def unsupported(args: argparse.Namespace) -> tuple[int, Envelope]:
     return refusal(EXIT_USAGE, "unsupported", command=args.command)
 
 
+def probe(args: argparse.Namespace) -> tuple[int, Envelope]:
+    """`preflight`: probe the profile of `--role` for the run (DD-3)."""
+    return preflight.run(_key(args), args.role, args.out)
+
+
 HANDLERS: dict[str, Handler] = {
     "init": guarded(init),
     "claim": guarded(claim),
@@ -346,6 +351,7 @@ HANDLERS: dict[str, Handler] = {
     "next": guarded(next_step),
     "register": guarded(register),
     "decide": guarded(decide),
+    "preflight": guarded(probe),
     "adopt": unsupported,
     "delegate": unsupported,
 }
@@ -448,6 +454,13 @@ def build_parser() -> Parser:
     decide.add_argument("--version")
     decide.add_argument("--choice")
     decide.add_argument("--open-question", action="append")
+
+    probe = commands.add_parser(
+        "preflight", help="probe a worker profile of the approved policy"
+    )
+    _run_options(probe)
+    probe.add_argument("--role", required=True, choices=["implementer", "reviewer"])
+    probe.add_argument("--out", type=Path)
 
     commands.add_parser("adopt", help="unsupported in this version")
     commands.add_parser("delegate", help="unsupported in this version")

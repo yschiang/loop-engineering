@@ -4,14 +4,18 @@ they were read from, never an exception (design DD-2)."""
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
+from conftest import ApprovedRun, Fakes, Result
 from fakes import scenarios
 
 from loopctl import policy
+
+Cli = Callable[..., Result]
 
 IMPLEMENTER = {
     "transport": "orca",
@@ -174,3 +178,59 @@ def test_malformed_policy_is_reported_not_raised(
     assert loaded.errors == errors
     assert loaded.timeout_s == 900
     assert loaded.digest == (None if text is None else sha256(text.encode()))
+
+
+REPO = "yschiang/loop-engineering"
+FEATURE = "orca-preflight"
+
+
+@pytest.mark.parametrize(
+    ("case", "status"),
+    [
+        pytest.param("registered", "not_approved", id="registered-not-approved"),
+        pytest.param("changed", "digest_mismatch", id="changed-after-approval"),
+        pytest.param("unregistered", "not_registered", id="not-registered"),
+        pytest.param("unreadable", "unreadable", id="file-unreadable"),
+    ],
+)
+def test_preflight_refuses_without_an_approved_policy(
+    cli: Cli,
+    approved_run: Callable[..., ApprovedRun],
+    fakes: Fakes,
+    home: Path,
+    case: str,
+    status: str,
+) -> None:
+    run = approved_run(
+        REPO,
+        FEATURE,
+        scenarios.POLICY,
+        register=case != "unregistered",
+        approve=case in ("changed", "unreadable"),
+    )
+    if case == "changed":
+        run.policy.write_text(scenarios.POLICY + "# changed after the approval\n")
+    if case == "unreadable":
+        run.policy.unlink()
+
+    r = cli("preflight", *run.run, "--role", "implementer")
+
+    assert r.code == 1
+    assert r.get("result", "error") == "policy_not_approved"
+    assert r.get("result", "policy") == status
+    assert r.get("result", "policy") == cli("status", *run.run).get(
+        "result", "policy", "status"
+    )
+    assert fakes.calls() == []
+    assert list((home / "repos").rglob("receipts")) == []
+
+
+def test_approved_policy_is_not_refused(
+    cli: Cli, approved_run: Callable[..., ApprovedRun]
+) -> None:
+    run = approved_run(REPO, FEATURE, scenarios.POLICY)
+
+    r = cli("preflight", *run.run, "--role", "implementer")
+
+    assert r.get("result", "error") != "policy_not_approved"
+    assert r.code != 1
