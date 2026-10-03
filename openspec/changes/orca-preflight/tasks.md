@@ -235,7 +235,7 @@ Effort 的依據（D69）：
 
 ## 3. Implementer 探測
 
-- [ ] 3.1 marker 與探測紀錄、啟動 Claude、worker-start、等待、讀回、版本、停止與 `worker_done`；驗證：`uv run pytest tests/test_preflight_claude.py`
+- [x] 3.1 marker 與探測紀錄、啟動 Claude、worker-start、等待、讀回、版本、停止與 `worker_done`；驗證：`uv run pytest tests/test_preflight_claude.py`
 
 **模式與 effort**：預設模式；high／xhigh。
 

@@ -5,6 +5,7 @@ docs/research/2026-10-03/orca-preflight/samples)."""
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Protocol
@@ -375,3 +376,440 @@ def environment(
             },
         ]
     }  # fmt: skip
+
+
+# The probe worker's terminal, Task and Dispatch, as in the samples.
+PROBE_HANDLE = "term_2766ee02-11f9-417d-bc1a-e3500d53c235"
+PROBE_TASK = "task_6701bb271487"
+PROBE_DISPATCH = "ctx_32ae95da31d6"
+
+# What the fake `claude --version` prints by default (DD-10).
+CLAUDE_VERSION = "2.1.288"
+
+# The skills the Claude sample lists: those of the kept superpowers plugin
+# and of no plugin.
+SKILLS = (
+    "openspec-apply-change",
+    "openspec-propose",
+    "superpowers:brainstorming",
+    "superpowers:test-driven-development",
+    "superpowers:using-superpowers",
+    "superpowers:writing-plans",
+    "update-config",
+    "code-review",
+    "init",
+)
+
+# The SessionStart hook of the superpowers plugin (Claude sample, line 6).
+SUPERPOWERS_HOOK = '"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd" session-start'
+
+
+def claude_project(home: Path, workspace: Path) -> Path:
+    """Where Claude Code keeps the transcripts of sessions run in
+    `workspace`: every character of the path that is not a letter or a
+    digit becomes '-'."""
+    name = re.sub(r"[^A-Za-z0-9]", "-", str(workspace))
+    return home / ".claude" / "projects" / name
+
+
+def probe_files(workspace: Path, marker: str) -> tuple[Path, Path]:
+    """The files of probe steps 1 and 6: outside the workspace, next to it,
+    and inside it (DD-5)."""
+    suffix = marker.removeprefix("PFM-")
+    return (
+        workspace.parent / f"preflight-probe-outside-{suffix}.txt",
+        workspace / f"preflight-probe-inside-{suffix}.txt",
+    )
+
+
+def probe_steps(workspace: Path, marker: str, run: str) -> list[tuple[str, str]]:
+    """The tool calls of probe steps 1-7, as Claude makes them: (tool, its
+    file path or command) (DD-5)."""
+    suffix = marker.removeprefix("PFM-")
+    outside, inside = probe_files(workspace, marker)
+    return [
+        ("Write", str(outside)),
+        ("Bash", f"git push --dry-run origin HEAD:refs/heads/preflight-probe-{suffix}"),
+        ("Bash", f"gh issue list --repo {REPO} --limit 1"),
+        ("Bash", f'orca orchestration task-create --spec "probe {suffix}" --run {run}'),
+        ("Bash", "loopctl decide --help"),
+        ("Write", str(inside)),
+        ("Bash", "git status --short"),
+    ]
+
+
+class _Transcript:
+    """The records of a Claude transcript, in the order and with the fields
+    of the Claude sample: each record links to the one before it."""
+
+    def __init__(self, base: dict[str, Any]) -> None:
+        self.base = base
+        self.records: list[dict[str, Any]] = []
+        self.parent: str | None = None
+        self.count = 0
+
+    def meta(self, **fields: Any) -> None:
+        self.records.append({**fields, "sessionId": self.base["sessionId"]})
+
+    def add(self, kind: str, **fields: Any) -> str:
+        self.count += 1
+        uuid = f"{self.count:08x}-0000-4000-8000-{self.count:012x}"
+        stamp = f"2026-10-03T03:51:{self.count % 60:02d}.000Z"
+        record = {"parentUuid": self.parent, "isSidechain": False, **fields}
+        record |= {"type": kind, "uuid": uuid, "timestamp": stamp, **self.base}
+        self.records.append(record)
+        self.parent = uuid
+        return uuid
+
+    def hook(self, event: str, name: str, command: str) -> None:
+        attachment = {
+            "type": "hook_success",
+            "hookName": name,
+            "toolUseID": "e84e03be-1176-4dde-b1c8-6672472918e3",
+            "hookEvent": event,
+            "content": "",
+            "stdout": "{}\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": command,
+            "durationMs": 40,
+        }
+        self.add("attachment", attachment=attachment)
+
+    def assistant(self, content: list[dict[str, Any]], stop: str, **fields: Any) -> str:
+        message = {
+            "model": fields.pop("model"),
+            "id": "msg_011CfedAtx6YqBjVsWpP3cpQ",
+            "type": "message",
+            "role": "assistant",
+            "content": content,
+            "stop_reason": stop,
+            "stop_sequence": None,
+        }
+        return self.add(
+            "assistant",
+            message=message,
+            requestId="req_011CfedAs3WVYXf4LB8aEMSc",
+            **fields,
+        )
+
+    def text(self) -> str:
+        return "".join(json.dumps(record) + "\n" for record in self.records)
+
+
+def claude_transcript(
+    workspace: Path,
+    marker: str,
+    session: str,
+    run: str,
+    *,
+    model: str = "claude-opus-5-5",
+    effort: str | None = "high",
+    cwd: Path | None = None,
+    omit: tuple[str, ...] = (),
+    version: str = CLAUDE_VERSION,
+    turn: str = "complete",
+    ai_title_first: bool = False,
+) -> str:
+    """The transcript of a probe worker that did every step as the profile
+    allows (research P4): steps 1-5 denied by a permission rule, steps 6
+    and 7 run, worker_done sent and the turn ended.
+
+    `cwd` is where the worker ran, the workspace unless given; `omit`
+    drops the fields `effort` and `cwd` from every record. `turn` is
+    `prompt_only` for a worker that never answered. `ai_title_first`
+    writes the session title, which also holds the marker, before the
+    prompt."""
+    where = workspace if cwd is None else cwd
+    base: dict[str, Any] = {
+        "userType": "external",
+        "entrypoint": "cli",
+        "cwd": str(where),
+        "sessionId": session,
+        "version": version,
+        "gitBranch": workspace.name,
+    }
+    if "cwd" in omit:
+        del base["cwd"]
+    t = _Transcript(base)
+    efforts = {} if "effort" in omit or effort is None else {"effort": effort}
+    efforts |= {"perTurnEffort": effort} if efforts else {}
+    title = {"type": "ai-title", "aiTitle": f"Preflight probe {marker}"}
+    t.meta(type="last-prompt", leafUuid="01a546a4-ae1e-48ff-a1f7-99ff6b8192f3")
+    t.meta(type="mode", mode="normal")
+    t.meta(type="permission-mode", permissionMode="dontAsk")
+    t.meta(type="atis-latch", atis="")
+    if ai_title_first:
+        t.meta(**title)
+    t.hook("SessionStart", "SessionStart:startup", orca_hook("SessionStart"))
+    t.hook("SessionStart", "SessionStart:startup", SUPERPOWERS_HOOK)
+    steps = probe_steps(workspace, marker, run)
+    brief = "\n".join(
+        f"{number}. Use the Write tool to create {target} containing the word probe."
+        if tool == "Write"
+        else f"{number}. Run in Bash: {target}"
+        for number, (tool, target) in enumerate(steps, 1)
+    )
+    prompt = (
+        "Please carry out this task from my Orca coordinator by following the"
+        ' brief I pasted below. \n\n<pasted_content id="5472">\n'
+        "You are working inside Orca, a multi-agent IDE. You are a dispatched"
+        f" worker.\nYour coordinator's terminal handle is: {COORDINATOR_HANDLE}\n"
+        f"Your task ID is: {PROBE_TASK}\n\n"
+        f"PREFLIGHT PROBE {marker}\n\n{brief}\n\n"
+        "Then report completion with the worker_done command given in your"
+        f" instructions. Include the marker {marker} in the body.\n"
+        '</pasted_content id="5472">\n'
+    )
+    t.add(
+        "user",
+        promptId="d0436dc3-a419-4824-9cf7-b0b4e80eec0a",
+        message={"role": "user", "content": prompt},
+        permissionMode="dontAsk",
+        origin={"kind": "human"},
+        promptSource="typed",
+        turnOrigin="human",
+        turnPosition={"promptIndex": 1, "turnIndex": 1},
+    )
+    listing = {
+        "type": "skill_listing",
+        "content": "".join(f"- {name}: a skill\n" for name in SKILLS),
+        "skillCount": len(SKILLS),
+        "isInitial": True,
+        "names": list(SKILLS),
+    }
+    t.add("attachment", attachment=listing)
+    if turn == "prompt_only":
+        return t.text()
+    if not ai_title_first:
+        t.meta(**title)
+    thinking = {"type": "thinking", "thinking": "", "signature": "CAQS5woK"}
+    t.assistant([thinking], "tool_use", model=model, **efforts)
+    report = (
+        f"orca orchestration send --from {PROBE_HANDLE} --dispatch-capability"
+        f' dcap_<redacted> --type worker_done --subject "Preflight probe {marker}'
+        f' complete" --body "{marker}: ran all 7 probe steps in order."'
+    )
+    calls = [*steps, ("Bash", report)]
+    for number, (tool, target) in enumerate(calls, 1):
+        call = f"toolu_{number:024d}"
+        field = "file_path" if tool == "Write" else "command"
+        given = {field: target} | ({"content": "probe\n"} if tool == "Write" else {})
+        use = {"type": "tool_use", "id": call, "name": tool, "input": given}
+        source = t.assistant([use], "tool_use", model=model, **efforts)
+        t.hook("PreToolUse", f"PreToolUse:{tool}", orca_hook("PreToolUse"))
+        denied = number <= 5
+        if denied:
+            said = f"Permission to use {tool} with {field} {target} has been denied."
+        else:
+            said = "Sent msg_a23ee78d2551" if number == 8 else "done"
+        result = {
+            "type": "tool_result",
+            "content": said,
+            "is_error": denied,
+            "tool_use_id": call,
+        }
+        marks = {"toolDenialKind": "permission-rule"} if denied else {}
+        t.add(
+            "user",
+            promptId="d0436dc3-a419-4824-9cf7-b0b4e80eec0a",
+            message={"role": "user", "content": [result]},
+            toolUseResult=("Error: " if denied else "") + said,
+            **marks,
+            sourceToolAssistantUUID=source,
+        )
+        if not denied:
+            t.hook("PostToolUse", f"PostToolUse:{tool}", orca_hook("PostToolUse"))
+    summary = {"type": "text", "text": f"I ran all seven probe steps for {marker}."}
+    t.assistant([summary], "end_turn", model=model, **efforts)
+    t.hook("Stop", "Stop", orca_hook("Stop"))
+    t.add("system", subtype="turn_duration", durationMs=31000, messageCount=40)
+    return t.text()
+
+
+def ps_lines(marker: str, session: str, *, environment: bool) -> str:
+    """What `ps -Eww -ax -o command=` (`environment`) or `ps -ax -o
+    command=` prints while the probe worker runs."""
+    worker = f"claude --model claude-opus-5-5 --session-id {session}"
+    if environment:
+        worker += f" PREFLIGHT_MARKER={marker} ORCA_TERMINAL_HANDLE={PROBE_HANDLE}"
+    return f"/sbin/launchd\n{worker}\n/usr/sbin/syslogd\n"
+
+
+PS_ENVIRONMENT = ["-Eww", "-ax", "-o", "command="]
+PS_COMMANDS = ["-ax", "-o", "command="]
+
+
+def claude_probe(
+    probe: Workspaces,
+    home: Path,
+    marker: str,
+    session: str,
+    *,
+    run: str = BOUND_RUN,
+    transcript: dict[str, Any] | None = None,
+    files: str = "one",
+    wait: str = "idle",
+    worker_done: bool = True,
+    failed_stage: str | None = None,
+    running_after_close: int = 0,
+    versions: tuple[str, str] | None = None,
+    snapshot: Path | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """The whole Orca conversation of a preflight that probes the Claude
+    profile in `probe.implementer` (DD-4 steps 5-12a), the worker drawing
+    `marker` and `session`: by default every step holds.
+
+    `terminal create` writes the transcript, made by claude_transcript
+    with `transcript` as its options, under `home`, and the file of step
+    6. `files` is where the transcript goes: `one` named after the
+    session, `none`, `two` copies, or one `misnamed`. `wait` is how each
+    `terminal wait` ends: `idle`, `timeout`, or `failed` (the terminal is
+    gone). The worker reports worker_done unless `worker_done` is False;
+    `failed_stage` makes worker-start fail at that stage. After `terminal
+    close`, the first `running_after_close` process listings still show
+    the worker. `versions` is what `claude --version` prints before and
+    after the terminal is closed; `snapshot` logs that directory when the
+    terminal is created."""
+    workspace = probe.implementer
+    text = claude_transcript(workspace, marker, session, run, **(transcript or {}))
+    project = claude_project(home, workspace)
+    paths = {
+        "one": [project / f"{session}.jsonl"],
+        "none": [],
+        "two": [
+            project / f"{session}.jsonl",
+            project.with_name(project.name + "-copy") / f"{session}.jsonl",
+        ],
+        "misnamed": [project / "00000000-0000-4000-8000-000000000000.jsonl"],
+    }[files]
+    _, inside = probe_files(workspace, marker)
+    effects: list[dict[str, Any]] = []
+    if snapshot is not None:
+        effects.append({"snapshot": str(snapshot)})
+    effects += [{"write": {"path": str(path), "text": text}} for path in paths]
+    effects.append({"write": {"path": str(inside), "text": "probe\n"}})
+    terminal = {
+        "executionHostId": "local",
+        "handle": PROBE_HANDLE,
+        "hostPlatform": "darwin",
+        "surface": "visible",
+        "title": marker,
+        "worktreeId": "{worktree}",
+    }
+    started = {
+        "runId": run,
+        "taskId": PROBE_TASK,
+        "dispatchId": PROBE_DISPATCH,
+        "state": "ready",
+        "stage": "input_accepted",
+        "mode": {"mode": "terminal", "preferred": "terminal"},
+        "residualResources": [],
+    }
+    if failed_stage is None:
+        start: dict[str, Any] = {"stdout": orca_json(started)}
+    else:
+        failure = orca_error("worker_start_failed", "the worker did not start")
+        answer = json.loads(failure)
+        answer["error"] |= {
+            "state": "failed",
+            "stage": failed_stage,
+            "failedStage": failed_stage,
+            "residualResources": [],
+        }
+        start = {"stdout": json.dumps(answer, indent=1) + "\n", "exit": 1}
+    waited = {
+        "idle": {"stdout": orca_json({"terminal": {"handle": PROBE_HANDLE}})},
+        "timeout": {"stdout": orca_error("timeout", "timeout"), "exit": 1},
+        "failed": {
+            "stdout": orca_error("terminal_not_found", "the terminal has exited"),
+            "exit": 1,
+        },
+    }[wait]
+    dispatch = {
+        "id": PROBE_DISPATCH,
+        "runId": run,
+        "taskId": PROBE_TASK,
+        "assigneeHandle": PROBE_HANDLE,
+        "status": "completed" if worker_done else "dispatched",
+    }
+    closed = {"close": {"handle": PROBE_HANDLE, "ptyKilled": True}}
+    orca = environment(probe, run=run)["orca"][:-1]
+    orca.append(
+        {
+            "match": [
+                "terminal", "create",
+                "--worktree", {"capture": "worktree"},
+                "--title", {"capture": "marker"},
+                "--command", {"capture": "command"}, "--json",
+            ],
+            "stdout": orca_json({"terminal": terminal}),
+            "effects": effects,
+        }
+    )  # fmt: skip
+    orca.append(
+        {
+            "match": [
+                "orchestration", "worker-start",
+                "--spec", {"capture": "spec"},
+                "--terminal", PROBE_HANDLE,
+                "--worktree", {"capture": "worker_worktree"},
+                "--run", run, "--json",
+            ],
+            **start,
+        }
+    )  # fmt: skip
+    if failed_stage is None:
+        orca.append(
+            {
+                "match": [
+                    "terminal", "wait", "--terminal", PROBE_HANDLE,
+                    "--for", "tui-idle", "--timeout-ms", {"capture": "timeout_ms"},
+                    "--json",
+                ],
+                **waited,
+                "repeat": True,
+            }
+        )  # fmt: skip
+        orca.append(
+            {
+                "match": [
+                    "orchestration", "worker-show", "--dispatch", PROBE_DISPATCH,
+                    "--json",
+                ],
+                "stdout": orca_json({"dispatch": dispatch}),
+                "repeat": True,
+            }
+        )  # fmt: skip
+    orca.append(
+        {
+            "match": ["terminal", "close", "--terminal", PROBE_HANDLE, "--json"],
+            "stdout": orca_json(closed),
+            "effects": [{"state": {"closed": True}}],
+        }
+    )
+    listed = ps_lines(marker, session, environment=True)
+    gone = "/sbin/launchd\n/usr/sbin/syslogd\n"
+    ps = [{"match": PS_ENVIRONMENT, "stdout": listed}] * running_after_close
+    ps += [
+        {"match": PS_ENVIRONMENT, "stdout": gone},
+        {"match": PS_COMMANDS, "stdout": gone},
+    ]
+    scenario = {"orca": orca, "ps": ps}
+    if versions is not None:
+        before, after = versions
+        scenario["claude"] = [
+            {
+                "match": ["--version"],
+                "stdout": f"{before} (Claude Code)\n",
+                "when": {"closed": None},
+                "repeat": True,
+            },
+            {
+                "match": ["--version"],
+                "stdout": f"{after} (Claude Code)\n",
+                "when": {"closed": True},
+                "repeat": True,
+            },
+        ]
+    return scenario

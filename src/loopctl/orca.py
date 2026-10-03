@@ -1,9 +1,6 @@
 """Orca, the transport: its fixed argv and the parsing of its JSON (design
-DD-1, DD-4). No function takes a command from its caller (ORC-01).
-
-Only the environment is queried: the terminal and worker functions answer
-Problem("transport_missing"), the answer for an Orca that cannot be used,
-on which no probe goes on."""
+DD-1, DD-4). No function takes a command from its caller (ORC-01): the
+text a probe terminal runs and the probe task are built by preflight."""
 
 from __future__ import annotations
 
@@ -39,13 +36,31 @@ MISSING = Problem("transport_missing")
 TIMEOUT_S = 10.0
 
 
+def _ran(argv: list[str], timeout_s: float = TIMEOUT_S) -> tools.Completed | Problem:
+    """`orca <argv>` when it ran to its end, whatever its exit; else why
+    not."""
+    done = tools.run(["orca", *argv], timeout_s)
+    if done.status == "missing":
+        return MISSING
+    return done if done.status == "ok" else Problem(done.status)
+
+
 def _call(argv: list[str]) -> tools.Completed | Problem:
     """`orca <argv>` when it ran and exited 0; else why not."""
-    done = tools.run(["orca", *argv], TIMEOUT_S)
+    done = _ran(argv)
+    if isinstance(done, Problem):
+        return done
     reason = tools.failure(done)
-    if reason == "missing":
-        return MISSING
     return done if reason is None else Problem(reason)
+
+
+def _json(text: str) -> dict[str, Any] | None:
+    """Orca's `--json` answer in `text`; None unless it is a JSON object."""
+    try:
+        answer = json.loads(text)
+    except ValueError:
+        return None
+    return answer if isinstance(answer, dict) else None
 
 
 def _query(command: list[str], *options: str) -> dict[str, Any] | Problem:
@@ -55,10 +70,7 @@ def _query(command: list[str], *options: str) -> dict[str, Any] | Problem:
     done = _call([*command, *options, "--json"])
     if isinstance(done, Problem):
         return done
-    try:
-        answer = json.loads(done.stdout)
-    except ValueError:
-        answer = None
+    answer = _json(done.stdout)
     if (
         not isinstance(answer, dict)
         or answer.get("ok") is not True
@@ -115,11 +127,14 @@ def run_create(objective: str) -> str | Problem:
 
 
 def _listed(
-    command: list[str], key: str, valid: Callable[[dict[str, Any]], bool]
+    command: list[str],
+    key: str,
+    valid: Callable[[dict[str, Any]], bool],
+    *options: str,
 ) -> list[dict[str, Any]] | Problem:
     """The objects Orca lists under `key` in the result of `command`, each
     `valid`; one that is not makes the whole answer unparseable."""
-    result = _query(command)
+    result = _query(command, *options)
     if isinstance(result, Problem):
         return result
     items = result.get(key)
@@ -162,27 +177,107 @@ def worktrees() -> list[dict[str, Any]] | Problem:
     return _listed(["worktree", "list"], "worktrees", _worktree)
 
 
+def _field(value: Any, *path: str) -> Any:
+    """A nested field of JSON `value`; None when a step is missing."""
+    for key in path:
+        value = value.get(key) if isinstance(value, dict) else None
+    return value
+
+
+def _string(value: Any, *path: str) -> str | None:
+    """The non-empty string at `path` in JSON `value`; None otherwise."""
+    value = _field(value, *path)
+    return value if isinstance(value, str) and value else None
+
+
 def terminal_create(worktree_id: str, title: str, command: str) -> str | Problem:
-    return MISSING
+    """Open a terminal in the workspace `worktree_id` that runs the shell
+    text `command`; its handle. Orca types the text into the login shell
+    of the terminal (research §5.1)."""
+    name = ["terminal", "create"]
+    options = ["--worktree", f"id:{worktree_id}", "--title", title]
+    result = _query(name, *options, "--command", command)
+    if isinstance(result, Problem):
+        return result
+    handle = _string(result, "terminal", "handle")
+    return _unparseable(name) if handle is None else handle
 
 
 def worker_start(
     spec: str, terminal: str, worktree_id: str, run: str
 ) -> Started | Problem:
-    return MISSING
+    """Dispatch the task `spec` to the agent already running in `terminal`,
+    as a Task of `run`; the Task and the Dispatch Orca made.
+
+    Orca exits 0 only for a worker that is ready; else it exits 1 with
+    JSON that names the stage that failed (research §5.2), which is
+    failed_stage:<stage>. No sample of that JSON exists, so the stage is
+    looked for both in its `error` and in its `result`."""
+    name = ["orchestration", "worker-start"]
+    argv = [*name, "--spec", spec, "--terminal", terminal]
+    argv += ["--worktree", f"id:{worktree_id}", "--run", run, "--json"]
+    done = _ran(argv)
+    if isinstance(done, Problem):
+        return done
+    answer = _json(done.stdout) or {}
+    reason = tools.failure(done)
+    if reason is not None:
+        stage = _string(answer, "error", "failedStage") or _string(
+            answer, "result", "failedStage"
+        )
+        return Problem(reason if stage is None else f"failed_stage:{stage}")
+    result = answer.get("result") if answer.get("ok") is True else None
+    task = _string(result, "taskId")
+    dispatch = _string(result, "dispatchId")
+    if task is None or dispatch is None:
+        return _unparseable(name)
+    return Started(task, dispatch)
 
 
 def worker_show(dispatch: str) -> dict[str, Any] | Problem:
-    return MISSING
+    """What Orca knows of the Dispatch `dispatch`: its status, its worker."""
+    return _query(["orchestration", "worker-show"], "--dispatch", dispatch)
 
 
 def terminal_wait(handle: str, timeout_ms: int) -> Literal["idle", "timeout"] | Problem:
-    return MISSING
+    """Wait until the agent in the terminal `handle` is idle, at most
+    `timeout_ms`. Orca answers `ok: true` when it is idle and the error
+    `timeout` when the time ran out; any other answer, a terminal that has
+    exited included, is a Problem (samples/orca/README)."""
+    name = ["terminal", "wait"]
+    argv = [*name, "--terminal", handle, "--for", "tui-idle"]
+    argv += ["--timeout-ms", str(timeout_ms), "--json"]
+    # Orca holds the call for up to timeout_ms before it answers.
+    done = _ran(argv, timeout_ms / 1000 + TIMEOUT_S)
+    if isinstance(done, Problem):
+        return done
+    answer = _json(done.stdout)
+    if answer is not None and answer.get("ok") is True:
+        return "idle"
+    if answer is not None and _string(answer, "error", "code") == "timeout":
+        return "timeout"
+    reason = tools.failure(done)
+    return _unparseable(name) if reason is None else Problem(reason)
 
 
 def terminal_close(handle: str) -> bool | Problem:
-    return MISSING
+    """Close the terminal `handle` and end what runs in it; whether Orca
+    says it killed the terminal's process. That says nothing of the agent's
+    own processes, which only process-info confirms (DD-7)."""
+    name = ["terminal", "close"]
+    result = _query(name, "--terminal", handle)
+    if isinstance(result, Problem):
+        return result
+    killed = _field(result, "close", "ptyKilled")
+    return killed if isinstance(killed, bool) else _unparseable(name)
+
+
+def _task(task: dict[str, Any]) -> bool:
+    """Whether the fields a probe reads of a Task are strings: its id and
+    its spec."""
+    return _strings(task, "id", "spec")
 
 
 def task_list(run: str) -> list[dict[str, Any]] | Problem:
-    return MISSING
+    """The Tasks of the Run `run`, with their specs."""
+    return _listed(["orchestration", "task-list"], "tasks", _task, "--run", run)
