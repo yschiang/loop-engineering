@@ -282,6 +282,62 @@ def test_aliases_are_json_unless_a_value_holds_itself(
     assert loaded.profiles.get("reviewer") == baseline_reviewer(tmp_path)
 
 
+def alias_chain(name: str, first: str) -> str:
+    """Top-level anchors `<name>0` to `<name>1200`: the first is `first`, and
+    each other one a list that holds the one before it."""
+    lines = [f"{name}0: &{name}0 {first}"]
+    lines += [f"{name}{i}: &{name}{i} [*{name}{i - 1}]" for i in range(1, 1201)]
+    return "\n".join(lines) + "\n"
+
+
+# Aliases nest a value far deeper than its text: `notes` below is over 1200
+# lists deep, past the stack of any walk that recurses per level (T1.1-04).
+@pytest.mark.parametrize(
+    ("chain", "line"),
+    [
+        pytest.param(alias_chain("a", "[*a0]"), "notes: *a1200", id="cycle"),
+        pytest.param(alias_chain("b", "[]"), "notes: *b1200", id="no-cycle"),
+    ],
+)
+def test_deep_alias_chains_are_not_json(tmp_path: Path, chain: str, line: str) -> None:
+    path = tmp_path / "workflow.yaml"
+    path.write_text(chain + with_implementer_line(line))
+    without = tmp_path / "without-notes.yaml"
+    without.write_text(chain + scenarios.POLICY)
+
+    loaded = outcome(path)
+
+    assert not isinstance(loaded, Exception), loaded
+    assert loaded.errors == []
+    assert profile_field(loaded, "implementer", "invalid") == ["profile_not_json"]
+    assert profile_field(loaded, "implementer", "fields") == {}
+    assert loaded.profiles.get("reviewer") == policy.load(without).profiles.get(
+        "reviewer"
+    )
+
+
+def nested_notes(depth: int) -> str:
+    """`notes` as plain flow lists whose deepest list is at level `depth`,
+    the profile mapping being level 1."""
+    return "notes: " + "[" * (depth - 1) + "a" + "]" * (depth - 1)
+
+
+def test_profile_depth_bound(tmp_path: Path) -> None:
+    bound = policy.MAX_DEPTH
+    at_bound = tmp_path / "at-bound.yaml"
+    at_bound.write_text(with_implementer_line(nested_notes(bound)))
+    deeper = tmp_path / "deeper.yaml"
+    deeper.write_text(with_implementer_line(nested_notes(bound + 1)))
+
+    assert profile_field(policy.load(at_bound), "implementer", "invalid") == []
+
+    loaded = policy.load(deeper)
+
+    assert loaded.errors == []
+    assert profile_field(loaded, "implementer", "invalid") == ["profile_not_json"]
+    assert profile_field(loaded, "implementer", "fields") == {}
+
+
 REPO = "yschiang/loop-engineering"
 FEATURE = "orca-preflight"
 

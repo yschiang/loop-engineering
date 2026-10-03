@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,12 @@ ROLES = ("implementer", "reviewer")
 # The fields of every profile, and the values this version supports.
 COMMON = ("transport", "runtime", "provider", "model", "probe_effort", "workspace")
 SUPPORTED = {"transport": ("orca",), "runtime": ("claude", "codex")}
+
+# How deep a profile may nest, its own mapping being level 1 and a scalar
+# adding none. DD-2's deepest field is at level 3 (`keep.env` holds its
+# items); the JSON encoders that write a receipt, which holds the profile at
+# its level 2, exhaust Python's stack near level 990.
+MAX_DEPTH = 32
 
 
 @dataclass(frozen=True)
@@ -102,39 +108,50 @@ def _profile(role: str, fields: Any) -> Profile:
         return Profile(role, {}, ["profile_not_a_mapping"])
     # Every receipt carries the profile and the digest of its canonical JSON,
     # valid or not (DD-2, DD-8). safe_load also builds dates, bytes, sets,
-    # non-string keys, NaN and containers that hold themselves, which that
-    # JSON cannot hold.
-    if not _plain(fields, {}):
+    # non-string keys, NaN, containers that hold themselves and, from a few
+    # aliases, values nested deeper than that JSON can be written.
+    if not _plain(fields):
         return Profile(role, {}, ["profile_not_json"])
     return Profile(role, fields, _invalid(fields))
 
 
-def _plain(value: Any, reached: dict[int, bool]) -> bool:
-    """Whether `value` is plain JSON data: None, a bool, an int, a finite
-    float, a string, or a list or string-keyed mapping of such values.
-    `reached` maps the id of each container already reached to whether it
-    is plain; it is False while the container is still being checked."""
+def _plain(fields: dict[str, Any]) -> bool:
+    """Whether the profile `fields` is plain JSON data no deeper than
+    MAX_DEPTH: None, bools, ints, finite floats, strings, and lists and
+    string-keyed mappings of such values.
+
+    The walk goes one level at a time, not by recursion, so no depth of the
+    value can exhaust the stack. An alias makes one container appear
+    wherever it is used: a level holds it once however often it is used, so
+    the walk is at most MAX_DEPTH passes over the distinct containers, and
+    a container that holds itself is on every level, so it ends past
+    MAX_DEPTH."""
+    level: list[Any] = [fields]
+    for _ in range(MAX_DEPTH):
+        below: dict[int, Any] = {}
+        for container in level:
+            items: Iterable[Any] = container
+            if isinstance(container, dict):
+                if not all(isinstance(key, str) for key in container):
+                    return False
+                items = container.values()
+            for item in items:
+                if isinstance(item, dict | list):
+                    below[id(item)] = item
+                elif not _scalar(item):
+                    return False
+        if not below:
+            return True
+        level = list(below.values())
+    return False
+
+
+def _scalar(value: Any) -> bool:
+    """Whether `value` is a JSON scalar: None, a bool, an int, a finite
+    float or a string."""
     if isinstance(value, float):
         return math.isfinite(value)
-    if isinstance(value, dict):
-        if not all(isinstance(key, str) for key in value):
-            return False
-        items = list(value.values())
-    elif isinstance(value, list):
-        items = value
-    else:
-        return value is None or isinstance(value, bool | int | str)
-    # An alias makes one container appear wherever it is used. Reached again
-    # while still being checked, it holds itself; reached again later, it was
-    # already checked, which keeps the walk linear however often it is used.
-    if id(value) in reached:
-        return reached[id(value)]
-    reached[id(value)] = False
-    for item in items:
-        if not _plain(item, reached):
-            return False
-    reached[id(value)] = True
-    return True
+    return value is None or isinstance(value, bool | int | str)
 
 
 def _text(value: Any) -> bool:
