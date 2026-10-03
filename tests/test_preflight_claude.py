@@ -778,3 +778,72 @@ def test_unreadable_native_file_fails_the_readback(
     assert len(calls_of(fakes, "terminal", "close")) == 1
     assert dig(receipt, "items", "stop.confirmed", "passed") is True
     assert r.get("result", "verdict") == "unverified"
+
+
+def holding_marker(path: Path) -> Path:
+    """Make `path` a session file that holds the marker, modified after the
+    probe started (an hour ahead)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"type": "user", "message": {"content": MARKER}}))
+    ahead = time.time() + 3600
+    os.utime(path, (ahead, ahead))
+    return path
+
+
+def hidden_project_copy(probe: ProbeRepo, env: OrcaEnv) -> tuple[Path | None, str]:
+    # A project whose name starts with a dot holds a second transcript.
+    projects = scenarios.claude_project(env.home, probe.implementer).parent
+    holding_marker(projects / ".hidden" / "other.jsonl")
+    return None, "native_ambiguous"
+
+
+def hidden_project_unreadable(
+    probe: ProbeRepo, env: OrcaEnv
+) -> tuple[Path | None, str]:
+    # A project whose name starts with a dot holds an unreadable session.
+    projects = scenarios.claude_project(env.home, probe.implementer).parent
+    locked = unreadable_file(projects / ".hidden" / "other.jsonl", "{}\n")
+    return locked, "native_unreadable"
+
+
+def hidden_session_copy(probe: ProbeRepo, env: OrcaEnv) -> tuple[Path | None, str]:
+    # The probe's own project holds a second transcript named with a dot.
+    project = scenarios.claude_project(env.home, probe.implementer)
+    holding_marker(project / ".other.jsonl")
+    return None, "native_ambiguous"
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        pytest.param(hidden_project_copy, id="hidden-project-ambiguous"),
+        pytest.param(hidden_project_unreadable, id="hidden-project-unreadable"),
+        pytest.param(hidden_session_copy, id="hidden-session-ambiguous"),
+    ],
+)
+def test_hidden_projects_are_in_the_search_scope(
+    cli: Cli,
+    approved_run: Callable[..., ApprovedRun],
+    orca_env: OrcaEnv,
+    fakes: Fakes,
+    probe: ProbeRepo,
+    clock: Clock,
+    row: Callable[[ProbeRepo, OrcaEnv], tuple[Path | None, str]],
+) -> None:
+    run = approved_run(REPO, FEATURE, policy_text(60))
+    locked, reason = row(probe, orca_env)
+    # A name that starts with a dot is in scope (DD-6), so exactly one
+    # transcript cannot be told and the probe times out.
+    fakes(probing(probe, orca_env, wait="timeout"))
+
+    try:
+        preflight(cli, run)
+    finally:
+        if locked is not None:
+            locked.chmod(0o600)
+
+    receipt = latest()
+    expected = {"passed": False, "actual": None, "reason": reason}
+    for name in NATIVE_ITEMS:
+        got = {field: dig(receipt, "items", name, field) for field in expected}
+        assert (name, got) == (name, expected)

@@ -107,10 +107,11 @@ def find_claude(home: Path, marker: str, uuid: str, since: float) -> Found:
 
 
 def _claude_sessions(projects: Path) -> list[Path]:
-    """The session files of every Claude project in `projects`, as the
-    glob `*/*.jsonl` names them, except that a directory which cannot be
-    listed raises OSError where glob would pass over it. Without
-    `projects` there are none."""
+    """The session files of every Claude project in `projects`, as
+    `Path.glob('*/*.jsonl')` names them, names that start with a dot
+    included, except that a directory which cannot be listed raises
+    OSError where glob would pass over it. Without `projects` there are
+    none."""
     try:
         folders = _listed(projects, lambda entry: entry.is_dir())
     except FileNotFoundError:
@@ -123,14 +124,11 @@ def _claude_sessions(projects: Path) -> list[Path]:
 
 
 def _listed(directory: Path, chosen: Callable[[os.DirEntry[str]], bool]) -> list[Path]:
-    """The entries of `directory` that are `chosen`; as for glob's `*`, a
-    name that starts with a dot is hidden. Raises OSError."""
+    """The entries of `directory` that are `chosen`, whatever their names:
+    DD-6 searches every project and session file, hidden ones too.
+    Raises OSError."""
     with os.scandir(directory) as entries:
-        return [
-            Path(entry.path)
-            for entry in entries
-            if not entry.name.startswith(".") and chosen(entry)
-        ]
+        return [Path(entry.path) for entry in entries if chosen(entry)]
 
 
 def find_codex(codex_home: Path, marker: str, days: list[date]) -> Found:
