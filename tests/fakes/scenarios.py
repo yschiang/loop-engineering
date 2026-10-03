@@ -6,6 +6,39 @@ from __future__ import annotations
 
 from typing import Any
 
+# The example policy of design DD-2, verbatim.
+POLICY = """\
+profiles:
+  implementer:
+    transport: orca
+    runtime: claude
+    provider: anthropic
+    model: claude-opus-5-5
+    probe_effort: high
+    workspace: preflight-engineer          # Orca 工作區的 displayName
+    orca_allowed: [send, check, ask]       # worker 回報用的 orca 子命令
+    keep:                                  # 從使用者設定帶入的部分（待決 2）
+      env: [ANTHROPIC_BASE_URL, _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL, ENABLE_TOOL_SEARCH]
+      hooks_matching: ORCA_AGENT_HOOK
+      plugins: [superpowers@claude-plugins-official]
+    permissions:
+      allow: [Read, Glob, Grep, "Bash(git status*)", "Bash(git rev-parse *)", "Bash(ls *)", "Bash(cat *)", "Bash(pwd)"]
+      deny: ["Bash(git push *)", "Bash(gh *)", "Bash(loopctl *)", "Bash(orca orchestration task-create *)", "Bash(orca orchestration worker-start *)", "Bash(orca orchestration run-create *)", "Bash(orca orchestration run-use *)"]
+  reviewer:
+    transport: orca
+    runtime: codex
+    provider: openai
+    model: gpt-6-astra
+    probe_effort: xhigh
+    workspace: preflight-reviewer
+    sandbox: read-only
+    approval: never
+    config: {check_for_update_on_startup: false, features.hooks: false}
+    exclude: {plugins: []}                 # Codex 要排除的 plugin id；預設照 Feature 1 不排除
+preflight:
+  timeout_s: 900
+"""  # noqa: E501
+
 # The coordinator's Orca terminal, as the samples write a handle.
 COORDINATOR_HANDLE = "term_1bf1a70d-64d0-4524-9edf-d46be8bc3470"
 
