@@ -1,0 +1,3 @@
+#!/bin/sh
+# Stands where a real tool would be found once the fakes are bypassed (DD-10).
+echo SENTINEL

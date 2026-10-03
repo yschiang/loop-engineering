@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import datetime
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pytest
+from fakes import scenarios
 
 
 def current_platform() -> str:
@@ -268,6 +271,210 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path.mkdir()
     monkeypatch.setenv("LOOPCTL_HOME", str(path))
     return path
+
+
+FAKES = Path(__file__).resolve().parent / "fakes"
+
+# The external tools every test meets only as fakes (DD-10).
+TOOLS = ("orca", "claude", "codex", "ps", "gh", "herdr", "opencode")
+
+# What a controlled PATH keeps besides the fakes and the interpreter (DD-10).
+MINIMAL = ("git", "sh", "env")
+
+
+@pytest.fixture(scope="session")
+def fake_program(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """tests/fakes/bin/fake run by this interpreter, whatever python PATH has."""
+    _, body = (FAKES / "bin" / "fake").read_text().split("\n", 1)
+    path = tmp_path_factory.mktemp("fake") / "fake"
+    path.write_text(f"#!{sys.executable}\n{body}")
+    path.chmod(0o755)
+    return path
+
+
+@dataclass
+class Fakes:
+    """The fakes of one test: each answers from the scenario and logs its
+    call (DD-10)."""
+
+    fakebin: Path
+    minbin: Path
+    scenario: Path
+    log: Path
+    monkeypatch: pytest.MonkeyPatch
+
+    def __call__(self, scenario: dict[str, list[dict[str, Any]]]) -> None:
+        """Answer the calls of each tool from `scenario` from now on, with
+        nothing captured, used up or set yet; the log is kept."""
+        self.scenario.write_text(json.dumps(scenario))
+        Path(f"{self.log}.state").unlink(missing_ok=True)
+
+    def calls(self) -> list[dict[str, Any]]:
+        """Every call of a fake so far, in order."""
+        if not self.log.exists():
+            return []
+        return [json.loads(line) for line in self.log.read_text().splitlines()]
+
+    def without(self, tool: str) -> None:
+        """Take `tool` away: PATH becomes fakebin/ and minbin/ alone, so it
+        is missing whatever the machine has installed (DD-10)."""
+        (self.fakebin / tool).unlink()
+        self.monkeypatch.setenv("PATH", f"{self.fakebin}{os.pathsep}{self.minbin}")
+
+
+@pytest.fixture(autouse=True)
+def fakes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_program: Path
+) -> Iterator[Fakes]:
+    """Isolate every test from the external tools and the user's own files:
+    a fake of every tool of TOOLS first on PATH, HOME and CODEX_HOME in
+    tmp_path, and no ORCA_* variable of the shell pytest runs in. minbin/
+    holds only git, sh, env and this interpreter. A call no scenario
+    expected fails the test at teardown."""
+    root = tmp_path / "fakes"
+    fakebin, minbin = root / "fakebin", root / "minbin"
+    fakebin.mkdir(parents=True)
+    minbin.mkdir()
+    for tool in TOOLS:
+        (fakebin / tool).symlink_to(fake_program)
+    path = os.environ.get("PATH", "")
+    for name in MINIMAL:
+        found = shutil.which(name, path=path)
+        if found is not None:
+            (minbin / name).symlink_to(found)
+    for name in ("python", "python3"):
+        (minbin / name).symlink_to(sys.executable)
+    monkeypatch.setenv("PATH", f"{fakebin}{os.pathsep}{path}")
+    monkeypatch.setenv("FAKE_SCENARIO", str(root / "scenario.json"))
+    monkeypatch.setenv("FAKE_LOG", str(root / "calls.jsonl"))
+    user = tmp_path / "user"
+    user.mkdir()
+    monkeypatch.setenv("HOME", str(user))
+    monkeypatch.setenv("CODEX_HOME", str(user / ".codex"))
+    for name in [name for name in os.environ if name.startswith("ORCA_")]:
+        monkeypatch.delenv(name)
+    controller = Fakes(
+        fakebin, minbin, root / "scenario.json", root / "calls.jsonl", monkeypatch
+    )
+    yield controller
+    unexpected = [
+        f"{call['tool']} {json.dumps(call['argv'])}"
+        for call in controller.calls()
+        if call.get("unexpected")
+    ]
+    if unexpected:
+        pytest.fail(
+            "unexpected calls of the fakes: " + "; ".join(unexpected), pytrace=False
+        )
+
+
+@dataclass
+class OrcaEnv:
+    """The caller inside an Orca terminal, and the user's own files under
+    the tmp HOME and CODEX_HOME."""
+
+    handle: str
+    home: Path
+    codex_home: Path
+    claude_settings: Path
+
+
+@pytest.fixture
+def orca_env(fakes: Fakes, monkeypatch: pytest.MonkeyPatch) -> OrcaEnv:
+    """Run inside the coordinator's Orca terminal (ORCA_TERMINAL_HANDLE,
+    DD-10), with the user's Claude settings of research §6.1 and empty
+    Claude projects and Codex sessions."""
+    home, codex_home = Path(os.environ["HOME"]), Path(os.environ["CODEX_HOME"])
+    (home / ".claude" / "projects").mkdir(parents=True)
+    (codex_home / "sessions").mkdir(parents=True)
+    settings = home / ".claude" / "settings.json"
+    settings.write_text(json.dumps(scenarios.user_settings(), indent=2) + "\n")
+    monkeypatch.setenv("ORCA_TERMINAL_HANDLE", scenarios.COORDINATOR_HANDLE)
+    return OrcaEnv(scenarios.COORDINATOR_HANDLE, home, codex_home, settings)
+
+
+@dataclass
+class Clock:
+    """loopctl.clock in fake time, from `at` on: sleep moves the time on at
+    once instead of waiting."""
+
+    at: datetime.datetime
+
+    def now(self) -> str:
+        return self.at.isoformat(timespec="seconds")
+
+    def sleep(self, seconds: float) -> None:
+        self.at += datetime.timedelta(seconds=seconds)
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
+    """Replace loopctl.clock.now and loopctl.clock.sleep (DD-10)."""
+    fake = Clock(datetime.datetime(2026, 10, 3, tzinfo=datetime.UTC))
+    monkeypatch.setattr("loopctl.clock.now", fake.now)
+    monkeypatch.setattr("loopctl.clock.sleep", fake.sleep)
+    return fake
+
+
+def git(*args: str | Path) -> str:
+    """Run git with a fixed identity; its stdout without the trailing newline."""
+    done = subprocess.run(
+        ["git", "-c", "user.name=probe", "-c", "user.email=probe@example.invalid"]
+        + [str(arg) for arg in args],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return done.stdout.rstrip("\n")
+
+
+@dataclass
+class ProbeRepo:
+    """The author's repo on main with its bare origin, and the two probe
+    workspaces: preflight-engineer, a linked worktree of the author's repo,
+    and preflight-reviewer, a linked worktree of the author's repo or of an
+    independent clone of origin (DD-12)."""
+
+    author: Path
+    origin: Path
+    clone: Path | None
+    implementer: Path
+    reviewer: Path
+
+
+@pytest.fixture
+def probe_repo(tmp_path: Path) -> Callable[..., ProbeRepo]:
+    """`probe_repo(reviewer="linked" | "clone")` builds a new ProbeRepo
+    under tmp_path; git is real, origin needs no network (DD-10)."""
+    count = iter(range(1_000_000))
+
+    def make(reviewer: str = "linked") -> ProbeRepo:
+        root = tmp_path / f"probe-{next(count)}"
+        origin, author = root / "origin.git", root / "loop-engineering"
+        git("init", "-q", "--bare", "-b", "main", origin)
+        git("init", "-q", "-b", "main", author)
+        (author / "README.md").write_text("probe\n")
+        git("-C", author, "add", "README.md")
+        git("-C", author, "commit", "-q", "-m", "probe")
+        git("-C", author, "remote", "add", "origin", origin)
+        git("-C", author, "push", "-q", "origin", "main")
+        workspaces = root / "workspaces"
+        implementer = workspaces / "preflight-engineer"
+        git("-C", author, "worktree", "add", "-q", "-b", implementer.name, implementer)
+        clone = None
+        if reviewer == "clone":
+            clone = root / "loop-engineering-reviewer"
+            git("clone", "-q", origin, clone)
+            workspace = root / "clone-workspaces" / "preflight-reviewer"
+            git("-C", clone, "worktree", "add", "-q", "-b", workspace.name, workspace)
+        elif reviewer == "linked":
+            workspace = workspaces / "preflight-reviewer"
+            git("-C", author, "worktree", "add", "-q", "-b", workspace.name, workspace)
+        else:
+            raise ValueError(f"reviewer is linked or clone, not {reviewer!r}")
+        return ProbeRepo(author, origin, clone, implementer, workspace)
+
+    return make
 
 
 @pytest.fixture

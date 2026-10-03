@@ -8,6 +8,7 @@ current_platform() in the child's conftest.
 
 from __future__ import annotations
 
+import shutil
 import textwrap
 import types
 from collections.abc import Callable
@@ -57,6 +58,12 @@ def child(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> Child:
     pytester.makepyprojecttoml(ini_options_text())
     tests = pytester.mkdir("tests")
     (tests / "conftest.py").write_text(CONFTEST.read_text())
+    # The conftest's autouse tool isolation installs the fakes from here.
+    shutil.copytree(
+        CONFTEST.parent / "fakes",
+        tests / "fakes",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
 
     def run(platform: str, files: dict[str, str], *args: str) -> pytest.RunResult:
         for name, source in files.items():
