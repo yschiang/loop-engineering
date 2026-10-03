@@ -1,0 +1,18 @@
+{
+ "id": "cbf6bebe-2fb8-4615-bd96-24abb9d16381",
+ "ok": true,
+ "result": {
+  "run": {
+   "id": "run_b6098d2f6bed",
+   "objective": "loopctl-research-probe-2026-10-01",
+   "coordinator_handle": "term_1bf1a70d-64d0-4524-9edf-d46be8bc3470",
+   "consumer_generation": 1,
+   "legacy": 0,
+   "created_at": "2026-10-01T14:13:04Z",
+   "updated_at": "2026-10-01T14:13:04Z"
+  }
+ },
+ "_meta": {
+  "runtimeId": "f4da8646-9b12-4612-9329-cde1baeeb4ef"
+ }
+}

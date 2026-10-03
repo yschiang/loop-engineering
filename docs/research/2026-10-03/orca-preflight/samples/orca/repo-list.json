@@ -1,0 +1,64 @@
+{
+ "id": "9e205843-d580-4c3d-a22c-7c270dab164b",
+ "ok": true,
+ "result": {
+  "repos": [
+   {
+    "id": "8ab4509b-7790-493f-bfc1-e82837c32187",
+    "path": "/Users/johnson.chiang/workspace/gigaxfer",
+    "displayName": "cross-node-xfer",
+    "badgeColor": "#737373",
+    "addedAt": 1790000157267,
+    "kind": "folder",
+    "projectGroupId": "22a878d4-e24d-4494-ade0-ce5518728f67",
+    "projectGroupOrder": 0,
+    "upstream": null,
+    "gitUsername": "",
+    "hookSettings": {
+     "mode": "auto",
+     "setupRunPolicy": "run-by-default",
+     "setupAgentStartupPolicy": "start-immediately",
+     "scripts": {
+      "setup": "",
+      "archive": ""
+     }
+    }
+   },
+   {
+    "id": "51c06003-80e7-43a0-9ced-35894a995a97",
+    "path": "/Users/johnson.chiang/workspace/loop-engineering",
+    "displayName": "loop-engineering",
+    "badgeColor": "#737373",
+    "addedAt": 1790998523792,
+    "kind": "git",
+    "externalWorktreeVisibilityLegacy": false,
+    "gitUsername": "yschiang",
+    "repoIcon": {
+     "type": "image",
+     "src": "https://github.com/yschiang.png?size=64",
+     "source": "github",
+     "label": "yschiang/loop-engineering"
+    },
+    "upstream": null,
+    "gitRemoteIdentity": {
+     "canonicalKey": "github.com/yschiang/loop-engineering",
+     "remoteName": "origin",
+     "remoteUrl": "https://github.com/yschiang/loop-engineering.git"
+    },
+    "hookSettings": {
+     "mode": "auto",
+     "setupRunPolicy": "run-by-default",
+     "setupAgentStartupPolicy": "start-immediately",
+     "scripts": {
+      "setup": "",
+      "archive": ""
+     }
+    },
+    "externalWorktreeVisibility": "hide"
+   }
+  ]
+ },
+ "_meta": {
+  "runtimeId": "f4da8646-9b12-4612-9329-cde1baeeb4ef"
+ }
+}

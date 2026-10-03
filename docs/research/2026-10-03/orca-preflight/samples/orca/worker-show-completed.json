@@ -1,0 +1,200 @@
+{
+ "id": "d60ca4e3-1c98-4f9a-95cb-4c0224208b32",
+ "ok": true,
+ "result": {
+  "dispatch": {
+   "id": "ctx_32ae95da31d6",
+   "runId": "run_b6098d2f6bed",
+   "taskId": "task_6701bb271487",
+   "task_id": "task_6701bb271487",
+   "contractVersion": 1,
+   "assigneeHandle": "term_2766ee02-11f9-417d-bc1a-e3500d53c235",
+   "assigneePaneKey": "f5753499-b8a0-4e1f-8816-81010db01c4f:cd761020-73fb-4c6a-9cc1-c68df21b89fe",
+   "processIncarnation": "51c06003-80e7-43a0-9ced-35894a995a97::/Users/johnson.chiang/orca/workspaces/loop-engineering/preflight-engineer@@7aa8ff1e:e4a9b9ec-953f-4354-8526-c9693a37e87c",
+   "capabilityRevokedAt": "<redacted>",
+   "retryOfDispatchId": null,
+   "creatorDispatchId": null,
+   "hostScope": {
+    "kind": "local",
+    "hostId": "local"
+   },
+   "status": "completed",
+   "failureCount": 0,
+   "lastFailure": null,
+   "terminationReason": null,
+   "depth": 1,
+   "dispatchedAt": "2026-10-03 03:51:34",
+   "completedAt": "2026-10-03T03:52:06.776Z",
+   "createdAt": "2026-10-03 03:51:34",
+   "lastHeartbeatAt": null
+  },
+  "worker": {
+   "dispatchId": "ctx_32ae95da31d6",
+   "runtimeEpoch": "f4da8646-9b12-4612-9329-cde1baeeb4ef",
+   "state": "succeeded",
+   "stage": "settled",
+   "worktreeId": "51c06003-80e7-43a0-9ced-35894a995a97::/Users/johnson.chiang/orca/workspaces/loop-engineering/preflight-engineer",
+   "agentTerminalHandle": "term_2766ee02-11f9-417d-bc1a-e3500d53c235",
+   "setupState": "not_applicable",
+   "effects": [
+    {
+     "kind": "worktree",
+     "action": "reused",
+     "id": "51c06003-80e7-43a0-9ced-35894a995a97::/Users/johnson.chiang/orca/workspaces/loop-engineering/preflight-engineer"
+    },
+    {
+     "kind": "setup",
+     "action": "not_applicable",
+     "state": "not_applicable"
+    },
+    {
+     "kind": "terminal",
+     "role": "agent",
+     "action": "reused",
+     "id": "term_2766ee02-11f9-417d-bc1a-e3500d53c235"
+    },
+    {
+     "kind": "dispatch_input",
+     "role": "agent",
+     "id": "term_2766ee02-11f9-417d-bc1a-e3500d53c235",
+     "state": "accepted"
+    }
+   ],
+   "residualResources": [],
+   "startOptions": {
+    "worktree": "id:51c06003-80e7-43a0-9ced-35894a995a97::/Users/johnson.chiang/orca/workspaces/loop-engineering/preflight-engineer",
+    "mode": {
+     "mode": "terminal",
+     "preferred": "terminal",
+     "reason": "user_default",
+     "detail": "Started a terminal agent worker, the default for new agent tabs in your settings."
+    },
+    "resolvedWorktreeId": "51c06003-80e7-43a0-9ced-35894a995a97::/Users/johnson.chiang/orca/workspaces/loop-engineering/preflight-engineer",
+    "name": null,
+    "repo": null,
+    "baseBranch": null,
+    "terminal": "term_2766ee02-11f9-417d-bc1a-e3500d53c235",
+    "agent": null,
+    "launch": {
+     "requested": {
+      "agent": null,
+      "model": null,
+      "effort": null
+     },
+     "effective": {
+      "agent": null,
+      "model": null,
+      "effort": null
+     }
+    },
+    "timeoutMs": 60000,
+    "setup": "not_applicable",
+    "setupSource": "existing_worktree"
+   },
+   "lastError": null,
+   "createdAt": "2026-10-03 03:51:34",
+   "updatedAt": "2026-10-03T03:52:06.776Z"
+  },
+  "projection": {
+   "id": "ctx_32ae95da31d6",
+   "dispatchId": "ctx_32ae95da31d6",
+   "taskId": "task_6701bb271487",
+   "runId": "run_b6098d2f6bed",
+   "role": "worker",
+   "parent": null,
+   "provider": null,
+   "host": {
+    "kind": "local",
+    "id": "local"
+   },
+   "workspace": {
+    "id": "51c06003-80e7-43a0-9ced-35894a995a97::/Users/johnson.chiang/orca/workspaces/loop-engineering/preflight-engineer",
+    "kind": "folder_or_worktree"
+   },
+   "stage": {
+    "worker": "succeeded",
+    "dispatch": "completed",
+    "detail": "settled",
+    "activity": "unknown"
+   },
+   "outcome": "succeeded",
+   "liveness": {
+    "verdict": "unverifiable",
+    "reason": "missing_status"
+   },
+   "evidence": {
+    "durable": true,
+    "liveStatus": "unavailable",
+    "lastObservedAt": null
+   },
+   "resource": {
+    "state": "external",
+    "id": "wtr_08ab97a49ffa",
+    "ownerDispatchId": "ctx_32ae95da31d6",
+    "releaseState": "not_requested",
+    "terminalState": "retained"
+   },
+   "nextAction": {
+    "kind": "none",
+    "argv": []
+   },
+   "attention": {
+    "categories": [
+     "unverifiable",
+     "root_completion"
+    ],
+    "requiresAction": true
+   }
+  },
+  "terminal": {
+   "handle": "term_2766ee02-11f9-417d-bc1a-e3500d53c235",
+   "ptyId": "51c06003-80e7-43a0-9ced-35894a995a97::/Users/johnson.chiang/orca/workspaces/loop-engineering/preflight-engineer@@7aa8ff1e",
+   "incarnationId": "e4a9b9ec-953f-4354-8526-c9693a37e87c",
+   "orphaned": true,
+   "worktreeId": "51c06003-80e7-43a0-9ced-35894a995a97::/Users/johnson.chiang/orca/workspaces/loop-engineering/preflight-engineer",
+   "worktreePath": "/Users/johnson.chiang/orca/workspaces/loop-engineering/preflight-engineer",
+   "branch": "refs/heads/yschiang/preflight-engineer",
+   "tabId": "f5753499-b8a0-4e1f-8816-81010db01c4f",
+   "leafId": "cd761020-73fb-4c6a-9cc1-c68df21b89fe",
+   "title": null,
+   "connected": false,
+   "writable": false,
+   "lastOutputAt": 1790999574825,
+   "preview": "──────────────────────────────────────────────────────────┼────────┤\nB delete the inside probe filebe-inside-13f596fbc076.txt in the worktree             │ Ran    │\nResume this session with:\nclaude --resume 84626209-eb35-425e-8baa-637b619925f4\n(base) johnson.chiang@MacBook-Air-3 preflight-engineer %",
+   "exitCause": {
+    "kind": "operator_close"
+   },
+   "executionHostId": "local",
+   "paneRuntimeId": -1,
+   "rendererGraphEpoch": 0
+  },
+  "observation": {
+   "status": "exited",
+   "exactWorker": true
+  },
+  "terminalResource": {
+   "id": "wtr_08ab97a49ffa",
+   "ownershipState": "external",
+   "releaseState": "not_requested",
+   "retainedReason": "external_terminal",
+   "terminalHandle": "term_2766ee02-11f9-417d-bc1a-e3500d53c235",
+   "worktreeId": "51c06003-80e7-43a0-9ced-35894a995a97::/Users/johnson.chiang/orca/workspaces/loop-engineering/preflight-engineer",
+   "endpointId": "f4da8646-9b12-4612-9329-cde1baeeb4ef",
+   "endpointIncarnation": "51c06003-80e7-43a0-9ced-35894a995a97::/Users/johnson.chiang/orca/workspaces/loop-engineering/preflight-engineer@@7aa8ff1e:e4a9b9ec-953f-4354-8526-c9693a37e87c",
+   "originDispatchId": "ctx_32ae95da31d6",
+   "ownerDispatchId": "ctx_32ae95da31d6",
+   "releaseRequestedAt": null,
+   "releaseCompletedAt": null,
+   "releaseError": null,
+   "recoveryAttemptCount": 0,
+   "lastRecoveryAt": null,
+   "archive": {
+    "source": null,
+    "status": null
+   }
+  }
+ },
+ "_meta": {
+  "runtimeId": "f4da8646-9b12-4612-9329-cde1baeeb4ef"
+ }
+}

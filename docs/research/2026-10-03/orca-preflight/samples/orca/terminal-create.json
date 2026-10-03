@@ -1,0 +1,19 @@
+{
+ "id": "cf59df4f-9d17-4d21-8b45-e5f5b58a24ab",
+ "ok": true,
+ "result": {
+  "terminal": {
+   "handle": "term_2766ee02-11f9-417d-bc1a-e3500d53c235",
+   "tabId": "f5753499-b8a0-4e1f-8816-81010db01c4f",
+   "worktreeId": "51c06003-80e7-43a0-9ced-35894a995a97::/Users/johnson.chiang/orca/workspaces/loop-engineering/preflight-engineer",
+   "title": "PFM-13f596fbc076",
+   "executionHostId": "local",
+   "incarnationId": "e4a9b9ec-953f-4354-8526-c9693a37e87c",
+   "hostPlatform": "darwin",
+   "surface": "visible"
+  }
+ },
+ "_meta": {
+  "runtimeId": "f4da8646-9b12-4612-9329-cde1baeeb4ef"
+ }
+}

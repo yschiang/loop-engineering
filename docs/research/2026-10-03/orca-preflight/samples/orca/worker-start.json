@@ -1,0 +1,84 @@
+{
+ "id": "b4e88fe8-1da8-4f5e-b284-95cc4ee562eb",
+ "ok": true,
+ "result": {
+  "runId": "run_b6098d2f6bed",
+  "taskId": "task_6701bb271487",
+  "dispatchId": "ctx_32ae95da31d6",
+  "state": "ready",
+  "stage": "input_accepted",
+  "turnStart": "unsupported",
+  "setup": {
+   "requested": "not_applicable",
+   "effective": "not_applicable",
+   "source": "existing_worktree",
+   "hookFound": false,
+   "startupPolicy": "start-immediately",
+   "state": "not_applicable"
+  },
+  "launch": {
+   "requested": {
+    "agent": null,
+    "model": null,
+    "effort": null
+   },
+   "effective": {
+    "agent": null,
+    "model": null,
+    "effort": null
+   }
+  },
+  "mode": {
+   "mode": "terminal",
+   "preferred": "terminal",
+   "reason": "user_default",
+   "detail": "Started a terminal agent worker, the default for new agent tabs in your settings."
+  },
+  "timeoutMs": 60000,
+  "effects": [
+   {
+    "kind": "worktree",
+    "action": "reused",
+    "id": "51c06003-80e7-43a0-9ced-35894a995a97::/Users/johnson.chiang/orca/workspaces/loop-engineering/preflight-engineer"
+   },
+   {
+    "kind": "setup",
+    "action": "not_applicable",
+    "state": "not_applicable"
+   },
+   {
+    "kind": "terminal",
+    "role": "agent",
+    "action": "reused",
+    "id": "term_2766ee02-11f9-417d-bc1a-e3500d53c235"
+   },
+   {
+    "kind": "dispatch_input",
+    "role": "agent",
+    "id": "term_2766ee02-11f9-417d-bc1a-e3500d53c235",
+    "state": "accepted"
+   }
+  ],
+  "prompt": {
+   "requestId": "84ddeb0e-2f0d-4a24-8da3-75c5c584dd3f",
+   "stages": [
+    "input_accepted"
+   ],
+   "provider": "unsupported",
+   "observation": "unsupported",
+   "processIncarnation": "e4a9b9ec-953f-4354-8526-c9693a37e87c",
+   "generation": 14,
+   "baselineWorkingSequence": 0,
+   "baselineExplicitWorkingStartedAt": null,
+   "baselinePermissionSequence": 0
+  },
+  "residualResources": [],
+  "mutation": {
+   "requestId": "84ddeb0e-2f0d-4a24-8da3-75c5c584dd3f",
+   "replayed": false
+  }
+ },
+ "_meta": {
+  "runtimeId": "f4da8646-9b12-4612-9329-cde1baeeb4ef"
+ }
+}
