@@ -2,7 +2,7 @@
 
 ### Requirement: DUR-01 人可閱讀且單一的現行狀態
 
-設定與執行狀態 SHALL 以人可閱讀的 JSON／YAML 保存，不以 SQLite 取代。同一 repo＋feature SHALL 只有一份現行狀態；歷史只是紀錄，不是另一份現行狀態。使用者 SHALL 可以從狀態檔或 `status` 直接讀到目前階段、owner、plan／spec／design 的版本、核准、三 gate 的狀態與理由、blockers 與下一個允許的動作。狀態檔中的下一個動作只依 run 狀態計算；可不可以派工另依 run 狀態之外的 preflight receipt 與目前的 transport、agent CLI 版本判定（DUR-09），`status` 與 `next` 每次都重新判定，兩者不同時以 `next` 為準。狀態只能經 controller 的命令改變；手改 SHALL 可被偵測，而且永不當作決策。每筆人工 decision SHALL 保存決策者、來源、理由與影響。系統只有一套生效的狀態與 CLI 入口。
+設定與執行狀態 SHALL 以人可閱讀的 JSON／YAML 保存，不以 SQLite 取代。同一 repo＋feature SHALL 只有一份現行狀態；歷史只是紀錄，不是另一份現行狀態。使用者 SHALL 可以從狀態檔或 `status` 直接讀到目前階段、owner、plan／spec／design 的版本、核准、三 gate 的狀態與理由、blockers 與下一個允許的動作。狀態檔中的下一個動作只依 run 狀態計算；可不可以派工另依 run 狀態之外的 preflight receipt 與目前的 transport、agent CLI 版本判定（DUR-09），`status` 與 `next` 每次都重新判定；狀態檔的下一個動作與 `next` 不同時，以 `next` 為準。狀態只能經 controller 的命令改變；手改 SHALL 可被偵測，而且永不當作決策。每筆人工 decision SHALL 保存決策者、來源、理由與影響。系統只有一套生效的狀態與 CLI 入口。
 
 #### Scenario: AC-D01 直接檢視狀態
 - **WHEN** 使用者打開 run 的狀態檔，或執行 `status`（含 `--human`）

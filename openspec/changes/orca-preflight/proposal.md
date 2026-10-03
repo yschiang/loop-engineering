@@ -40,7 +40,7 @@ Feature 2 要經 Orca 派 Implementer，但派工前必須先知道派出去的 
 - `delivery-gates`：ADDED GAT-05（只有 Reviewer profile 的部分：model 讀回、不同模型、隔離負例；G2 判定在 Feature 4）、GAT-08（能力證據矩陣；真實驗收的 finding 迴圈部分在後面的 Feature）。
 - `durable-delivery`：MODIFIED DUR-01（狀態檔的下一步只依 run 狀態，可不可以派工由 `status`、`next` 依 receipt 與目前版本重算）、DUR-02（worker 只能寫授權範圍、不能呼叫狀態寫入命令，以真實負例驗證）；ADDED DUR-09（profile、preflight、receipt、適用規則與派工管制）。
 
-AC（13 條）：D18、D19、D22、D23、D26、D27、D28、D29、D30、D31、G19、G23、G24。新 ID 的依據見下一節。D18、D19、D22、D23、G19 都只成立 R1 與矩陣的部分：每次派工的核對在 Feature 2，`real-E2E` 欄由 Feature 2～4 與 R3 補上，D23 的 OpenCode-only 變體在 M2。
+AC（14 條）：D01、D18、D19、D22、D23、D26、D27、D28、D29、D30、D31、G19、G23、G24。新 ID 的依據見下一節。D18、D19、D22、D23、G19 都只成立 R1 與矩陣的部分：每次派工的核對在 Feature 2，`real-E2E` 欄由 Feature 2～4 與 R3 補上，D23 的 OpenCode-only 變體在 M2。
 
 ## 驗收條件
 
@@ -52,7 +52,7 @@ Project Lead 2026-10-03 決定（回答「Implementer 必須 verified」）：
 
 | 驗法 | AC |
 | --- | --- |
-| CI 的可控制測試（fake `orca`，CI 上沒有 Orca） | 全部 13 條 |
+| CI 的可控制測試（fake `orca`，CI 上沒有 Orca） | 全部 14 條 |
 | 另外以真實 receipt 證明 | D29（Implementer 為 `verified`）、D18、D27、D28、G24（Reviewer，結果如實）、G19、D22（矩陣的 `profile-probe` 欄） |
 
 ## 和 roadmap 不同的地方
@@ -63,6 +63,8 @@ Project Lead 2026-10-03 決定（回答「Implementer 必須 verified」）：
 | --- | --- | --- | --- |
 | AC-G11 有效獨立 review | 派 Reviewer 做 G2 | Feature 4 | 兩個角色同一 model 時 Reviewer profile 不可用：新增 AC-G23 |
 | AC-G12 局部 review 或隔離無法證明 | 判定 G2 | Feature 4 | Reviewer 的隔離負例：新增 AC-G24 |
+
+AC-D01 是 Feature 1 已驗收的 AC；MODIFIED DUR-01 改了它的 THEN（`status` 另顯示依 receipt 與目前版本判定的結果），所以重新列入本 Feature 的驗收。
 
 其他新 ID 來自 requirement 本文與已確認的範圍：
 
