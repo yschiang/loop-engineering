@@ -637,8 +637,8 @@ def _replace_state(
 
 
 # Write-once records outside the run state (design DD-1, DD-8): numbered
-# `<seq>.json` files, as the history of a run. No lock is taken yet:
-# locked_dir holds nothing.
+# `<seq>.json` files, as the history of a run, and the lock of their
+# directory.
 
 
 @dataclasses.dataclass(frozen=True)
@@ -707,4 +707,20 @@ def list_records(dir: Path) -> Records:
 
 @contextlib.contextmanager
 def locked_dir(dir: Path) -> Iterator[None]:
-    yield
+    """Hold the flock of `dir/lock`, both made on first use, while the block
+    runs; raise Busy at once, without waiting, when another holder has it.
+    The lock is per open file description, so a second open of the same
+    file in one process is another holder."""
+    with _reporting("lock_dir"):
+        dir.mkdir(parents=True, exist_ok=True)
+        fd = os.open(dir / "lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Busy() from None
+        except OSError as error:
+            raise IOFailure("lock_dir", error, committed=False) from error
+        yield
+    finally:
+        os.close(fd)

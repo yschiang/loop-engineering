@@ -4,6 +4,8 @@ or a worker."""
 
 from __future__ import annotations
 
+import re
+import subprocess
 from dataclasses import dataclass
 from typing import Literal
 
@@ -21,6 +23,46 @@ class Completed:
 
 
 def run(argv: list[str], timeout_s: float) -> Completed:
-    """Never raises. No program is started: every argv is `missing`, the
-    answer for a tool that is not there, which no caller takes as output."""
-    return Completed(None, "", "", "missing")
+    """Run `argv`, found on PATH, with no input, until it ends or
+    `timeout_s` passes; then it is killed. Never raises: a program that
+    cannot be started is `missing`, and output that is not UTF-8 is read
+    with replacement characters."""
+    try:
+        done = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired as error:
+        return Completed(None, _text(error.stdout), _text(error.stderr), "timeout")
+    except OSError:
+        return Completed(None, "", "", "missing")
+    return Completed(done.returncode, done.stdout, done.stderr, "ok")
+
+
+def _text(output: str | bytes | None) -> str:
+    """What a stopped program wrote; TimeoutExpired keeps it as bytes."""
+    if isinstance(output, bytes):
+        return output.decode(errors="replace")
+    return output or ""
+
+
+def failure(done: Completed) -> str | None:
+    """Why `done` has no output to read: `missing`, `timeout` or
+    `exit:<n>`; None when the program ran and exited 0."""
+    if done.status != "ok":
+        return done.status
+    return None if done.code == 0 else f"exit:{done.code}"
+
+
+VERSION = re.compile(r"\d+(?:\.\d+)+")
+
+
+def version(text: str) -> str | None:
+    """The version in what a program prints, the first dotted number:
+    `1.4.218`, `2.1.288 (Claude Code)`, `codex-cli 0.157.0` (DD-9)."""
+    found = VERSION.search(text)
+    return found[0] if found else None

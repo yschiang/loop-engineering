@@ -45,10 +45,15 @@ def _index(repo: str, role: str) -> Path:
     return role_dir(repo, role) / "receipts"
 
 
+def encode(receipt: dict[str, Any]) -> bytes:
+    """The bytes a receipt is stored as, so its ref is their sha256."""
+    text = json.dumps(receipt, sort_keys=True, indent=2, ensure_ascii=False)
+    return (text + "\n").encode()
+
+
 def write(repo: str, role: str, receipt: dict[str, Any]) -> str:
     """Store `receipt` and make it the latest of `role`; returns its ref."""
-    text = json.dumps(receipt, sort_keys=True, indent=2, ensure_ascii=False)
-    ref = store.put_object((text + "\n").encode())
+    ref = store.put_object(encode(receipt))
     record = {"receipt": ref, "verdict": receipt.get("verdict"), "at": clock.now()}
     store.append_record(_index(repo, role), record)
     return ref

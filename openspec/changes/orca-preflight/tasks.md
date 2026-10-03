@@ -161,7 +161,7 @@ Effort 的依據（D69）：
 
 ## 2. Receipt 與不需派 worker 的判定
 
-- [ ] 2.1 repo 層級的 receipt 與探測紀錄、verdict 與 exit、profile 與環境的判定、未選用接入、`--out`；驗證：`uv run pytest tests/test_preflight_static.py tests/test_receipts.py`
+- [x] 2.1 repo 層級的 receipt 與探測紀錄、verdict 與 exit、profile 與環境的判定、未選用接入、`--out`；驗證：`uv run pytest tests/test_preflight_static.py tests/test_receipts.py`
 
 **模式與 effort**：預設模式；xhigh／xhigh。
 

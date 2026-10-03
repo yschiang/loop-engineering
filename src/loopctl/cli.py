@@ -340,8 +340,12 @@ def unsupported(args: argparse.Namespace) -> tuple[int, Envelope]:
 
 
 def probe(args: argparse.Namespace) -> tuple[int, Envelope]:
-    """`preflight`: probe the profile of `--role` for the run (DD-3)."""
-    return preflight.run(_key(args), args.role, args.out)
+    """`preflight`: probe the profile of `--role` for the run (DD-3); one
+    preflight of a role at a time."""
+    try:
+        return preflight.run(_key(args), args.role, args.out)
+    except store.Busy:
+        return refusal(1, "preflight_running")
 
 
 HANDLERS: dict[str, Handler] = {
