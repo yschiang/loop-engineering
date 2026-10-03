@@ -1,6 +1,6 @@
 # Proposal：loopctl preflight：確認 Orca 的 Claude、Codex worker 能安全派工（orca-preflight）
 
-> 草稿（2026-10-03）。由 Feature 2 切出（D80）；範圍照 roadmap 的 Feature 2a 列。
+> 由 Feature 2 切出（D80）；範圍照 roadmap 的 Feature 2a 列。Project Lead 2026-10-03 同意範圍與預設（「照這份」）。
 
 ## Why
 
@@ -43,14 +43,21 @@ Feature 2 要經 Orca 派 Implementer，但派工前必須先知道派出去的 
 
 ### Modified Capabilities
 
-- `delivery-gates`：ADDED GAT-05（只有 R1 的部分：Reviewer 的 model 讀回、隔離負例；G2 判定在 Feature 4）、GAT-08（能力證據矩陣）。
+- `delivery-gates`：ADDED GAT-05（只有 Reviewer profile 的部分：model 讀回、不同模型、隔離負例；G2 判定在 Feature 4）、GAT-08（能力證據矩陣；真實驗收的 finding 迴圈部分在後面的 Feature）。
 - `durable-delivery`：MODIFIED DUR-02（worker 只能寫授權範圍、不能呼叫狀態寫入命令，以真實負例驗證，未驗證的 profile 不可用）；ADDED DUR-09（profile、preflight 與未選用接入）。
 
-AC：D18、D19、D22、D23、G11、G12、G19。都只成立 R1 的部分：
-- D18、D21 的每次派工核對在 Feature 2；
-- G11、G12 的 G2 判定在 Feature 4；
-- G19、D22 的 `real-E2E` 欄由 Feature 2～4 與 R3 補上；
-- D23 的 OpenCode-only 變體在 M2。
+AC（10 條）：D18、D19、D22、D23、D26、D27、D28、G19、G23、G24。其中 D26、D27、D28、G23、G24 是新 ID，依據見下一節。D18、D19、D22、D23、G19 都只成立 R1 與矩陣的部分：每次派工的核對在 Feature 2，`real-E2E` 欄由 Feature 2～4 與 R3 補上，D23 的 OpenCode-only 變體在 M2。
+
+## 和 roadmap 不同的地方
+
+依 Feature 1 的做法（原 AC 的觸發情境在本 Feature 不存在時，成立的部分改用新 ID，原 ID 不改寫、不重用）：
+
+| 原 AC | 觸發情境 | 首先驗證 | 本 Feature 成立的部分 |
+| --- | --- | --- | --- |
+| AC-G11 有效獨立 review | 派 Reviewer 做 G2 | Feature 4 | 兩個角色同一 model 時 Reviewer profile 不可用：新增 AC-G23 |
+| AC-G12 局部 review 或隔離無法證明 | 判定 G2 | Feature 4 | Reviewer 的隔離負例：新增 AC-G24 |
+
+另外三個新 ID 來自 requirement 本文與已確認的範圍：AC-D26（沒有適用的 R1 就不派工，D76(5)、D81）、AC-D27（worker 的權限負例，DUR-02）、AC-D28（worker 載入的設定與憑證，DUR-09 與待決 2）。
 
 ## 不做
 
@@ -64,14 +71,14 @@ AC：D18、D19、D22、D23、G11、G12、G19。都只成立 R1 的部分：
 
 | # | 項目 | 是否阻擋 Design | 負責 |
 | --- | --- | --- | --- |
-| 1 | 權限設定怎麼帶到 worker。預設每次自己開 terminal，帶 CLI 自己的 `--settings`、`--session-id` 或 sandbox 參數，不改使用者的 Orca 全域設定；代價是 Orca 不能幫忙停 worker，要由 loopctl 關掉 terminal 作為停止證據。只有 live probe 證明這條走不通時，才回來問要不要改全域設定 | 否（design 依此做；若要改全域設定則回到 Project Lead） | Engineer；改全域設定由 Project Lead 決定 |
+| 1 | 權限設定怎麼帶到 worker。預設每次自己開 terminal，帶 CLI 自己的 `--settings`、`--session-id` 或 sandbox 參數，不改使用者的 Orca 全域設定；代價是 Orca 不能幫忙停 worker，要由 loopctl 關掉 terminal 作為停止證據。只有 live probe 證明這條走不通時，才回來問要不要改全域設定。**照預設（2026-10-03）** | 否（design 依此做；若要改全域設定則回到 Project Lead） | Engineer；改全域設定由 Project Lead 決定 |
 | 2 | worker 繼承的使用者設定。**已定（2026-10-03）**：跟 Feature 1 效果一樣。保留本機 gateway、superpowers 與 Orca 的 hook；關掉 ponytail、ralph-wiggum，以及 caveman 與 Herdr 的 hook。receipt 記下實際載入的 gateway、plugin 與 hook | 否 | Project Lead（回答「跟 Feature 1 效果一樣」） |
 | 3 | R1 何時重跑。**已定（2026-10-03）**：Orca 或 agent CLI（Claude Code、Codex CLI）的版本和 receipt 不同就重跑；重跑不需要人工決策，沒過才停下交人。記為 D81(2)，補充 D76(5) | 否 | Project Lead（回答「Orca 或 agent CLI 換版都重跑」） |
 | 4 | D38 的讀法。**已定（2026-10-03，D81）**：部署層級。每個部署在 profiles 選接法；M1 選 Orca＋Claude Code＋Codex。DUR-09 照此寫，Orca 專有欄位不進共用契約 | 否 | Project Lead（回答「A：部署層級」） |
-| 5 | effort 的判定：讀回的 effort 與要求不符、或讀不到，是否都算 `unverified`（D76(2) 要求 Reviewer 的 effort 由 native 紀錄讀回；兩種 runtime 都讀得到） | 否 | spec，Project Lead 同意 |
-| 6 | 探測 worker 在哪裡跑：預設由人一次性在 Orca 以 git repo 註冊 loop-engineering，並建立探測用的工作區；preflight 只核對它們存在與位置 | 否 | Project Lead（環境設定） |
+| 5 | effort 的判定：讀回的 effort 與要求不符或讀不到，都算 `unverified`（D76(2) 要求 Reviewer 的 effort 由 native 紀錄讀回；兩種 runtime 都讀得到）。**照預設（2026-10-03）** | 否 | spec，Project Lead 同意 |
+| 6 | 探測 worker 在哪裡跑：預設由人一次性在 Orca 以 git repo 註冊 loop-engineering，並建立探測用的工作區；preflight 只核對它們存在與位置。**照預設（2026-10-03）** | 否 | Project Lead（環境設定） |
 | 7 | Reviewer 的放置要讓它改不到作者的 branch（DUR-02 的獨立 clone）。R1 依此設計負例 | 否 | Engineer（design） |
 | 8 | spec-to-plan 的研究要在 Orca 實際派探測 worker（scratch Run），會改變 Orca 狀態。開始前要有授權 | 否（spec-to-plan 前） | Project Lead |
-| 9 | 本 Feature 自己的 task 照 Feature 1 用 `claude -p` 派；Orca 在本 Feature 完成前還沒驗證過 | 否 | Project Lead（預設照 Feature 1） |
+| 9 | 本 Feature 自己的 task 照 Feature 1 用 `claude -p` 派；Orca 在本 Feature 完成前還沒驗證過。**照預設（2026-10-03）** | 否 | Project Lead（預設照 Feature 1） |
 | — | 依賴：Feature 1 已 merge；base 是 `main@458ab77`。D80 的 PR #45 merge 前，研究文件以本 branch 的副本為準 | 否 | — |
 | — | Orca 1.4.218；Claude Code、Codex CLI 會自己更新（待決 3） | 否 | Engineer |
