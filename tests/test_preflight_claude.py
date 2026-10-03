@@ -1265,6 +1265,10 @@ def test_credentials_are_redacted_everywhere(
 # A kept token whose value has none of the shapes DD-6's patterns know.
 OPAQUE = "opaque-credential-0123"
 
+# A kept secret-named variable whose value is shorter than SECRET_MIN_CHARS
+# and has none of those shapes either.
+SHORT = "4321x"
+
 
 def test_kept_secret_values_are_redacted_wherever_they_appear(
     cli: Cli,
@@ -1276,15 +1280,17 @@ def test_kept_secret_values_are_redacted_wherever_they_appear(
     home: Path,
     tmp_path: Path,
 ) -> None:
-    kept = "ENABLE_TOOL_SEARCH, ANTHROPIC_AUTH_TOKEN]"
+    kept = "ENABLE_TOOL_SEARCH, ANTHROPIC_AUTH_TOKEN, CUSTOM_AUTH_PIN]"
     run = approved_run(
         REPO, FEATURE, policy_text().replace("ENABLE_TOOL_SEARCH]", kept)
     )
     user = scenarios.user_settings()
     user["env"]["ANTHROPIC_AUTH_TOKEN"] = OPAQUE
+    user["env"]["CUSTOM_AUTH_PIN"] = SHORT
     orca_env.claude_settings.write_text(json.dumps(user, indent=2) + "\n")
-    # Every tool result echoes the variable, as `env` in a shell would.
-    transcript = {"credentials": f"ANTHROPIC_AUTH_TOKEN={OPAQUE}"}
+    # Every tool result echoes the variables, as `env` in a shell would.
+    echoed = f"CUSTOM_AUTH_PIN={SHORT}"
+    transcript = {"credentials": f"ANTHROPIC_AUTH_TOKEN={OPAQUE} {echoed}"}
     fakes(probing(probe, orca_env, transcript=transcript))
     out = tmp_path / "out" / "receipt.json"
 
@@ -1307,6 +1313,11 @@ def test_kept_secret_values_are_redacted_wherever_they_appear(
         OPAQUE
     )
     assert settings.stat().st_mode & 0o777 == 0o600
+    # The short value is masked in its env mapping alone: in any other text
+    # it is no usable credential, and masking it there would corrupt text.
+    pin = dig(latest(), "launch", "settings", "env", "CUSTOM_AUTH_PIN")
+    assert pin == "<redacted>"
+    assert echoed in written["receipt"]
 
 
 # The fields DD-6 lets an excerpt of a Claude record keep, by where they
