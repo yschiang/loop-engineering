@@ -305,8 +305,9 @@ class Fakes:
     monkeypatch: pytest.MonkeyPatch
 
     def __call__(self, scenario: dict[str, list[dict[str, Any]]]) -> None:
-        """Answer the calls of each tool from `scenario` from now on, with
-        nothing captured, used up or set yet; the log is kept."""
+        """Answer the calls of each tool from `scenario` from now on, in its
+        order from the first entry, with nothing captured or set yet; the
+        log is kept."""
         self.scenario.write_text(json.dumps(scenario))
         Path(f"{self.log}.state").unlink(missing_ok=True)
 

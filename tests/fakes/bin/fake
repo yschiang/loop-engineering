@@ -4,16 +4,22 @@
 The tool is the basename of argv[0]. FAKE_SCENARIO names a JSON file
 {tool: [entry, ...]}; FAKE_LOG names the JSON-lines log of every call,
 {seq, tool, argv, captured, unexpected?, snapshot?}. Only the fakes read
-these two variables; loopctl never does. What the calls so far captured,
-used up and set is kept beside the log, in FAKE_LOG.state.
+these two variables; loopctl never does. How far the calls so far got in
+the entries of each tool, what they captured and what they set is kept
+beside the log, in FAKE_LOG.state.
 
 An entry is {match, stdout?, stderr?, exit?, effects?, repeat?, when?}:
 
 - match: the whole argv, one pattern per argument: a string equals it;
   {"capture": name} takes any argument and keeps it as {name}.
-- The first entry of the tool, in scenario order, that is not used up,
-  whose `when` holds and whose match holds answers the call. It is used up
-  unless it has `repeat: true`.
+- The entries of a tool are expected in scenario order. A call is answered
+  by the next entry whose `when` holds and whose match holds, and the next
+  call starts from the entry after it. A `repeat: true` entry answers any
+  number of calls in a row, the next call starts from it again, and it may
+  be passed over for a later entry; once a later entry answered, it answers
+  no more. An entry without `repeat` answers exactly one call, and no later
+  entry answers before it: a call that would skip it is unexpected and
+  leaves the order where it was.
 - when: {key: value} the state must hold; a key never set is null.
 - effects, in order: {"write": {"path", "text", "append"?}} writes a file;
   {"state": {key: value}} sets the state; {"snapshot": dir} logs the files
@@ -92,17 +98,18 @@ def answer(
     tool: str, argv: list[str], entries: list[dict[str, Any]], memory: dict[str, Any]
 ) -> tuple[dict[str, Any] | None, dict[str, str]]:
     """The entry that answers this call and what it captured."""
-    for index, entry in enumerate(entries):
-        if f"{tool}:{index}" in memory["used"]:
-            continue
+    start = memory["next"].get(tool, 0)
+    for index in range(start, len(entries)):
+        entry = entries[index]
         when = entry.get("when") or {}
-        if any(memory["state"].get(key) != value for key, value in when.items()):
-            continue
-        taken = capture(entry["match"], argv)
+        held = all(memory["state"].get(key) == value for key, value in when.items())
+        taken = capture(entry["match"], argv) if held else None
         if taken is not None:
-            if not entry.get("repeat"):
-                memory["used"].append(f"{tool}:{index}")
+            memory["next"][tool] = index if entry.get("repeat") else index + 1
             return entry, taken
+        if not entry.get("repeat"):
+            # Still expected: no later entry may answer before it.
+            break
     if (
         argv == ["--version"]
         and tool in VERSIONS
@@ -144,7 +151,7 @@ def main() -> int:
         # One call at a time: the log, its seq and the state stay in order.
         fcntl.flock(lock, fcntl.LOCK_EX)
         entries = (load(os.environ.get("FAKE_SCENARIO")) or {}).get(tool, [])
-        memory = load(state) or {"used": [], "captured": {}, "state": {}}
+        memory = load(state) or {"next": {}, "captured": {}, "state": {}}
         found, taken = answer(tool, argv, entries, memory)
         memory["captured"].update(taken)
         seq = 1 + (len(log.read_text().splitlines()) if log.exists() else 0)

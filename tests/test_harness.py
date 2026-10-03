@@ -77,6 +77,44 @@ def test_unexpected_call_fails_the_test_at_teardown(inner: Inner) -> None:
     assert '["worker-start"]' in output
 
 
+def test_calls_follow_the_scenario_order(inner: Inner) -> None:
+    result = inner(
+        """
+        import subprocess
+
+        SCENARIO = {
+            "orca": [
+                {"match": ["terminal", "create"], "stdout": "created\\n"},
+                {"match": ["orchestration", "worker-start"], "stdout": "started\\n"},
+            ]
+        }
+
+        def run(*argv):
+            return subprocess.run(argv, capture_output=True, text=True)
+
+        def test_in_order(fakes):
+            fakes(SCENARIO)
+
+            assert run("orca", "terminal", "create").stdout == "created\\n"
+            assert run("orca", "orchestration", "worker-start").stdout == (
+                "started\\n"
+            )
+
+        def test_out_of_order(fakes):
+            fakes(SCENARIO)
+
+            assert run("orca", "orchestration", "worker-start").returncode == 97
+        """
+    )
+
+    outcomes = result.parseoutcomes()
+    assert (outcomes.get("passed"), outcomes.get("errors")) == (2, 1)
+    result.stdout.fnmatch_lines(["*ERROR at teardown of test_out_of_order*"])
+    output = result.stdout.str()
+    assert "unexpected" in output
+    assert '["orchestration", "worker-start"]' in output
+
+
 def test_real_tools_are_never_reached(inner: Inner) -> None:
     result = inner(
         """

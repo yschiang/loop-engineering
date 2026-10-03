@@ -144,6 +144,7 @@ Effort 的依據（D69）：
 | `test_kill_parent_interrupts_the_caller` | 以 `cli_proc` 執行一個會呼叫 fake 的子程序（prelude 以 `subprocess.run(["orca", "x"])` 呼叫），scenario 對 `x` 設 `kill_parent`：子程序的 returncode 是 `-9` | 先不實作 `kill_parent`：returncode 的比較不成立 | 通過 |
 | `test_clock_sleep_advances_fake_time` | `clock` fixture 下 `clock.sleep(5)`，之後 `clock.now()` 比之前多 5 秒；整個測試在 1 秒內結束 | `clock.sleep` 先不推進：時間差的比較不成立 | 通過 |
 | `test_probe_repo_offers_linked_and_independent_workspaces` | `probe_repo(reviewer="linked")` 時，兩個工作區的 `git rev-parse --path-format=absolute --git-common-dir` 相同；`reviewer="clone"` 時不同；兩者的 `origin` 都是同一個 bare repo | fixture 先都用 linked：`clone` 那一列的比較不成立 | 通過 |
+| `test_calls_follow_the_scenario_order` | 逐 task 審查 T1.1-02 的回歸測試。以 `pytester` 子程序（外層 PATH 為 `minbin/` 與 `sentinel/`）執行兩個內層測試，scenario 都是 `orca: [terminal create, orchestration worker-start]`：依序呼叫兩者都回各自的 stdout；先呼叫 `worker-start` 時 fake exit 97，該內層測試在 teardown 失敗，訊息含 `unexpected` 與該 argv。外層斷言內層為 2 passed、1 error，error 是 `test_out_of_order` 的 teardown | fake 在所有未用過的項目中找第一個相符的，`worker-start` 越過 `terminal create` 而回 exit 0：內層結果的斷言（應為 2 passed、1 error）不成立 | 通過 |
 
 `tests/test_policy.py`：
 
