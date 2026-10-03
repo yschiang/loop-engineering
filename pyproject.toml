@@ -7,7 +7,9 @@ name = "loopctl"
 version = "0.1.0"
 description = "Thin delivery controller: durable run state and human decisions"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+    "pyyaml",
+]
 
 [project.scripts]
 loopctl = "loopctl.cli:main"
@@ -16,8 +18,8 @@ loopctl = "loopctl.cli:main"
 dev = [
     "mypy",
     "pytest",
-    "pyyaml",
     "ruff",
+    "types-pyyaml",
 ]
 
 [tool.ruff]
