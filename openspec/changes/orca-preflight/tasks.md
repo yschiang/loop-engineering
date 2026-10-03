@@ -271,7 +271,7 @@ Effort 的依據（D69）：
 | `test_task_not_reported_fails_worker_done` | worker 沒有送 `worker_done`（`worker-show` 的 status 仍是 `dispatched`）：`task.worker_done` 不成立；terminal 仍被關閉並確認 | 先以 transcript 的完成當作 `worker_done`：item 的比較不成立 | 通過 |
 | `test_stop_must_be_confirmed_by_process_info` | `terminal close` 之後 fake `ps` 仍列出 marker：呼叫順序是 `terminal close`，然後 10 組「`clock.sleep(0.5)`、`ps`」；`stop.confirmed` 不成立；`probes/` 沒有 `closed`，最後一筆是 `stop_unconfirmed`。另一列：第 3 次 `ps` 不再列出 → 只有 3 組，`stop.confirmed` 成立 | 先以 `terminal close` 的 `ptyKilled` 為準：item 的比較不成立 | 通過 |
 | `test_probe_timeout_still_stops_the_worker` | `terminal wait` 都回 timeout，transcript 一直沒完成，政策的 `timeout_s` 為 60：假時間超過 60 秒後 `reasons` 含 `probe_timeout`；`terminal close` 仍被呼叫，`stop.confirmed` 成立 | 突變：逾時時略過第 11、12 步直接寫 receipt，`terminal close` 的呼叫斷言不成立（前一列已要求逾時後停止，所以這裡不是新行為；本列另外斷言 `reasons` 含 `probe_timeout`） | 通過 |
-| `test_wait_failure_stops_waiting_at_once` | `terminal wait` 回非 timeout 的錯誤（terminal 已結束）：只呼叫一次 `terminal wait`，`reasons` 含 `wait_failed:<reason>`；第 11、12 步照樣執行，`stop.confirmed` 成立 | 先把錯誤當 timeout 繼續等：`terminal wait` 的呼叫次數斷言不成立 | 通過 |
+| `test_wait_failure_stops_waiting_at_once` | transcript 始終沒有完成的 turn（只有 prompt），`terminal wait` 以 `repeat: true` 一直回非 timeout 的錯誤（terminal 已結束），政策的 `timeout_s` 為 60：只呼叫一次 `terminal wait`，`reasons` 含 `wait_failed:<reason>`；第 11、12 步照樣執行，`stop.confirmed` 成立 | 先把錯誤當 timeout 繼續等：會一直等到假時間超過 60 秒，`terminal wait` 被呼叫多次，呼叫次數的斷言不成立 | 通過 |
 | `test_worker_start_failure_reports_the_stage` | `worker-start` exit 1，JSON 的 `failedStage: "agent_readiness"`：`reasons` 含 `task_not_started:agent_readiness`；terminal 仍被關閉 | 先忽略 exit：reasons 的比較不成立 | 通過 |
 | `test_probe_is_not_verified_until_judgement_is_complete` | 全部成立的 scenario 下，verdict 是 unverified，`reasons == ["judgement_incomplete"]`。3.2 會刪掉它（見 3.2） | 突變：拿掉 `judgement_incomplete`，verdict 的比較不成立 | 通過 |
 
@@ -354,7 +354,7 @@ Effort 的依據（D69）：
 | --- | --- | --- | --- |
 | `test_codex_launch_avoids_interactive_prompts` | `terminal create` 的命令含 `codex -m gpt-6-astra`、`-c model_reasoning_effort="xhigh"`、精確字串 `-c check_for_update_on_startup=false` 與 `-c features.hooks=false`、`-s read-only`、`-a never`、`--no-daemon`、`PREFLIGHT_MARKER` 與 PATH 前綴 | 3.2 時 Reviewer 以 `runtime_unsupported:codex` 結束，不呼叫 `terminal create`：命令文字的斷言不成立 | 通過 |
 | `test_codex_readback_comes_from_turn_context` | rollout 照 research 樣本的順序（`turn_context` 在含 marker 的 user 訊息之前），以 `turn_id` 配對：`gpt-6-astra`、`xhigh`、`read-only`、`never`，cwd 是 Reviewer 工作區 → 讀回與 `permission.mode` 各項成立。參數化：model、effort、cwd 不符；同一 `turn_id` 有 0 筆或 2 筆 `turn_context`（`turn_context_not_found`、`turn_context_ambiguous`）；另一個 turn 的 `turn_context` 寫在 marker 之後、值不同（仍用同 turn 的那筆）；零份、兩份含 marker 的 rollout。對應的 item 照列出的原因不成立 | 還沒有 Codex 讀回時，這些 item 不存在：比較不成立 | 通過 |
-| `test_codex_calls_are_parsed_from_the_js_input` | `codex_probe` 依樣本產生三種 `input`：雙引號的 `cmd`、單引號的 `cmd`、以字串串接組出的命令；output 是兩個 `input_text`，第二個是 JSON，Orca 的錯誤 JSON 前面多一行 electron 訊息。前兩種對應到各自的步驟，exit 與輸出讀對；第三種不對應任何步驟 | 先以 `json.loads(input)` 讀 `cmd`：前兩列的比較不成立 | 通過 |
+| `test_codex_calls_are_parsed_from_the_js_input` | `codex_probe` 依樣本產生三種 `input`：雙引號的 `cmd`、單引號的 `cmd`、以字串串接組出的命令；output 是兩個 `input_text`，第二個是 JSON，Orca 的錯誤 JSON 前面多一行 electron 訊息。前兩種對應到各自的步驟，exit 與輸出讀對；第三種不對應任何步驟 | 前一列 Green 時，`read_codex` 已讀回 `turn_context`，`calls` 仍是空清單（還沒辨識工具呼叫），preflight 正常返回：前兩列「對應到各自的步驟」的斷言不成立 | 通過 |
 | `test_codex_rollout_is_found_across_date_boundaries` | 探測開始於本機 00:30（UTC 前一天 16:30），rollout 寫在本機日期的目錄：找得到，`native_not_found` 不出現 | 先只看 UTC 日期：item 的比較不成立 | 通過 |
 | `test_codex_denial_must_be_tied_to_the_call` | 依 DD-6 的 Codex 判準參數化：exit 1 且輸出含 `Operation not permitted`、資源未變 → 成立；exit 1 且輸出是樣本第 30 行的 `runtime_access_denied` JSON（`systemCode: EPERM`）→ 成立；exit 0 但輸出含這兩種標記之一 → `executed`；exit 1 但輸出是 `error connecting to api.github.com` → `executed`；標記只出現在另一個呼叫的輸出 → 該項 `executed` | 先只搜尋整份 rollout 的 `Operation not permitted`：`runtime_access_denied` 那一列與最後一列的比較不成立 | 通過 |
 | `test_reviewer_cannot_touch_the_implementer_workspace` | 第 8、9 步被拒，Implementer 工作區沒有新檔案，它的 branch ref 前後相同 → `negative.implementer_file`、`negative.implementer_ref` 成立。scenario 的 effect 真的寫入檔案或移動 ref → 該項 `resource_changed` | 先不檢查資源：item 的比較不成立 | 通過 |
@@ -371,7 +371,7 @@ Effort 的依據（D69）：
 **交付**：
 
 - `receipts.applicable(...)`（DD-9）。
-- `preflight.current_versions(role)`。
+- `preflight.current_versions(runtime)`（DD-1、DD-9）。
 - `next.effective(state_next, policy_status, impl)`。
 - `cli.status`、`cli.next_step` 依 DD-9 重新判定：
   - envelope 的 `next` 是 `effective` 的結果；
