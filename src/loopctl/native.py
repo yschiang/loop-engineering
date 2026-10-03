@@ -394,7 +394,10 @@ def judge_claude_settings(
 
     An excluded skill or hook seen fails the item as excluded_loaded; else
     a hook record that cannot be judged by a command (without_command)
-    fails it as hook_without_command."""
+    fails it as hook_without_command. Such a record is shown by its type
+    and the event it names (hook_event), not by its hookEvent as read,
+    which can be any JSON value, even one nested deeper than the receipt's
+    redaction can walk."""
     required = {"excluded_plugins": excluded, "hook_commands_hold_one_of": kept}
     names = skill_names(records)
     if names is None:
@@ -407,7 +410,10 @@ def judge_claude_settings(
         if isinstance(command, str) and not any(k in command for k in kept)
     ]
     unjudged = [
-        {name: record["attachment"].get(name) for name in ("type", "hookEvent")}
+        {
+            "type": record["attachment"].get("type"),
+            "hookEvent": hook_event(record["attachment"]),
+        }
         for record in without_command(hooks(records))
     ]
     actual = {

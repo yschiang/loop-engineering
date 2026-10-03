@@ -1165,6 +1165,14 @@ def test_hook_without_command_fails_the_settings_item(
     assert r.get("result", "verdict") == verdict
 
 
+def nested(depth: int) -> list[Any]:
+    """A list `depth` lists deep, built without recursion."""
+    value: list[Any] = []
+    for _ in range(depth - 1):
+        value = [value]
+    return value
+
+
 @pytest.mark.parametrize(
     "events",
     [
@@ -1179,6 +1187,11 @@ def test_hook_without_command_fails_the_settings_item(
         # The hook runs name their commands, but no event as text: the
         # SessionStart context matches none of them.
         pytest.param({"hook_success": {}}, id="hook-run-events-are-objects"),
+        # Deeper than Python's recursion limit, yet the JSON decoder reads it.
+        pytest.param(
+            {"hook_additional_context": nested(2000)},
+            id="context-event-is-nested-deeply",
+        ),
     ],
 )
 def test_hook_event_not_given_as_text_vouches_for_no_context(
