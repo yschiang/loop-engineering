@@ -111,3 +111,12 @@ AC-D01 是 Feature 1 已驗收的 AC；MODIFIED DUR-01 改了它的 THEN（`stat
 | 9 | 本 Feature 自己的 task 照 Feature 1 用 `claude -p` 派；Orca 在本 Feature 完成前還沒驗證過。**照預設（2026-10-03）** | 否 | Project Lead（預設照 Feature 1） |
 | — | 依賴：Feature 1 已 merge；base 是 `main@458ab77`。D80 的 PR #45 merge 前，研究文件以本 branch 的副本為準 | 否 | — |
 | — | Orca 1.4.218；Claude Code、Codex CLI 會自己更新（待決 3） | 否 | Engineer |
+
+## Spec 確認
+
+- 確認人：Project Lead（使用者本人，同時是 Engineer 與驗收人，D79(5)、D80）
+- 時間：2026-10-03
+- 原話：「確認」（回答「確認 2a 的 spec（commit 07a4861）嗎？」）。之前對 `79bdb45` 的確認，因 spec 審查要改而沒有記錄；改完後重新確認。
+- 確認的版本：commit `07a4861`（proposal、四份 spec delta 與 spec 審查紀錄）
+- spec 審查：Claude Fable 5.1 xhigh，同一 session 四輪到 clean（[reviews/](reviews/)）
+- 這是 spec 確認，不是開工確認；開工確認在 spec-to-plan 寫完 design 與 tasks 後另外進行（D11）。
