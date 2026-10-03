@@ -102,7 +102,7 @@ AC-D01 是 Feature 1 已驗收的 AC；MODIFIED DUR-01 改了它的 THEN（`stat
 | --- | --- | --- | --- |
 | 1 | 權限設定怎麼帶到 worker。預設每次自己開 terminal，帶 CLI 自己的 `--settings`、`--session-id` 或 sandbox 參數，不改使用者的 Orca 全域設定；代價是 Orca 不能幫忙停 worker，停止要以 process-info 確認探測 agent 的程序已不存在。只有 live probe 證明這條走不通時，才回來問要不要改全域設定。**照預設（2026-10-03）** | 否（design 依此做；若要改全域設定則回到 Project Lead） | Engineer；改全域設定由 Project Lead 決定 |
 | 2 | worker 繼承的使用者設定。**已定（2026-10-03）**：跟 Feature 1 效果一樣。保留本機 gateway、superpowers 與 Orca 的 hook；關掉 ponytail、ralph-wiggum，以及 caveman 與 Herdr 的 hook。receipt 記下實際載入的 gateway、plugin 與 hook | 否 | Project Lead（回答「跟 Feature 1 效果一樣」） |
-| 3 | R1 何時重跑。**已定（2026-10-03）**：Orca 或 agent CLI（Claude Code、Codex CLI）的版本和 receipt 不同就重跑；重跑不需要人工決策，沒過才停下交人。記為 D81(2)，補充 D76(5) | 否 | Project Lead（回答「Orca 或 agent CLI 換版都重跑」） |
+| 3 | R1 何時重跑。**已定（2026-10-03）**：見 D81(2) | 否 | Project Lead（回答「Orca 或 agent CLI 換版都重跑」） |
 | 4 | D38 的讀法。**已定（2026-10-03，D81）**：部署層級。每個部署在 profiles 選接法；M1 選 Orca＋Claude Code＋Codex。DUR-09 照此寫，Orca 專有欄位不進共用契約 | 否 | Project Lead（回答「A：部署層級」） |
 | 5 | effort 的判定：讀回的 effort 與要求不符或讀不到，都算 `unverified`（D76(2) 要求 Reviewer 的 effort 由 native 紀錄讀回；兩種 runtime 都讀得到）。**照預設（2026-10-03）** | 否 | spec，Project Lead 同意 |
 | 6 | 探測 worker 在哪裡跑：預設由人一次性在 Orca 以 git repo 註冊 loop-engineering，並建立探測用的工作區；preflight 只核對它們存在與位置。**照預設（2026-10-03）** | 否 | Project Lead（環境設定） |

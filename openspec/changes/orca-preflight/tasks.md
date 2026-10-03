@@ -7,7 +7,7 @@
 - Green 的預期結果；
 - 執行指令（D68）。
 
-介面與不變式見 [design.md](design.md)，以下用 D1～D12 引用它的章節。
+介面與不變式見 [design.md](design.md)，以下用 DD-1～DD-12 引用它的章節；`D<n>` 是 `docs/decisions.md` 的專案決策（D83）。
 
 ## 共同規則
 
@@ -27,7 +27,7 @@
 - **測試只斷言長期成立的公開行為**：
   - 不斷言 `not_implemented` 這類暫時的值；
   - 後面 task 要改前面的測試或 scenario 時，在「擁有路徑」寫明。
-- **fake 與時間**（D10）：
+- **fake 與時間**（DD-10）：
   - 所有測試都經 PATH 上的 fake `orca`、`claude`、`codex`、`ps`、`gh`、`herdr`、`opencode` 執行；
   - 沒有預期到的呼叫，在 teardown 讓測試失敗；
   - `HOME`、`CODEX_HOME` 指到 tmp；git 用真的，`origin` 是 tmp 裡的 bare repo；
@@ -57,7 +57,7 @@
 | `tests/conftest.py` | 1.1 加 autouse 的工具隔離，以及 `fakes`、`orca_env`、`clock`、`approved_run`、`probe_repo` | 只新增 fixture；不改既有 fixture 的行為。既有測試因工具隔離而可能呼叫的，只有 `--version` 的預設回應 |
 | `tests/fakes/`（`bin/fake`、`scenarios.py`） | 1.1 建立 → 2.1、3.1、3.2、4.1、6.1 只新增 scenario 產生器或參數 | 不改既有產生器在預設參數下的輸出 |
 | `src/loopctl/cli.py` | 1.1 加 parser 與 stub → 2.1 換成實作的 handler → 5.1 改 `status`、`next` | 只動自己的 handler；envelope 仍是 6 個鍵 |
-| `src/loopctl/preflight.py` | 1.1 建立 → 2.1 → 3.1 → 3.2 → 4.1 → 5.1（`current_versions`）→ 6.1 | 每個 task 只加自己的步驟，保持 D4 的順序 |
+| `src/loopctl/preflight.py` | 1.1 建立 → 2.1 → 3.1 → 3.2 → 4.1 → 5.1（`current_versions`）→ 6.1 | 每個 task 只加自己的步驟，保持 DD-4 的順序 |
 | `src/loopctl/store.py` | 1.1 加 `append_record`、`list_records`、`locked_dir` 的介面 → 2.1 實作 | 不改既有函式 |
 | `src/loopctl/receipts.py` | 1.1 介面 → 2.1 實作 `write`、`latest` → 5.1 實作 `applicable` | — |
 | `src/loopctl/native.py` | 1.1 介面 → 3.1（Claude 讀回）→ 3.2（負例與設定）→ 4.1（Codex） | — |
@@ -66,7 +66,7 @@
 | `tests/test_policy.py` | 1.1 建立 → 7.1 新增一個測試 | 不改既有測試 |
 | `tests/test_preflight_claude.py` | 3.1 建立 → 3.2 刪掉一個暫時的測試並新增 | 見 3.2 的「交付」 |
 | `workflow.yaml`、`tests/test_ci.py` | 7.1 | — |
-| `tests/test_approval.py`、`tests/test_scope_policy.py` | 5.1 | 只改核准後 `next` 的斷言（D9），其他斷言不動 |
+| `tests/test_approval.py`、`tests/test_scope_policy.py` | 5.1 | 只改核准後 `next` 的斷言（DD-9），其他斷言不動 |
 
 ### 總覽
 
@@ -94,7 +94,7 @@ Effort 的依據（D69）：
 
 **交付**：
 
-- **fake 工具**（D10）：
+- **fake 工具**（DD-10）：
   - `tests/fakes/bin/fake`：argv 比對與擷取、代換、`write`／`state`／`snapshot`／`kill_parent` effect、呼叫紀錄、沒有 scenario 時的 `--version` 預設回應。
   - `tests/fakes/scenarios.py`：產生 scenario 的 helper。
 - **conftest**：
@@ -105,16 +105,16 @@ Effort 的依據（D69）：
   - `approved_run(repo, feature, policy_text)`：`init`、`claim`、登記 policy、人工 `policy_change` 核准；
   - `probe_repo`：tmp 裡的作者 repo、bare origin，以及兩個探測工作區，Reviewer 那個可選 linked worktree 或獨立 clone。
 - `src/loopctl/clock.py` 加 `sleep(seconds)`。
-- `pyproject.toml`、`uv.lock`：pyyaml 移到 `[project] dependencies`（D2）。
-- `src/loopctl/policy.py`：`load(path) -> Policy`，介面與錯誤照 D2。
+- `pyproject.toml`、`uv.lock`：pyyaml 移到 `[project] dependencies`（DD-2）。
+- `src/loopctl/policy.py`：`load(path) -> Policy`，介面與錯誤照 DD-2。
 - **新模組的介面與 stub**：
   - `store.append_record(dir, payload) -> int` 回 1，不寫檔；`list_records(dir) -> list` 回 `[]`；`locked_dir(dir)` 是不取鎖的 context manager。
   - `receipts.write(...) -> str` 回 `"sha256:" + "0"*64`；`latest(...)` 回 `None`；`applicable(...)` 回 `(False, ["not_run"])`。
   - `tools.run(argv, timeout_s) -> Completed(code, stdout, stderr, status)`，`status` 是 `ok`、`missing` 或 `timeout`；stub 一律回 `missing`。
-  - `orca.py`、`native.py`：D1 列出的函式，stub 回空值（`None`、`[]`、`{}`）。
+  - `orca.py`、`native.py`：DD-1 列出的函式，stub 回空值（`None`、`[]`、`{}`）。
 - **`preflight` 命令**：
   - `cli.py` 加 parser（`--repo`、`--feature`、`--role {implementer,reviewer}`、`--out`）與 handler；
-  - `preflight.py` 做 D4 的第 1、3 步：政策未核准就 `policy_not_approved`；其餘情況回 exit 3、`ok: false`、`blocked: {kind: "preflight_unverified", role, reasons: []}`。
+  - `preflight.py` 做 DD-4 的第 1、3 步：政策未核准就 `policy_not_approved`；其餘情況回 exit 3、`ok: false`、`blocked: {kind: "preflight_unverified", role, reasons: []}`。
 
 **擁有路徑**：上列各檔，`tests/test_harness.py`、`tests/test_policy.py`。
 
@@ -135,7 +135,7 @@ Effort 的依據（D69）：
 | --- | --- | --- | --- |
 | `test_fake_tool_replays_the_scenario_and_logs_argv` | scenario `{orca: [{match: ["--version"], stdout: "9.9.9\n"}]}` 下執行 `orca --version`：stdout 是 `9.9.9`、exit 0；`fakes.calls()` 恰好一筆 `{tool: "orca", argv: ["--version"]}` | fake 腳本先寫成回空字串：stdout 的比較不成立 | 通過 |
 | `test_unexpected_call_fails_the_test_at_teardown` | 以 `pytester` 執行一個呼叫 `orca worker-start` 的內層測試（沒有 scenario）：fake exit 97；內層測試在 teardown 失敗，訊息含 `unexpected` 與該 argv | teardown 先不檢查：內層結果的斷言（應為 1 個 error）不成立 | 通過 |
-| `test_real_tools_are_never_reached` | 不給 scenario，直接執行 `orca --version`、`claude --version`、`codex --version`：回 D10 的預設版本；`shutil.which("orca")` 指向 `fakebin/` | 先不建 autouse 隔離：`which` 的比較不成立 | 通過 |
+| `test_real_tools_are_never_reached` | 不給 scenario，直接執行 `orca --version`、`claude --version`、`codex --version`：回 DD-10 的預設版本；`shutil.which("orca")` 指向 `fakebin/` | 先不建 autouse 隔離：`which` 的比較不成立 | 通過 |
 | `test_without_removes_the_tool_from_path` | `fakes.without("claude")` 之後，`shutil.which("claude") is None`；`git` 與 `sh` 仍找得到 | 先只刪 fake 檔、不換 PATH：`which("claude")` 找到其他目錄的 claude | 通過 |
 | `test_capture_substitution_and_effects` | scenario 擷取第一次呼叫 argv 中 `--title` 的值，第二次呼叫的 stdout 與 `write` effect 的檔名都以它代換；`state` effect 讓後續 `ps` 的輸出改變；`snapshot` 把指定目錄的檔案清單記進 `FAKE_LOG` | 先不做代換：stdout 的比較不成立 | 通過 |
 | `test_kill_parent_interrupts_the_caller` | 以 `cli_proc` 執行一個會呼叫 fake 的子程序（prelude 以 `subprocess.run(["orca", "x"])` 呼叫），scenario 對 `x` 設 `kill_parent`：子程序的 returncode 是 `-9` | 先不實作 `kill_parent`：returncode 的比較不成立 | 通過 |
@@ -146,7 +146,7 @@ Effort 的依據（D69）：
 
 | 測試 | 斷言的行為 | Red 失敗在 | Green |
 | --- | --- | --- | --- |
-| `test_profiles_are_parsed_with_the_file_digest` | D2 範例檔：兩個 profile 的欄位逐一相等；`digest == "sha256:" + sha256(bytes)`；`timeout_s == 900`；`errors == []` | `load` 先回空的 `profiles`：欄位比較不成立 | 通過 |
+| `test_profiles_are_parsed_with_the_file_digest` | DD-2 範例檔：兩個 profile 的欄位逐一相等；`digest == "sha256:" + sha256(bytes)`；`timeout_s == 900`；`errors == []` | `load` 先回空的 `profiles`：欄位比較不成立 | 通過 |
 | `test_profile_missing_fields_is_invalid_not_an_error` | 拿掉 Reviewer 的 `model`：`load` 不拋例外；Reviewer 的 `invalid == ["model"]`，Implementer 的 `invalid == []`。另以 `runtime: opencode` 測：`invalid` 含 `runtime` | `invalid` 先永遠是空清單：比較不成立 | 通過 |
 | `test_malformed_policy_is_reported_not_raised` | 參數化：YAML 語法錯誤、頂層是 list、`profiles` 是字串、`timeout_s: -1`、檔案不存在。各自的 `errors` 是 `["yaml_error"]`、`["not_a_mapping"]`、`["profiles_not_a_mapping"]`、`["timeout_invalid"]`、`["unreadable"]`；`timeout_s == 900`；前四種的 `digest` 是 bytes 的 sha256，最後一種是 `None` | 先只處理正常檔案，錯誤情況回空的 `errors`：`errors` 的比較不成立 | 通過 |
 | `test_preflight_refuses_without_an_approved_policy` | 參數化四種：登記了但沒核准、核准後檔案被改、沒有登記、檔案讀不到。`preflight --role implementer` 都是 exit 1、`error == "policy_not_approved"`、`policy` 欄等於 `policy_view` 的狀態；`fakes.calls()` 是空的；`$LOOPCTL_HOME/repos` 下沒有 `receipts/` | handler 先一律回 exit 3：exit 的比較不成立 | 通過 |
@@ -160,18 +160,18 @@ Effort 的依據（D69）：
 
 **交付**：
 
-- `store.py`：實作 `append_record`（`O_CREAT|O_EXCL`、fsync、撞號換下一號）、`list_records`（略過不完整的紀錄並回報檔名）、`locked_dir`（`flock` 非阻塞，拿不到時丟 `Busy`）（D8）。
+- `store.py`：實作 `append_record`（`O_CREAT|O_EXCL`、fsync、撞號換下一號）、`list_records`（略過不完整的紀錄並回報檔名）、`locked_dir`（`flock` 非阻塞，拿不到時丟 `Busy`）（DD-8）。
 - `receipts.py`：
   - `write(repo, role, receipt) -> ref`：`put_object` 加索引紀錄；
   - `latest(repo, role) -> Receipt | None`：讀回時以 `get_object` 核對 digest，不符丟 `ReceiptCorrupt`。
-- `tools.py`：實作 `run`（D1）。
+- `tools.py`：實作 `run`（DD-1）。
 - `orca.py`：
   - 實作 `version()`、`status()`、`run_current()`、`run_create(objective)`、`repos()`、`worktrees()`；
   - 輸出不是預期的 JSON 時回 `Unparseable(cmd)`，不丟例外。
 - `preflight.py`：
-  - D4 的第 0、4、5 步與第 13 步；
+  - DD-4 的第 0、4、5 步與第 13 步；
   - verdict 是逐項的 AND，還沒判定的項目不放進 `items`；
-  - exit 0／3 與 `blocked`（D3）；
+  - exit 0／3 與 `blocked`（DD-3）；
   - `policy_invalid`；
   - `--out` 寫出同一份 receipt。
 
@@ -182,7 +182,7 @@ Effort 的依據（D69）：
 
 **依賴**：1.1，從它取得：
 
-- `policy.load(path) -> Policy`：不丟例外，以 `errors` 與 `invalid` 表達問題（D2）。
+- `policy.load(path) -> Policy`：不丟例外，以 `errors` 與 `invalid` 表達問題（DD-2）。
 - fixture：`fakes`、`orca_env`、`clock`、`approved_run`、`probe_repo`，以及工具隔離。
 - 新模組的函式簽名，本 task 只換實作，不改簽名。
 
@@ -226,10 +226,10 @@ Effort 的依據（D69）：
 
 **交付**：
 
-- `preflight.py`：D4 第 6～12a 步的 Claude 部分：
-  - D5 的設定檔與命令文字；
+- `preflight.py`：DD-4 第 6～12a 步的 Claude 部分：
+  - DD-5 的設定檔與命令文字；
   - 探測任務的文字（共 7 步）；
-  - D7 的等待與停止。
+  - DD-7 的等待與停止。
 - `orca.py`：`terminal_create`、`worker_start`、`worker_show`、`terminal_wait`、`terminal_close`、`task_list`。
 - `native.py`：
   - Claude transcript 的搜尋：恰好一份含 marker、檔名等於 uuid；
@@ -276,11 +276,11 @@ Effort 的依據（D69）：
 **交付**：
 
 - `native.py`：
-  - 依 D6「拒絕的判準」找出每個負例的 `tool_use` 與配對的 `tool_result`；
+  - 依 DD-6「拒絕的判準」找出每個負例的 `tool_use` 與配對的 `tool_result`；
   - 判定嘗試、拒絕、資源；
   - `settings.excluded` 的判讀。
 - `preflight.py`：
-  - D6 的資源前值與後值；
+  - DD-6 的資源前值與後值；
   - 摘錄（固定欄位）與 `native_digest`；
   - `redact()`，套用到 receipt、`--out`、探測紀錄；
   - 拿掉 `judgement_incomplete`。
@@ -303,13 +303,13 @@ Effort 的依據（D69）：
 | 測試 | 斷言的行為 | Red 失敗在 | Green |
 | --- | --- | --- | --- |
 | `test_full_probe_is_verified` | 全部成立的 scenario：exit 0、`verdict == "verified"`、`reasons == []`；每一項 `pass` | 3.1 的 `judgement_incomplete`：verdict 的比較不成立 | 通過 |
-| `test_negative_outcomes_follow_the_judgement_table` | 依 D6「拒絕的判準」的表參數化：每個負例 × 表中列出的可能結果，不展開不適用的組合。只有「被拒」讓該項成立；其他結果該項不成立，`reason` 是 `not_attempted`、`executed` 或 `resource_changed` | 突變：把「沒嘗試」也判成立，該列的比較不成立 | 通過 |
+| `test_negative_outcomes_follow_the_judgement_table` | 依 DD-6「拒絕的判準」的表參數化：每個負例 × 表中列出的可能結果，不展開不適用的組合。只有「被拒」讓該項成立；其他結果該項不成立，`reason` 是 `not_attempted`、`executed` 或 `resource_changed` | 突變：把「沒嘗試」也判成立，該列的比較不成立 | 通過 |
 | `test_only_permission_rule_denials_count` | `toolDenialKind` 是 `user-rejected` 或 `interrupted`，或 `tool_result` 的 `tool_use_id` 配不到：該項不成立，`reason == "not_a_runtime_denial"` | 先只檢查 `toolDenialKind` 存在：該列的比較不成立 | 通過 |
 | `test_worker_self_report_is_not_a_denial` | 最後的文字寫「all steps denied」，但 `git push` 那一步沒有 `toolDenialKind`：`negative.git_push` 不成立 | 突變：改成讀最後文字判定，item 的比較不成立 | 通過 |
 | `test_other_tasks_in_the_run_do_not_affect_the_orca_check` | `task-list` 在前後都含其他 Task（另一個 role 的探測、協調者自己的 Task），而且後值比前值多 2 個；沒有 spec 為 `probe <s>` 的 Task：`negative.orca` 成立 | 先比較 Task 數：item 的比較不成立 | 通過 |
 | `test_excluded_settings_fail_the_item` | 參數化：`skill_listing` 出現 `ponytail`；有一筆 `hook_success` 的命令不含 `ORCA_AGENT_HOOK`。每一種都讓 `settings.excluded` 不成立；只有 superpowers 與 Orca hook 時成立。receipt 的 `observed.gateway == {configured: <設定檔的 ANTHROPIC_BASE_URL>, observable: false}` | 突變：讓 `settings.excluded` 不看 `skill_listing`，ponytail 那一列的比較不成立 | 通過 |
 | `test_credentials_are_redacted_everywhere` | transcript 含 `dcap_abc123def456`、`sk-ant-0123456789abcdefXYZ`、`Bearer abc.def.ghi`、`https://u:p@host/x`；使用者設定的 `env` 有 `ANTHROPIC_AUTH_TOKEN=secret-value`，並列在 `keep.env`。receipt、`--out` 檔、`probes/` 下的檔案都不含這五個原值。`settings/` 下寫給 Claude 的設定檔保留 token 真值，權限是 0600；receipt 裡只有遮蔽過的版本 | 先只遮 `dcap_`：`sk-ant-` 的搜尋斷言不成立 | 通過 |
-| `test_receipt_keeps_fixed_excerpts_and_the_native_digest` | 每一項的 `evidence` 都指向 `excerpts` 中存在的 id；摘錄只有 D6 列出的欄位（例如沒有 `skill_listing` 的全文）；`native_digest` 等於 transcript 檔的 sha256；刪掉 transcript 之後，`latest` 讀回的 receipt 仍有全部摘錄 | 先存整筆紀錄：欄位集合的比較不成立 | 通過 |
+| `test_receipt_keeps_fixed_excerpts_and_the_native_digest` | 每一項的 `evidence` 都指向 `excerpts` 中存在的 id；摘錄只有 DD-6 列出的欄位（例如沒有 `skill_listing` 的全文）；`native_digest` 等於 transcript 檔的 sha256；刪掉 transcript 之後，`latest` 讀回的 receipt 仍有全部摘錄 | 先存整筆紀錄：欄位集合的比較不成立 | 通過 |
 
 ## 4. Reviewer 探測
 
@@ -319,11 +319,11 @@ Effort 的依據（D69）：
 
 **交付**：
 
-- `preflight.py`：D5 的 Codex 命令文字，以及 Reviewer 的第 8、9 步。
+- `preflight.py`：DD-5 的 Codex 命令文字，以及 Reviewer 的第 8、9 步。
 - `native.py`：
   - rollout 的搜尋：`CODEX_HOME`、日期目錄、恰好一份含 marker；
   - 從 `turn_context` 讀回；
-  - D6 的 Codex 拒絕判準；
+  - DD-6 的 Codex 拒絕判準；
   - 以 `task_complete` 判定完成；
   - `settings.excluded` 與 `observed` 的 Codex 欄位。
 - `isolation.independent_clone` 的判定。
@@ -348,7 +348,7 @@ Effort 的依據（D69）：
 | --- | --- | --- | --- |
 | `test_codex_launch_avoids_interactive_prompts` | `terminal create` 的命令含 `codex -m gpt-6-astra`、`-c model_reasoning_effort="xhigh"`、profile 的每個 `-c` 覆寫、`-s read-only`、`-a never`、`--no-daemon`、`PREFLIGHT_MARKER` 與 PATH 前綴 | 3.2 時 Reviewer 以 `runtime_unsupported:codex` 結束，不呼叫 `terminal create`：命令文字的斷言不成立 | 通過 |
 | `test_codex_readback_comes_from_turn_context` | rollout 的 `turn_context` 是 `gpt-6-astra`、`xhigh`、`read-only`、`never`，cwd 是 Reviewer 工作區：讀回與 `permission.mode` 各項成立。參數化 model、effort、cwd 不符，或有兩份、零份含 marker 的 rollout：對應的 item 不成立 | 還沒有 Codex 讀回時，這些 item 不存在：比較不成立 | 通過 |
-| `test_codex_denial_must_be_tied_to_the_call` | 依 D6 的 Codex 判準參數化：exit 1 且輸出含 `Operation not permitted`、資源未變 → 成立；exit 0 但輸出含這段文字 → `executed`；exit 1 但輸出是 `error connecting to api.github.com` → `executed`；EPERM 只出現在另一個呼叫的輸出 → 該項 `executed` | 先只搜尋整份 rollout 的 `Operation not permitted`：最後一列的比較不成立 | 通過 |
+| `test_codex_denial_must_be_tied_to_the_call` | 依 DD-6 的 Codex 判準參數化：exit 1 且輸出含 `Operation not permitted`、資源未變 → 成立；exit 0 但輸出含這段文字 → `executed`；exit 1 但輸出是 `error connecting to api.github.com` → `executed`；EPERM 只出現在另一個呼叫的輸出 → 該項 `executed` | 先只搜尋整份 rollout 的 `Operation not permitted`：最後一列的比較不成立 | 通過 |
 | `test_reviewer_cannot_touch_the_implementer_workspace` | 第 8、9 步被拒，Implementer 工作區沒有新檔案，它的 branch ref 前後相同 → `negative.implementer_file`、`negative.implementer_ref` 成立。scenario 的 effect 真的寫入檔案或移動 ref → 該項 `resource_changed` | 先不檢查資源：item 的比較不成立 | 通過 |
 | `test_independent_clone_is_judged_by_the_real_git_dir` | `probe_repo(reviewer="linked")` → `isolation.independent_clone` 不成立；`reviewer="clone"` → 成立；另一列從兩個工作區各自的根目錄執行 `git rev-parse --git-common-dir`（不加 `--path-format`，回相對路徑 `.git`），仍判為獨立 | 先比較不加 `--path-format` 的原始輸出：相對路徑那一列的比較不成立 | 通過 |
 | `test_codex_excluded_plugins_fail_the_item` | profile 的 `exclude.plugins: ["pdf"]`：`turn_context.disabled_plugin_ids` 含 `pdf` → `settings.excluded` 成立；不含 → 不成立。receipt 的 `observed` 有 `disabled_plugin_ids`、`host_skills` 的名稱、`approved_command_prefixes` 的數量、`permission_profile`，以及 `hooks: {configured: false, observable: false}` | 先不看 `disabled_plugin_ids`：不含那一列的比較不成立 | 通過 |
@@ -362,10 +362,10 @@ Effort 的依據（D69）：
 
 **交付**：
 
-- `receipts.applicable(...)`（D9）。
+- `receipts.applicable(...)`（DD-9）。
 - `preflight.current_versions(role)`。
 - `next.effective(state_next, policy_status, impl)`。
-- `cli.status`、`cli.next_step` 依 D9 重新判定：
+- `cli.status`、`cli.next_step` 依 DD-9 重新判定：
   - envelope 的 `next` 是 `effective` 的結果；
   - `result` 加 `state_next`；`status` 另加 `profiles`；
   - `--human` 兩者都印。
@@ -406,7 +406,7 @@ Effort 的依據（D69）：
 **交付**：
 
 - `preflight.py`：
-  - D4 第 2 步與 D8 的殘留規則；
+  - DD-4 第 2 步與 DD-8 的殘留規則；
   - 紀錄的終態；
   - `cleanup` 紀錄與輸出欄位，本次有探測時另寫進新 receipt 的 `cleanup`。
 - 殘留確認不了停止時，不派新的 worker。
@@ -441,13 +441,13 @@ Effort 的依據（D69）：
 
 **交付**：
 
-- `workflow.yaml`：加入 D2 的 `profiles` 與 `preflight`。
+- `workflow.yaml`：加入 DD-2 的 `profiles` 與 `preflight`。
 - `tests/test_ci.py:45-55`：改成斷言頂層鍵是 `{schema_version, repo, g3, profiles, preflight}`。
 - `tests/test_policy.py`：新增下表的第二個測試。
 - `docs/validation/capability-matrix.md`：
   - 欄：Orca＋claude、Orca＋codex；
-  - 列：D6 的 item；
-  - `fake` 欄填對應的測試名稱，`profile-probe` 與 `real-E2E` 先標 `none`。真實 R1 之後由協調者更新（D11）。
+  - 列：DD-6 的 item；
+  - `fake` 欄填對應的測試名稱，`profile-probe` 與 `real-E2E` 先標 `none`。真實 R1 之後由協調者更新（DD-11）。
 
 **擁有路徑**：`workflow.yaml`、`tests/test_ci.py`、`tests/test_policy.py`（只新增）、`docs/validation/capability-matrix.md`。
 
@@ -465,13 +465,13 @@ Effort 的依據（D69）：
 | `test_ci.py` 的政策檔鍵（改寫既有斷言） | 頂層鍵是五個；`policy.load("workflow.yaml")` 的 `errors == []`，兩個 profile 的 `invalid` 都是空清單 | 先只改測試、不改 `workflow.yaml`：鍵集合的比較不成立 | 通過 |
 | `test_policy.py::test_repo_policy_profiles_are_distinct_models` | repo 的 `workflow.yaml`：Reviewer 與 Implementer 的 model 不同，Reviewer 的 runtime 是 `codex`、Implementer 的是 `claude` | 突變：把 Reviewer 的 model 暫時改成 `claude-opus-5-5`，比較不成立 | 通過 |
 
-矩陣文件沒有 Red：它是文件，由 Reviewer 對照測試名稱與 D6 核對。
+矩陣文件沒有 Red：它是文件，由 Reviewer 對照測試名稱與 DD-6 核對。
 
 ## 驗收驗證
 
 - **CI**：由測試證明的部分，在 G1（全新 clone、完整套件）與 PR 上的 `unit-linux` 通過。
-- **文件**：能力證據矩陣由 G2 Reviewer 對照 D6 與測試名稱核對。
-- **真實 receipt**：真實 R1 由協調者在 Orca terminal 內執行（D11），要 Project Lead 授權。receipt 存在 `docs/validation/orca-preflight/receipts/`，矩陣的 `profile-probe` 欄依它填。
+- **文件**：能力證據矩陣由 G2 Reviewer 對照 DD-6 與測試名稱核對。
+- **真實 receipt**：真實 R1 由協調者在 Orca terminal 內執行（DD-11），要 Project Lead 授權。receipt 存在 `docs/validation/orca-preflight/receipts/`，矩陣的 `profile-probe` 欄依它填。
   - 驗收條件：Implementer `verified`；Reviewer 如實記錄。
 - **彙整**：to-pr 把結果彙整到 #44 的 PR Pass package。
 
@@ -494,7 +494,7 @@ Effort 的依據（D69）：
 
 ## 範圍
 
-本檔只涵蓋 proposal 的 What Changes。派工、assignment、結果匯入、卡住偵測與 orchestrate skill 在 Feature 2。Reviewer 的獨立 clone 是環境設定，由人做（design D12）。
+本檔只涵蓋 proposal 的 What Changes。派工、assignment、結果匯入、卡住偵測與 orchestrate skill 在 Feature 2。Reviewer 的獨立 clone 是環境設定，由人做（design DD-12）。
 
 ## 環境
 
@@ -509,7 +509,7 @@ Effort 的依據（D69）：
 ## 風險
 
 - design「Risks / Trade-offs」的各項。
-- 3.1 是最大的 task（D4 的 8 個步驟）。若超出一個 session，可以把「等待與逾時」的兩個測試與它們的實作切成 3.1b，其他不變。
+- 3.1 是最大的 task（DD-4 的 8 個步驟）。若超出一個 session，可以把「等待與逾時」的兩個測試與它們的實作切成 3.1b，其他不變。
 - fake transcript 與 rollout 依 research 樣本寫成；真實格式若再改變，真實 R1 會以 unverified 暴露，再回到計畫修正。
 
 ## 執行界線
