@@ -16,11 +16,11 @@ Feature 2 要經 Orca 派 Implementer，但派工前必須先知道派出去的 
   - 每個 profile 寫明 transport、runtime、model、探測時的 effort、權限設定、可寫範圍、允許的 `orca` 子命令，以及保留與排除的設定來源（待決 2）；以人工 `policy_change` 核准並綁定 digest（D53）。逐 task 的 effort 屬於派工，在 Feature 2。
 - **`loopctl preflight`**：以一個 run 為脈絡，該 run 的政策未核准就拒絕執行；不需要協調權，也不寫 feature 狀態。先持久記錄 marker 與 handle，再經 Orca 派一個帶唯一 marker 的探測 worker 到探測工作區，逐項判定，任一項不成立就是 `unverified` 並寫明原因：
   - 恰好一份 native 紀錄含 marker；model、effort、工作目錄取自那個 turn，和 profile 與探測工作區相符；
-  - 權限負例：寫出可寫範圍、`git push`、`gh`、允許清單以外的 `orca` 子命令、`loopctl decide`。「被拒」指 native 紀錄顯示 worker 嘗試了、被 runtime 的權限或 sandbox 擋下，而且資源沒變；Reviewer 另做「改不到代表作者的 branch 與 worktree」；
+  - 權限負例：寫出可寫範圍、`git push`、`gh`、允許清單以外的 `orca` 子命令、`loopctl decide`。「被拒」指 native 紀錄顯示 worker 嘗試了、被 runtime 的權限或 sandbox 擋下，而且資源沒變；Reviewer 另做「改不到 Implementer 探測工作區的檔案與 branch」；
   - worker 把 Orca 交付的任務當成任務，並交出 `worker_done`；
   - 停止以 process-info 確認探測 agent 的程序已不存在；
   - 沒有載入被排除的設定；兩個 profile 的 model 不同（D52）。
-- **Receipt**：記錄 digest、Orca 與 agent CLI 的版本、marker、native session ID、讀回值、實際權限模式、執行模式、權限設定的來源、任務的送達方式、每個負例、載入的設定，以及判定依據的 native 紀錄摘錄（遮蔽後）與 digest。native transcript 約 30 天會被清掉，所以摘錄要留在 receipt（verification §三）。不含 dispatch capability 等憑證。中斷的 preflight 不產生 `verified`；下一次先停掉殘留的探測 worker。
+- **Receipt**：記錄脈絡 run、digest、Orca 與 agent CLI 的版本、marker、native session ID、讀回值、實際權限模式、執行模式、權限設定的來源、任務的送達方式、每個負例、載入的設定，以及判定依據的 native 紀錄摘錄（遮蔽後）與 digest。native transcript 約 30 天會被清掉，所以摘錄要留在 receipt（verification §三）。不含 dispatch capability 等憑證。中斷的 preflight 不產生 `verified`；下一次先停掉殘留的探測 worker（清理結果記在持久紀錄與輸出），停不掉就不派新的探測 worker。目前版本讀不到時，receipt 不適用。
 - **適用的 receipt**：receipt 存在 run 狀態之外，帶自身內容的 digest。每個 profile 以最新一份為準；對一個 run，只有 `verified`、綁定的 digest 等於該 run 已核准的 digest、Orca 與 agent CLI 版本都等於目前值才適用（D81），所以已核准同一 digest 的 run 可以共用。
 - **`status`／`next`**：`status` 顯示每個 profile 的驗證狀態、版本與原因。已核准的 run 中，政策未核准時 `next` 回報需要 `policy_change`；Implementer 沒有適用的 receipt 時回報 `preflight` 動作，附 profile 與原因。重跑 preflight 不需要人工決策。
 - **ORC-01**：controller 原本「不啟動 agents」；改為只有 `preflight` 可以依已核准的政策、以固定的命令經 Orca 派出、讀回、停止探測 worker；`preflight`、`status`、`next` 可以以固定的命令讀 Orca 與 agent CLI 的版本。仍然不常駐，也不執行呼叫者或 worker 提供的命令。
@@ -38,7 +38,7 @@ Feature 2 要經 Orca 派 Implementer，但派工前必須先知道派出去的 
 
 - `delivery-orchestration`：MODIFIED ORC-01（`preflight` 是 controller 唯一可以派出 agent 的地方）。
 - `delivery-gates`：ADDED GAT-05（只有 Reviewer profile 的部分：model 讀回、不同模型、隔離負例；G2 判定在 Feature 4）、GAT-08（能力證據矩陣；真實驗收的 finding 迴圈部分在後面的 Feature）。
-- `durable-delivery`：MODIFIED DUR-02（worker 只能寫授權範圍、不能呼叫狀態寫入命令，以真實負例驗證）；ADDED DUR-09（profile、preflight、receipt、適用規則與派工管制）。
+- `durable-delivery`：MODIFIED DUR-01（狀態檔的下一步只依 run 狀態，可不可以派工由 `status`、`next` 依 receipt 與目前版本重算）、DUR-02（worker 只能寫授權範圍、不能呼叫狀態寫入命令，以真實負例驗證）；ADDED DUR-09（profile、preflight、receipt、適用規則與派工管制）。
 
 AC（13 條）：D18、D19、D22、D23、D26、D27、D28、D29、D30、D31、G19、G23、G24。新 ID 的依據見下一節。D18、D19、D22、D23、G19 都只成立 R1 與矩陣的部分：每次派工的核對在 Feature 2，`real-E2E` 欄由 Feature 2～4 與 R3 補上，D23 的 OpenCode-only 變體在 M2。
 

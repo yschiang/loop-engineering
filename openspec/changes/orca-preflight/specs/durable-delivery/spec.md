@@ -1,5 +1,17 @@
 ## MODIFIED Requirements
 
+### Requirement: DUR-01 人可閱讀且單一的現行狀態
+
+設定與執行狀態 SHALL 以人可閱讀的 JSON／YAML 保存，不以 SQLite 取代。同一 repo＋feature SHALL 只有一份現行狀態；歷史只是紀錄，不是另一份現行狀態。使用者 SHALL 可以從狀態檔或 `status` 直接讀到目前階段、owner、plan／spec／design 的版本、核准、三 gate 的狀態與理由、blockers 與下一個允許的動作。狀態檔中的下一個動作只依 run 狀態計算；可不可以派工另依 run 狀態之外的 preflight receipt 與目前的 transport、agent CLI 版本判定（DUR-09），`status` 與 `next` 每次都重新判定，兩者不同時以 `next` 為準。狀態只能經 controller 的命令改變；手改 SHALL 可被偵測，而且永不當作決策。每筆人工 decision SHALL 保存決策者、來源、理由與影響。系統只有一套生效的狀態與 CLI 入口。
+
+#### Scenario: AC-D01 直接檢視狀態
+- **WHEN** 使用者打開 run 的狀態檔，或執行 `status`（含 `--human`）
+- **THEN** 不讀歷史就能看到目前階段、owner、plan／spec／design 的版本、核准狀態、三 gate 的狀態與理由（尚未評估的 gate 標明未評估）、blockers 與依 run 狀態計算的下一步；`status` 另顯示依 receipt 與目前版本判定的結果，與 `next` 會回報的下一步一致
+
+#### Scenario: AC-D02 手動修改不是決策
+- **WHEN** 有人直接修改狀態檔（例如把 gate 改成 passed、改 phase 或刪除 decision），沒有經過 controller 的命令
+- **THEN** 下一次讀取偵測到手改並回報，不把手改值當成批准或 gate 結果，也不覆寫原檔；合法的 decision 只能經 `decide` 產生，並保存決策者、來源、理由與影響
+
 ### Requirement: DUR-02 唯一派工權與安全重派
 
 同一 repo＋feature SHALL 同時只有一個持有協調權的呼叫者；run ID、session 或 clone 不同，SHALL NOT 產生第二份協調權。協調權以 `claim` 取得的 token 表示，狀態只保存 token 的 digest；每個寫入命令 SHALL 核對 token。沒有協調權的呼叫者 SHALL 只能讀取狀態。
@@ -18,7 +30,7 @@ Worker SHALL 只能寫入授權的範圍與自己的結果位置，並由 runtim
 
 ### Requirement: DUR-09 Adapter 與 runtime/model 解耦
 
-核心 SHALL 依穩定的角色與能力契約執行；transport、runtime、provider、model 與 effort SHALL 分欄保存。每個部署 SHALL 在 `workflow.yaml` 的 `profiles` 從核准的接法中選用；「選配」指不是每個部署都必須有該工具（D38、D81）。Profile SHALL 經人工 `policy_change` 核准並綁定 digest。Runtime 專有的識別（例如 Orca 的 Run、Task、Dispatch）SHALL NOT 成為共用契約的必填條件。未選用的接入 SHALL NOT 被呼叫，也 SHALL NOT 阻斷已選的路徑。接入工具的名稱 SHALL NOT 被當成已有可派工的能力；只有經 preflight 驗證的能力可以使用。
+核心 SHALL 依穩定的角色與能力契約執行；transport、runtime、provider、model 與 effort SHALL 分欄保存。每個部署 SHALL 在 `workflow.yaml` 的 `profiles` 從核准的接法中選用；「選配」指不是每個部署都必須有該工具（D38、D81）。Profile SHALL 經人工 `policy_change` 核准並綁定 digest。Transport 專有的識別（例如 Orca 的 Run、Task、Dispatch）SHALL NOT 成為共用契約的必填條件。未選用的接入 SHALL NOT 被呼叫，也 SHALL NOT 阻斷已選的路徑。接入工具的名稱 SHALL NOT 被當成已有可派工的能力；只有經 preflight 驗證的能力可以使用。
 
 **Preflight**：派工之前，`loopctl preflight` SHALL 對 profile 執行受限的能力探測。Preflight 以一個 run（repo＋feature）為脈絡，依該 run 的政策核准判定：該 run 的 `workflow.yaml` 沒有綁定目前 digest 的人工 `policy_change` 時，SHALL 拒絕執行並說明原因。Preflight 不需要協調權，也不寫 feature 狀態。派出探測 worker 之前，SHALL 先持久記錄 marker 與 transport 的 handle。探測 SHALL 經所選 transport 派一個探測 worker 到探測工作區，任務帶一個唯一的 marker，並逐項判定：
 
@@ -30,9 +42,9 @@ Worker SHALL 只能寫入授權的範圍與自己的結果位置，並由 runtim
 
 每一項各自判定，任一項不成立，profile SHALL 為 `unverified` 並列出原因；能力不足 SHALL 具體 Blocked，SHALL NOT 自動換用未核准的工具或放寬隔離。研究報告或舊實作的紀錄 SHALL NOT 作為 preflight 的成功證據。
 
-**Receipt**：結果 SHALL 寫成 receipt，記錄 role、脈絡 run、profile 與該 run 已核准 `workflow.yaml` 的 digest、transport（Orca）與 agent CLI 的版本、marker、native session ID、讀回的值、從 native 紀錄讀到的實際權限模式或 sandbox、worker 的執行模式、權限設定的來源、任務的送達方式、每個負例的結果、載入的設定來源，以及判定所依據的 native 紀錄摘錄（遮蔽後）與其 digest。Receipt、能力證據矩陣與提交到 repo 的證據 SHALL NOT 含 credentials 或 dispatch capabilities；未清理的 runtime 紀錄 SHALL NOT 自動進 Git。中斷的 preflight SHALL NOT 產生 `verified` 的 receipt；殘留探測 worker 的清理不受政策核准狀態影響。Receipt 存在 run 狀態之外，帶自身內容的 digest；內容與 digest 不符的 receipt 不適用。
+**Receipt**：結果 SHALL 寫成 receipt，記錄 role、脈絡 run、profile 與該 run 已核准 `workflow.yaml` 的 digest、transport（Orca）與 agent CLI 的版本、marker、native session ID、讀回的值、從 native 紀錄讀到的實際權限模式或 sandbox、worker 的執行模式、權限設定的來源、任務的送達方式、每個負例的結果、載入的設定來源，以及判定所依據的 native 紀錄摘錄（遮蔽後）與其 digest。Receipt、能力證據矩陣與提交到 repo 的證據 SHALL NOT 含 credentials 或 dispatch capabilities；未清理的 runtime 紀錄 SHALL NOT 自動進 Git。中斷的 preflight SHALL NOT 產生 `verified` 的 receipt。殘留探測 worker 的清理不受政策核准狀態影響，清理結果記在 marker 與 handle 的持久紀錄與 preflight 的輸出；殘留的 worker 無法確認停止時，SHALL NOT 派新的探測 worker。Receipt 存在 run 狀態之外，帶自身內容的 digest；內容與 digest 不符的 receipt 不適用。
 
-**適用的 receipt**：每個 profile 以最新的一份 receipt 為準，較新的 `unverified` 取代較早的 `verified`。Receipt 對一個 run 只有在 verdict 為 `verified`、綁定的 digest 等於該 run 已核准的 `workflow.yaml` digest，而且 transport 與 agent CLI 的版本等於目前值時才適用（D76(5)、D81）；同一份 receipt 可被任何已核准同一 digest 的 run 採用。
+**適用的 receipt**：每個 profile 以最新的一份 receipt 為準，較新的 `unverified` 取代較早的 `verified`。Receipt 對一個 run 只有在 verdict 為 `verified`、綁定的 digest 等於該 run 已核准的 `workflow.yaml` digest，而且 transport 與 agent CLI 的版本等於目前值時才適用（D76(5)、D81）；目前的版本讀不到時不適用，原因為版本未知；同一份 receipt 可被任何已核准同一 digest 的 run 採用。
 
 **派工管制**：已核准的 run 中，`next` SHALL 只在政策已核准、而且 Implementer 的 profile 有適用的 receipt 時才回報可以派工。政策未核准時，回報需要人工 `policy_change`；沒有適用的 receipt 時，回報 `preflight` 動作，附 profile 與原因。重跑 preflight 不需要人工決策。`status` SHALL 顯示每個 profile 的驗證狀態、版本與原因。
 
@@ -57,7 +69,7 @@ Worker SHALL 只能寫入授權的範圍與自己的結果位置，並由 runtim
 - **THEN** 前者不影響已選的 profile，preflight 不呼叫未選用的接入；後者該 profile 為 `unverified` 並 Blocked，不自動改用其他 runtime 或 model
 
 #### Scenario: AC-D26 沒有適用的 R1 就不派工
-- **WHEN** run 已核准，而 Implementer 的 profile 沒有適用的 receipt：從未執行、最新一份是 `unverified`，或綁定的 digest 不等於該 run 已核准的 digest，或 transport 或 agent CLI 的版本和目前不同
+- **WHEN** run 已核准，而 Implementer 的 profile 沒有適用的 receipt：從未執行、最新一份是 `unverified`，或綁定的 digest 不等於該 run 已核准的 digest，或 transport 或 agent CLI 的版本和目前不同或讀不到
 - **THEN** `next` 不回報派工，改回報 `preflight` 動作與 profile、原因；`status` 顯示每個 profile 的驗證狀態與原因；重跑 preflight 得到適用的 `verified` 之後，`next` 才回報可以派工
 
 #### Scenario: AC-D28 Worker 載入的設定與憑證
@@ -66,8 +78,8 @@ Worker SHALL 只能寫入授權的範圍與自己的結果位置，並由 runtim
 
 #### Scenario: AC-D30 政策未核准時不探測
 - **WHEN** 某個 run 的 `workflow.yaml` 沒有綁定目前 digest 的人工 `policy_change`，有人以這個 run 為脈絡執行 preflight；或這個 run 已核准 plan、在這個狀態下查詢 `next`
-- **THEN** preflight 拒絕執行，不派新的探測 worker，也不寫 receipt（殘留探測 worker 的清理照 AC-D31 進行）；`next` 不回報派工，改回報需要人工 `policy_change`；兩者都說明原因
+- **THEN** preflight 拒絕執行，不派新的探測 worker，也不寫 receipt（殘留探測 worker 照 AC-D31 清理，結果記在持久紀錄與輸出）；`next` 不回報派工，改回報需要人工 `policy_change`；兩者都說明原因
 
 #### Scenario: AC-D31 Preflight 中斷
 - **WHEN** preflight 派出探測 worker 之後被中斷，之後再次執行
-- **THEN** 中斷的那次沒有 `verified` 的 receipt；下一次 preflight 依先前持久記錄的 marker 與 handle 找出殘留的探測 worker 並停止它（以 process-info 確認），把處理結果記進新的 receipt；政策是否核准不影響這個清理
+- **THEN** 中斷的那次沒有 `verified` 的 receipt；下一次 preflight 依先前持久記錄的 marker 與 handle 找出殘留的探測 worker 並停止它（以 process-info 確認），清理結果記在持久紀錄與 preflight 的輸出，若這次有執行探測，也記進新的 receipt；政策是否核准不影響這個清理。殘留的 worker 無法確認停止時，不派新的探測 worker；政策已核准時，這次的 receipt 為 `unverified`，原因列出殘留的 marker 與 handle
