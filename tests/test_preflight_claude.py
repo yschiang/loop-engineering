@@ -20,7 +20,7 @@ import pytest
 from conftest import ApprovedRun, Clock, Fakes, OrcaEnv, ProbeRepo, Result, dig, git
 from fakes import scenarios
 
-from loopctl import receipts, store
+from loopctl import orca, receipts, store
 
 Cli = Callable[..., Result]
 
@@ -641,10 +641,25 @@ def test_terminal_record_failure_still_stops_the_worker(
 ) -> None:
     run = approved_run(REPO, FEATURE, policy_text())
     probes = probes_dir(home)
-    # Once the terminal exists, its record cannot be written; in the second
-    # row neither can the record of the stop.
-    options = {"unwritable_probes": probes, "writable_on_close": writable_on_close}
-    fakes(probing(probe, orca_env, **options))
+    fakes(probing(probe, orca_env, dispatched=False))
+    # Once the terminal exists, the directory of the probe records is not
+    # writable, so its record fails in the store (EACCES); in the second row
+    # it stays so for the record of the stop.
+    create, close = orca.terminal_create, orca.terminal_close
+
+    def creating(worktree_id: str, title: str, command: str) -> str | orca.Problem:
+        handle = create(worktree_id, title, command)
+        probes.chmod(0o500)
+        return handle
+
+    def closing(handle: str) -> bool | orca.Problem:
+        closed = close(handle)
+        if writable_on_close:
+            probes.chmod(0o700)
+        return closed
+
+    monkeypatch.setattr(orca, "terminal_create", creating)
+    monkeypatch.setattr(orca, "terminal_close", closing)
     if stop_fails:
         # The record of the stop fails with an error of its own, which the
         # filesystem cannot tell apart from the first one (EACCES both).
