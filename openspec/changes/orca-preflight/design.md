@@ -272,7 +272,7 @@ Claude 的寫檔用 Write 工具；Codex 用 `sh -c 'echo probe > <path>'`。`gi
   - `orca: {run, task, dispatch, terminal}`；
   - `launch: {command, settings_digest, execution_mode}`；
   - `observed`（上述不判定的觀察值）；
-  - `items: {<名稱>: {pass, reason, evidence: [<摘錄 id>]}}`；
+  - `items: {<名稱>: {passed, reason, required, actual, evidence: [<摘錄 id>]}}`：欄位與 `preflight.Item` 相同，receipt、`--out` 與 CLI 輸出都用這個形狀；
   - `excerpts: {<id>: <摘錄>}`、`native_digest`；
   - `verdict`、`reasons`、`started_at`、`finished_at`、`cleanup`（本次 preflight 處理的殘留，DD-8）。
 - **摘錄只取固定欄位**，但必須含每一項判定所依據的值：
