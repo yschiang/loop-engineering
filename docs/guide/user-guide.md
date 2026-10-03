@@ -273,10 +273,11 @@ flowchart LR
 | 3 | Project Lead 或 Engineer | 確認範圍：目標、做／不做 | — | — |
 | 4 | Agent | 寫 spec：<br>• 從需求輸入帶入需求（ADDED／MODIFIED）<br>• 由上往下問：流程 → 規則 → 例外 → 驗收，每輪 1–3 題<br>• 每條寫成帶 ID 的 Scenario | 指令 `openspec validate <id>`（[說明](https://github.com/Fission-AI/OpenSpec/blob/main/docs/cli.md)） | spec（[範例](https://github.com/yschiang/cross-node-root/blob/main/openspec/changes/project-skeleton/specs/engineering-baseline/spec.md)） |
 | 4 | Project Lead 或 Engineer | 回答、修正；需求本來就模糊時，自己輸入 `/grill-me` 深問（要同時寫 ADR 與詞彙表就用 `/grill-with-docs`）；只有某一條 AC 不確定時，要 Agent 只針對那條追問 | — | — |
-| 5 | Project Lead | 看一頁摘要，◆確認 spec；同時是 Engineer 時，改到 B1 一起確認 | — | proposal 裡的確認紀錄 |
-| 6 | Project Lead | 指定：<br>• 誰確認開工<br>• 誰驗收 | — | — |
-| 6 | Agent | 交接：<br>• 組交接包，貼成 ticket 留言<br>• ticket 補上 AC ID，狀態改「就緒」 | 同一個 session | • 交接包<br>• ticket 狀態「就緒」 |
-| 6 | Engineer | 核對交接包：能開始就開始，不行就退回具體問題 | — | — |
+| 5 | Agent | 審 spec：請另一個模型唯讀審 proposal 與 spec，同一個 session 審到 clean，最多 3 輪；不 clean 就交 Project Lead 決定 | 例如 `claude -p --model claude-fable-5-1`（唯讀設定）或 `codex exec -s read-only` | 審查紀錄：`openspec/changes/<id>/reviews/`（[範例](https://github.com/yschiang/loop-engineering/tree/b278378/openspec/changes/orca-preflight/reviews)） |
+| 6 | Project Lead | 看一頁摘要（含 spec 審查的結果），◆確認 spec；同時是 Engineer 時，改到 B1 一起確認 | — | proposal 裡的確認紀錄 |
+| 7 | Project Lead | 指定：<br>• 誰確認開工<br>• 誰驗收 | — | — |
+| 7 | Agent | 交接：<br>• 組交接包，貼成 ticket 留言<br>• ticket 補上 AC ID，狀態改「就緒」 | 同一個 session | • 交接包<br>• ticket 狀態「就緒」 |
+| 7 | Engineer | 核對交接包：能開始就開始，不行就退回具體問題 | — | — |
 
 **每一步怎麼做、怎樣算完成**
 
@@ -310,11 +311,17 @@ flowchart LR
      - [ ] 主流程與每個例外都有 Scenario
      - [ ] 沒有一條待決會改變範圍、行為或驗收
      - [ ] `openspec validate <id>` 通過
-5. **◆確認 spec**
+5. **審 spec**
+   - 怎麼做：請一個不同於 spec 作者的模型，在全新 session 唯讀審 proposal 與 spec。檢查：需求輸入的每句 SHALL 有沒有帶入、延後或依決策改寫；每個 Scenario 能不能在公開入口觀察與測試；與決策、現行 spec 有沒有矛盾；新 AC ID 有沒有衝突；主流程與例外是否都有 Scenario；有沒有寫進後面 Feature 或 design 的內容。要改範圍的修改先問人。
+   - 完成：
+     - [ ] 同一個 reviewer session 審到 clean，或 3 輪後由 Project Lead 決定剩下的 finding（D82）
+     - [ ] 每一輪的提問、結果與每條 finding 的處理記在 `openspec/changes/<id>/reviews/`，已 commit
+6. **◆確認 spec**
    - 怎麼做：看下方的一頁摘要，不必讀檔案。
    - 完成：
+     - [ ] 確認的是 spec 審查後的版本
      - [ ] proposal 記下誰、何時、原話和確認的 commit；兼任時記「併入確認開工」
-6. **交接**
+7. **交接**
    - 怎麼做：
      - Project Lead 指定開工確認人（通常是 Engineer）與驗收人（預設是 Project Lead；需求由別人提出時，指定那個人）
      - Agent 照參考手冊的[交接](reference.md#交接)清單組交接包

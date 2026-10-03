@@ -1,6 +1,6 @@
 # Roadmap：薄 controller（loopctl）
 
-> 2026-09-30 經 Project Lead 確認（D75）；2026-10-03 Feature 1 收尾後重切（D79）。審查紀錄：GPT-6 Astra xhigh 三輪到 clean，見 [`reviews/2026-09-30-roadmap/`](reviews/2026-09-30-roadmap/README.md)。
+> 2026-09-30 經 Project Lead 確認（D75）；2026-10-03 Feature 1 收尾後重切（D79），同日把 R1 從 Feature 2 切成 Feature 2a（D80）。審查紀錄：GPT-6 Astra xhigh 三輪到 clean，見 [`reviews/2026-09-30-roadmap/`](reviews/2026-09-30-roadmap/README.md)。
 
 來源（皆為 `main@a1d8906`，另註明者除外）：
 
@@ -17,7 +17,7 @@
 
 | Milestone | 目標日期 | 可以展示的成果 | 完成條件 | 交付能力 |
 | --- | --- | --- | --- | --- |
-| **M1：薄 controller 可用** | 未定（D75、D79） | 一個真實 Feature 由 orchestrate 透過 loopctl，從交接包走到 PR Pass 或 Blocked。過程包含派工、三 gates、finding → fix → re-review，中途中斷一次後接續；狀態與證據都可查。 | 1. M1 的全部 Feature（1、2、2b、3、4、5，D77）都已接受、merge 並 archive。<br>2. 「M1 驗收」四項都完成（見下）。 | 人工決策與可追溯狀態；派工與結果回收；三 gates；finding 迴圈與 PR Pass |
+| **M1：薄 controller 可用** | 未定（D75、D79） | 一個真實 Feature 由 orchestrate 透過 loopctl，從交接包走到 PR Pass 或 Blocked。過程包含派工、三 gates、finding → fix → re-review，中途中斷一次後接續；狀態與證據都可查。 | 1. M1 的全部 Feature（1、2a、2、2b、3、4、5，D77、D80）都已接受、merge 並 archive。<br>2. 「M1 驗收」四項都完成（見下）。 | 人工決策與可追溯狀態；派工與結果回收；三 gates；finding 迴圈與 PR Pass |
 | **M2：example 與延後能力**（暫不切） | M1 完成後定 | cross-node-file-transfer 由 orchestrate＋loopctl 從 Project 跑到多個 Feature（D43、D56） | M1 完成後定 | 見下方「延後到 M2」 |
 
 目標日期依 D75 暫不設；Feature 1 接受後（D79）仍暫不定，Feature 2 完成後再看。原先的估法（約 7 個工作日加一週緩衝）見[重切研究](research/2026-09-30/controller-recut.md#時間估計的依據)。
@@ -29,7 +29,8 @@
 | # | Feature | 狀態 | 看得到的行為 | 可參考的既有實作（`fcefecc`） | 依賴 | 相關需求輸入 | 勘誤與 issue |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | loopctl：登記 run、記錄人工決策、查詢狀態與下一步 | 已完成（#29、PR #37，併入規格 PR #38） | Engineer 登記一個 Feature run，含 spec、design 與 plan 的版本。人用 `decide` 記錄開工確認等決策。`status` 與 `next` 顯示持久狀態，以及唯一允許的下一步；中斷後從檔案接續。包含專案骨架，以及 CI `unit-linux`（D53）。 | T2.1、T2.2；T1.1 的 CLI、測試政策、CI、`workflow.yaml` | — | ORC-01、02、03、07、11、12；GAT-06；DUR-01、02、05、08（範圍見 change `run-decisions`） | #6 |
-| 2 | orchestrate 經 Orca 派 Implementer、收回結果，卡住時交給人 | 近期（D79） | orchestrate 從交接包開始：叫 spec-to-plan，把 design 與 plan 登記到 loopctl，停在 ◆確認開工（D55、D69）。人確認後，依 `next` 用 R1 驗證過的 profile，經 Orca 把 Implementer 派進 `engineer` 工作區（D76）。外部寫入先登記、再讀回，沒有回應轉成 unknown，由人用 `decide` 處理。結果先保存，再去重匯入。察覺卡住（session 結束卻沒交結果、API 或 infra 錯誤、長時間沒有新輸出）就停止派工交人（D79）。Claude 與 Codex 兩個 profile 各跑 R1，Orca 換版本時重跑。建立各接法分開的能力證據矩陣；engineer 工作區 clear 時機的實驗。 | T1.1 的 profiles 與 preflight、T1.2、T2.3；T7.1 的 worker 預算部分 | 1 | ORC-01、03、08；GAT-05、08；DUR-02、03、04、06、08、09（含從 Feature 1 移過來的 AC-D13、D16、O02、D17；D17 照 E-6 讀） | E-1（#9）、E-2（#11）、#7 |
+| 2a | loopctl preflight：確認 Orca 的 Claude、Codex worker 能安全派工 | 近期（D80，#44） | Engineer 在 `workflow.yaml` 登記兩個 profile（Implementer：Orca 的 Claude agent＋`claude-opus-5-5`；Reviewer：Orca 的 Codex agent＋`gpt-6-astra` xhigh），以 `policy_change` 核准（D76）。`loopctl preflight` 對每個 profile 經 Orca 派一個探測 worker：model、effort、cwd 由 native 紀錄讀回；權限負例（寫出擁有範圍、push、`gh`、派工以外的 `orca` 子命令、`loopctl decide`）都被拒；worker 接受 Orca 的 preamble 並交出 `worker_done`。結果寫成 receipt，記下 Orca 與 agent CLI 的版本；`status` 顯示每個 profile 是否驗證過與理由；profile 沒驗證過、政策沒核准或 Orca 版本變了，`next` 就不給派工。建立各接法分開的能力證據矩陣。 | T1.1 的 profiles 與 preflight | 1 | GAT-05、08；DUR-02（worker 的權限限制）、09（範圍見 change `orca-preflight`） | E-5 |
+| 2 | orchestrate 經 Orca 派 Implementer、收回結果，卡住時交給人 | 近期（D79）；spec 等 2a 的 R1 結果再寫（D80，#43） | orchestrate 從交接包開始：叫 spec-to-plan，把 design 與 plan 登記到 loopctl，停在 ◆確認開工（D55、D69）。人確認後，依 `next` 用 R1 驗證過的 profile，經 Orca 把 Implementer 派進 `engineer` 工作區（D76）。外部寫入先登記、再讀回，沒有回應轉成 unknown，由人用 `decide` 處理。結果先保存，再去重匯入。察覺卡住（session 結束卻沒交結果、API 或 infra 錯誤、長時間沒有新輸出）就停止派工交人（D79）。每次派工把實際結果補進 2a 的能力證據矩陣；engineer 工作區 clear 時機的實驗。 | T1.2、T2.3；T7.1 的 worker 預算部分 | 2a | ORC-01、03、08；DUR-02、03、04、06、08、09（含從 Feature 1 移過來的 AC-D13、D16、O02、D17；D17 照 E-6 讀） | E-1（#9）、E-2（#11）、#7 |
 | 3 | TDD 證據、PR 與 CI | 暫定 | Implementer 的結果匯入後，orchestrate 依 `next` 讓 loopctl 核對 G1：原始 Red 的資格、乾淨 checkout 的 Green、N/A 紀錄、整合 attempt，以及證據命令的時限。接著 push，建立或更新 PR，等待 CI（30 分鐘），只認 PR head 上 `unit-linux` 的 success 判定 G3。R2：orchestrate 在 probe branch 用 fixture 真實跑到 G1。 | T3.1、T6.1；T7.1 的證據與 CI 預算部分 | 2 | ORC-03；GAT-01、02、03、04、06、07、08；DUR-03、06、07、08、09（含從 Feature 1 移過來的 AC-G13） | #15 |
 | 4 | 獨立審查與 PR Pass | 暫定 | orchestrate 依 `next` 派獨立 Reviewer：不同模型、新 session，review 時限 30 分鐘。G2 綁定 head、base 與文件版本。finding 流程包含登記、合併成修正批次、覆核、一次爭議覆核、反覆 finding 提前升級，上限三輪。最後發布 review 與 PR Pass 驗收包。 | 無（T4.1、T5.1、T6.2 沒有實作） | 3 | ORC-01、05；GAT-01、03、05、06、07、08；DUR-04、06、07、08、09；FIN-01～07（含從 Feature 1 移過來的 AC-F07、F11、O11） | E-3（#12） |
 
@@ -44,7 +45,7 @@
 
 **Runtime（D76）**：Feature 2 起，派工從 Herdr 改為 Orca。Implementer（Claude＋`claude-opus-5-5`）與 Reviewer（Codex＋`gpt-6-astra` xhigh）分別派進固定名稱的 Orca 工作區 `engineer`、`reviewer`；表中寫 Herdr 的地方照 D76 讀。Orca 版本改變時先重跑 R1；Orca 回 `consumer_fenced` 時停下交人；協調權與人工決策仍在 loopctl。engineer 工作區的 clear 時機在 Feature 2 實驗。
 
-**依賴**：上表四個 Feature 是一條鏈，依 D27 依序開工；2b、5 的位置見「D77 新增的 Feature」：上游接受並 merge 後，下游才開始實作。等上游時，可以先準備下游的 spec。
+**依賴**：上表五個 Feature 是一條鏈（1 → 2a → 2 → 3 → 4），依 D27 依序開工；2b、5 的位置見「D77 新增的 Feature」：上游接受並 merge 後，下游才開始實作。等上游時，可以先準備下游的 spec。
 
 **跨 Feature 的 AC**：29 條 AC 的驗證跨兩個以上的階段，清單與各自的完成點見[重切研究](research/2026-09-30/controller-recut.md#跨階段的-ac)。
 
@@ -69,7 +70,7 @@ M1 的全部 Feature 都 merge 後進行。它不是 Feature，而是 M1 的完�
 | R3 | 用 cross-node-file-transfer 的第一個 Feature（D75）。登記 baseline 後，經它自己的 D11 確認，由 orchestrate＋loopctl 跑完。三 gates 在目前版本都通過；改變行為的修正有綁定 finding 與 batch 的原始 Red；中斷一次後成功接續。Blocked 或沒有 finding 時 R3 維持 open，M1 不算完成（`validation.md` R3、AC-G20）。 | G01、G20、D14 的真實交付部分 | Project Lead 選 Feature；Engineer 執行 | G2 照常 |
 | Workflow 樣本 | 照 `validation.md` §3 的 W-A～W-F，每組一個正例與一個負例。正例盡量取自 M1 的真實紀錄（本 roadmap、交接包、◆確認開工、D27 的依序開工、orchestrate 的結果匯入）；「模板存在」不算通過。 | 只由樣本驗證的 11 條（F12、O04、O12、O13、O17、O20、O21、O24、O25、O27、O28）；O16（Feature 2 另有 orchestrate 的文件清單）；另 6 條的樣本部分（O01、O15、O19、O22、O23、O26） | 照 §3 各組的 owner | 獨立 Reviewer 依 rubric 審查，結果記在 `proof.md` |
 | 本日目標實跑 | 一份本日目標，至少兩個互不依賴的 Feature；計畫一次確認後無人看守跑完，各自到 PR Pass 或 Blocked，紀錄可查。 | 跑完後依 Feature 驗收 | Project Lead 寫目標與確認；Engineer 執行 | G2 照常 |
-| 能力證據矩陣 | Feature 2 建立；Feature 3、4 與 R3 各自補上證據。每項能力分列 `fake`、`profile-probe`、`real-E2E`，依接法分開，未執行的格子標 `none`（§4）。 | G19、D22 | Engineer | 同上 |
+| 能力證據矩陣 | Feature 2a 建立；Feature 2、3、4 與 R3 各自補上證據。每項能力分列 `fake`、`profile-probe`、`real-E2E`，依接法分開，未執行的格子標 `none`（§4）。 | G19、D22 | Engineer | 同上 |
 
 ## 延後到 M2
 

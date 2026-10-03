@@ -34,7 +34,7 @@ Done when you know which sources are authoritative and what is missing.
 
 ## 2. Research current behaviour
 
-Use the `research-codebase` skill when available; otherwise trace the relevant flows, cite paths and symbols, separate facts, assumptions, and unknowns, and save the report under the repository's research location. For a large or unfamiliar codebase, build a graph with `graphify` first. Research describes what exists; it does not approve requirements or choose a design. Share a short summary early and deepen only where a decision needs it.
+Use the `research-codebase` skill when available; otherwise trace the relevant flows, cite paths and symbols, separate facts, assumptions, and unknowns, and save the report under the repository's research location. For a large or unfamiliar codebase, build a graph with `graphify` first. Research describes what exists; it does not approve requirements or choose a design. Share a short summary early and deepen only where a decision needs it. Research that backs a decision lands on the default branch with that decision's PR; other branches merge the default branch to get it, never cherry-pick it (D83).
 
 ## 3. Grill and write at project depth
 
