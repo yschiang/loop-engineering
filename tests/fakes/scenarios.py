@@ -513,12 +513,23 @@ DENIAL_TEXTS = {
 UNMATCHED_CALL = "toolu_99999999999999999999unmatched"
 
 
+class Absent:
+    """The value of a field a record leaves out."""
+
+
+ABSENT = Absent()
+
+
 class _Transcript:
     """The records of a Claude transcript, in the order and with the fields
-    of the Claude sample: each record links to the one before it."""
+    of the Claude sample: each record links to the one before it.
 
-    def __init__(self, base: dict[str, Any]) -> None:
+    `events` maps a hook record type to the hookEvent its records hold in
+    place of their event; ABSENT leaves the field out."""
+
+    def __init__(self, base: dict[str, Any], events: dict[str, Any]) -> None:
         self.base = base
+        self.events = events
         self.records: list[dict[str, Any]] = []
         self.parent: str | None = None
         self.count = 0
@@ -536,6 +547,16 @@ class _Transcript:
         self.parent = uuid
         return uuid
 
+    def attach(self, attachment: dict[str, Any]) -> None:
+        """The record of a hook's `attachment`, its hookEvent as `events`
+        gives it for the attachment's type."""
+        event = self.events.get(attachment["type"], attachment["hookEvent"])
+        if isinstance(event, Absent):
+            del attachment["hookEvent"]
+        else:
+            attachment["hookEvent"] = event
+        self.add("attachment", attachment=attachment)
+
     def hook(self, event: str, name: str, command: str | None) -> None:
         """The record of a hook that ran; without `command` it names none."""
         attachment: dict[str, Any] = {
@@ -552,20 +573,20 @@ class _Transcript:
         }
         if command is None:
             del attachment["command"]
-        self.add("attachment", attachment=attachment)
+        self.attach(attachment)
 
     def context(self, event: str) -> None:
         """The context a hook of `event` gave back to Claude, as the
         superpowers SessionStart hook does (Claude sample, line 7): it names
         no command."""
-        attachment = {
+        attachment: dict[str, Any] = {
             "type": "hook_additional_context",
             "content": ["<EXTREMELY_IMPORTANT>\nYou have superpowers.\n"],
             "hookName": event,
             "toolUseID": event,
             "hookEvent": event,
         }
-        self.add("attachment", attachment=attachment)
+        self.attach(attachment)
 
     def assistant(self, content: list[dict[str, Any]], stop: str, **fields: Any) -> str:
         message = {
@@ -606,6 +627,7 @@ def claude_transcript(
     skills: tuple[str, ...] = SKILLS,
     hooks: tuple[tuple[str, str | None], ...] = (),
     contexts: tuple[str, ...] = (),
+    hook_events: dict[str, Any] | None = None,
     credentials: str | None = None,
     tail: str = "",
 ) -> str:
@@ -627,10 +649,12 @@ def claude_transcript(
     hook, and Claude lists `skills`. `hooks` are more hooks that ran at
     startup, each (event, command); a None command writes a record that
     names none. `contexts` are the events whose hooks gave context back,
-    written after the startup hooks. `credentials` is text the result of
-    every call ends with, as a command's output can carry them. `tail` is
-    text after the last record: a line the agent is still writing, or one
-    that cannot be decoded."""
+    written after the startup hooks. `hook_events` maps a hook record type
+    (hook_success, hook_additional_context) to the hookEvent every record
+    of that type holds in place of its event; ABSENT leaves the field out.
+    `credentials` is text the result of every call ends with, as a
+    command's output can carry them. `tail` is text after the last record:
+    a line the agent is still writing, or one that cannot be decoded."""
     outcomes = {
         number: (negatives or {}).get(name, "denied")
         for number, name in enumerate(NEGATIVES, 1)
@@ -646,7 +670,7 @@ def claude_transcript(
     }
     if "cwd" in omit:
         del base["cwd"]
-    t = _Transcript(base)
+    t = _Transcript(base, hook_events or {})
     efforts = {} if "effort" in omit or effort is None else {"effort": effort}
     efforts |= {"perTurnEffort": effort} if efforts else {}
     title = {"type": "ai-title", "aiTitle": f"Preflight probe {marker}"}

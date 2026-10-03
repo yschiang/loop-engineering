@@ -336,22 +336,30 @@ HOOK_CHARS = 200
 HOOK_CONTEXT = "hook_additional_context"
 
 
+def hook_event(attachment: dict[str, Any]) -> str | None:
+    """The event a hook record names: its hookEvent when that is text that
+    is not empty, else None. Only such an event ties a context to a run."""
+    event = attachment.get("hookEvent")
+    return event if isinstance(event, str) and event else None
+
+
 def without_command(ran: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The hook records in `ran` that cannot be judged by a command: a run
     whose command is missing or not text, and a context given back in an
-    event of which no run names its command. A hook that cannot be judged
+    event (hook_event) of which no run names its command; a context that
+    names no event is never vouched for. A hook that cannot be judged
     cannot count as one the profile keeps."""
     named = {
-        record["attachment"].get("hookEvent")
+        hook_event(record["attachment"])
         for record in ran
         if record["attachment"].get("type") != HOOK_CONTEXT
         and isinstance(record["attachment"].get("command"), str)
-    }
+    } - {None}
     unjudged = []
     for record in ran:
         attachment = record["attachment"]
         if attachment.get("type") == HOOK_CONTEXT:
-            judged = attachment.get("hookEvent") in named
+            judged = hook_event(attachment) in named
         else:
             judged = isinstance(attachment.get("command"), str)
         if not judged:

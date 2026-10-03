@@ -1165,6 +1165,46 @@ def test_hook_without_command_fails_the_settings_item(
     assert r.get("result", "verdict") == verdict
 
 
+@pytest.mark.parametrize(
+    "events",
+    [
+        pytest.param(
+            {
+                "hook_success": scenarios.ABSENT,
+                "hook_additional_context": scenarios.ABSENT,
+            },
+            id="no-hook-names-an-event",
+        ),
+        pytest.param({"hook_additional_context": []}, id="context-event-is-a-list"),
+        # The hook runs name their commands, but no event as text: the
+        # SessionStart context matches none of them.
+        pytest.param({"hook_success": {}}, id="hook-run-events-are-objects"),
+    ],
+)
+def test_hook_event_not_given_as_text_vouches_for_no_context(
+    cli: Cli,
+    approved_run: Callable[..., ApprovedRun],
+    orca_env: OrcaEnv,
+    fakes: Fakes,
+    probe: ProbeRepo,
+    clock: Clock,
+    events: dict[str, Any],
+) -> None:
+    run = approved_run(REPO, FEATURE, policy_text())
+    transcript = {"contexts": ("SessionStart",), "hook_events": events}
+    fakes(probing(probe, orca_env, transcript=transcript))
+
+    r = preflight(cli, run)
+
+    assert r.exc is None
+    receipt = latest()
+    assert receipt is not None
+    item = dig(receipt, "items", "settings.excluded") or {}
+    expected = {"passed": False, "reason": "hook_without_command"}
+    assert {field: item.get(field) for field in expected} == expected
+    assert r.get("result", "verdict") == "unverified"
+
+
 # Credentials as a command's output can carry them (DD-6's redaction).
 CREDENTIALS = (
     "dcap_abc123def456",
