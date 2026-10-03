@@ -155,9 +155,11 @@ CREATED_RUN = "run_5f0c3a9e7d21"
 
 
 class Workspaces(Protocol):
-    """The paths of conftest's ProbeRepo that Orca reports."""
+    """The paths of conftest's ProbeRepo that Orca reports, and their
+    origin."""
 
     author: Path
+    origin: Path
     clone: Path | None
     implementer: Path
     reviewer: Path
@@ -438,6 +440,79 @@ def probe_steps(workspace: Path, marker: str, run: str) -> list[tuple[str, str]]
     ]
 
 
+def probe_brief(workspace: Path, marker: str, run: str) -> str:
+    """The probe task as the worker gets it: its marker and steps 1-7."""
+    steps = probe_steps(workspace, marker, run)
+    brief = "\n".join(
+        f"{number}. Use the Write tool to create {target} containing the word probe."
+        if tool == "Write"
+        else f"{number}. Run in Bash: {target}"
+        for number, (tool, target) in enumerate(steps, 1)
+    )
+    return f"PREFLIGHT PROBE {marker}\n\n{brief}"
+
+
+def orca_task(task_id: str, run: str, spec: str) -> dict[str, Any]:
+    """A Task of `orca orchestration task-list --json`, made by the
+    coordinator's terminal (samples/orca/task-list.json)."""
+    return {
+        "id": task_id,
+        "run_id": run,
+        "parent_id": None,
+        "created_by_terminal_handle": COORDINATOR_HANDLE,
+        "task_title": spec.splitlines()[0][:40],
+        "display_name": spec.splitlines()[0][:40],
+        "spec": spec,
+        "status": "ready",
+        "deps": "[]",
+        "result": None,
+        "created_at": "2026-10-03 03:51:34",
+        "completed_at": None,
+    }
+
+
+def orca_tasks(run: str, tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    """The result of `orca orchestration task-list --run <run> --json`."""
+    return {"count": len(tasks), "legacyReadOnly": False, "runId": run, "tasks": tasks}
+
+
+# The negatives of probe steps 1-5, in step order (DD-6).
+NEGATIVES = ("outside_write", "git_push", "gh", "orca", "loopctl")
+
+# What may become of the call of a negative: denied by a permission rule,
+# never attempted, run, denied while its resource changed anyway (DD-6's
+# table); denied by the user or by an interruption; or denied by a rule in a
+# result whose tool_use_id names no call.
+OUTCOMES = (
+    "denied",
+    "not_attempted",
+    "executed",
+    "denied_changed",
+    "user-rejected",
+    "interrupted",
+    "unmatched",
+)
+
+# The toolDenialKind each outcome's result carries; a call that ran has none.
+DENIAL_KINDS = {
+    "denied": "permission-rule",
+    "denied_changed": "permission-rule",
+    "unmatched": "permission-rule",
+    "user-rejected": "user-rejected",
+    "interrupted": "interrupted",
+}
+
+# What Claude Code answers a call the user rejected or interrupted.
+DENIAL_TEXTS = {
+    "user-rejected": "The user doesn't want to proceed with this tool use."
+    " The tool use was rejected.",
+    "interrupted": "[Request interrupted by user for tool use]",
+}
+
+# The tool_use_id of a result that answers no call of the transcript.
+UNMATCHED_CALL = "toolu_99999999999999999999unmatched"
+
+
 class _Transcript:
     """The records of a Claude transcript, in the order and with the fields
     of the Claude sample: each record links to the one before it."""
@@ -510,6 +585,11 @@ def claude_transcript(
     version: str = CLAUDE_VERSION,
     turn: str = "complete",
     ai_title_first: bool = False,
+    negatives: dict[str, str] | None = None,
+    summary: str | None = None,
+    skills: tuple[str, ...] = SKILLS,
+    hooks: tuple[tuple[str, str], ...] = (),
+    credentials: str | None = None,
 ) -> str:
     """The transcript of a probe worker that did every step as the profile
     allows (research P4): steps 1-5 denied by a permission rule, steps 6
@@ -519,7 +599,20 @@ def claude_transcript(
     drops the fields `effort` and `cwd` from every record. `turn` is
     `prompt_only` for a worker that never answered. `ai_title_first`
     writes the session title, which also holds the marker, before the
-    prompt."""
+    prompt. `negatives` maps a negative of NEGATIVES to what became of its
+    call, one of OUTCOMES; the others are `denied`. `summary` is the
+    worker's last words, after its calls.
+
+    What the worker loaded: by default the 13 Orca hooks of the profile
+    run (SessionStart, a PreToolUse for each call, a PostToolUse for each
+    call that ran, Stop), the superpowers plugin runs its own SessionStart
+    hook, and Claude lists `skills`. `hooks` are more hooks that ran at
+    startup, each (event, command). `credentials` is text the result of
+    every call ends with, as a command's output can carry them."""
+    outcomes = {
+        number: (negatives or {}).get(name, "denied")
+        for number, name in enumerate(NEGATIVES, 1)
+    }
     where = workspace if cwd is None else cwd
     base: dict[str, Any] = {
         "userType": "external",
@@ -543,20 +636,16 @@ def claude_transcript(
         t.meta(**title)
     t.hook("SessionStart", "SessionStart:startup", orca_hook("SessionStart"))
     t.hook("SessionStart", "SessionStart:startup", SUPERPOWERS_HOOK)
+    for event, command in hooks:
+        t.hook(event, f"{event}:startup", command)
     steps = probe_steps(workspace, marker, run)
-    brief = "\n".join(
-        f"{number}. Use the Write tool to create {target} containing the word probe."
-        if tool == "Write"
-        else f"{number}. Run in Bash: {target}"
-        for number, (tool, target) in enumerate(steps, 1)
-    )
     prompt = (
         "Please carry out this task from my Orca coordinator by following the"
         ' brief I pasted below. \n\n<pasted_content id="5472">\n'
         "You are working inside Orca, a multi-agent IDE. You are a dispatched"
         f" worker.\nYour coordinator's terminal handle is: {COORDINATOR_HANDLE}\n"
         f"Your task ID is: {PROBE_TASK}\n\n"
-        f"PREFLIGHT PROBE {marker}\n\n{brief}\n\n"
+        f"{probe_brief(workspace, marker, run)}\n\n"
         "Then report completion with the worker_done command given in your"
         f" instructions. Include the marker {marker} in the body.\n"
         '</pasted_content id="5472">\n'
@@ -573,10 +662,10 @@ def claude_transcript(
     )
     listing = {
         "type": "skill_listing",
-        "content": "".join(f"- {name}: a skill\n" for name in SKILLS),
-        "skillCount": len(SKILLS),
+        "content": "".join(f"- {name}: a skill\n" for name in skills),
+        "skillCount": len(skills),
         "isInitial": True,
-        "names": list(SKILLS),
+        "names": list(skills),
     }
     t.add("attachment", attachment=listing)
     if turn == "prompt_only":
@@ -592,24 +681,32 @@ def claude_transcript(
     )
     calls = [*steps, ("Bash", report)]
     for number, (tool, target) in enumerate(calls, 1):
+        outcome = outcomes.get(number, "ran")
+        if outcome == "not_attempted":
+            continue
         call = f"toolu_{number:024d}"
         field = "file_path" if tool == "Write" else "command"
         given = {field: target} | ({"content": "probe\n"} if tool == "Write" else {})
         use = {"type": "tool_use", "id": call, "name": tool, "input": given}
         source = t.assistant([use], "tool_use", model=model, **efforts)
         t.hook("PreToolUse", f"PreToolUse:{tool}", orca_hook("PreToolUse"))
-        denied = number <= 5
-        if denied:
+        kind = DENIAL_KINDS.get(outcome)
+        denied = kind is not None
+        if kind == "permission-rule":
             said = f"Permission to use {tool} with {field} {target} has been denied."
+        elif denied:
+            said = DENIAL_TEXTS[kind]
         else:
             said = "Sent msg_a23ee78d2551" if number == 8 else "done"
+        if credentials is not None:
+            said += f" {credentials}"
         result = {
             "type": "tool_result",
             "content": said,
             "is_error": denied,
-            "tool_use_id": call,
+            "tool_use_id": UNMATCHED_CALL if outcome == "unmatched" else call,
         }
-        marks = {"toolDenialKind": "permission-rule"} if denied else {}
+        marks = {"toolDenialKind": kind} if denied else {}
         t.add(
             "user",
             promptId="d0436dc3-a419-4824-9cf7-b0b4e80eec0a",
@@ -620,8 +717,8 @@ def claude_transcript(
         )
         if not denied:
             t.hook("PostToolUse", f"PostToolUse:{tool}", orca_hook("PostToolUse"))
-    summary = {"type": "text", "text": f"I ran all seven probe steps for {marker}."}
-    t.assistant([summary], "end_turn", model=model, **efforts)
+    words = summary or f"I ran all seven probe steps for {marker}."
+    t.assistant([{"type": "text", "text": words}], "end_turn", model=model, **efforts)
     t.hook("Stop", "Stop", orca_hook("Stop"))
     t.add("system", subtype="turn_duration", durationMs=31000, messageCount=40)
     return t.text()
@@ -656,6 +753,8 @@ def claude_probe(
     versions: tuple[str, str] | None = None,
     snapshot: Path | None = None,
     dispatched: bool = True,
+    negatives: dict[str, str] | None = None,
+    tasks: tuple[list[dict[str, Any]], list[dict[str, Any]]] = ([], []),
 ) -> dict[str, list[dict[str, Any]]]:
     """The whole Orca conversation of a preflight that probes the Claude
     profile in `probe.implementer` (DD-4 steps 5-12a), the worker drawing
@@ -673,9 +772,21 @@ def claude_probe(
     after the terminal is closed; `snapshot` logs that directory when the
     terminal is created. Without `dispatched` the probe goes from creating
     the terminal straight to closing it: worker-start, the wait and
-    worker-show are left out."""
+    worker-show are left out.
+
+    `negatives` maps a negative of NEGATIVES to an outcome of OUTCOMES,
+    as claude_transcript writes it. Once the task is started, a negative
+    that was `executed` or `denied_changed` changes its resource where
+    DD-6 watches it: the file of step 1 is written, origin gets the
+    branch of step 2 (only when denied_changed: a dry run pushes nothing),
+    the Run gets the Task of step 4. `tasks` are the Run's other Tasks
+    that task-list shows before the task is started and after the wait,
+    besides the probe's own."""
     workspace = probe.implementer
-    text = claude_transcript(workspace, marker, session, run, **(transcript or {}))
+    negatives = negatives or {}
+    text = claude_transcript(
+        workspace, marker, session, run, negatives=negatives, **(transcript or {})
+    )
     project = claude_project(home, workspace)
     paths = {
         "one": [project / f"{session}.jsonl"],
@@ -709,8 +820,23 @@ def claude_probe(
         "mode": {"mode": "terminal", "preferred": "terminal"},
         "residualResources": [],
     }
+    changed = {
+        name
+        for name, outcome in negatives.items()
+        if outcome == "denied_changed" or (outcome == "executed" and name != "git_push")
+    }
+    acted = []
+    if "outside_write" in changed:
+        outside, _ = probe_files(workspace, marker)
+        acted.append({"write": {"path": str(outside), "text": "probe\n"}})
+    if "git_push" in changed:
+        # A ref of origin, as a push would leave it.
+        branch = f"refs/heads/preflight-probe-{marker.removeprefix('PFM-')}"
+        ref = {"path": str(probe.origin / branch), "text": _head(probe.origin) + "\n"}
+        acted.append({"write": ref})
     if failed_stage is None:
         start: dict[str, Any] = {"stdout": orca_json(started)}
+        start |= {"effects": acted} if acted else {}
     else:
         failure = orca_error("worker_start_failed", "the worker did not start")
         answer = json.loads(failure)
@@ -750,7 +876,16 @@ def claude_probe(
             "effects": effects,
         }
     )  # fmt: skip
+    # The Run's Tasks as the probe lists them before the task is started and
+    # after the wait: by then it holds the probe's own Task.
+    listing = ["orchestration", "task-list", "--run", run, "--json"]
+    before, others = tasks
+    own = [*others, orca_task(PROBE_TASK, run, probe_brief(workspace, marker, run))]
+    if "orca" in changed:
+        spec = f"probe {marker.removeprefix('PFM-')}"
+        own.append(orca_task("task_4b1e9c0d7a25", run, spec))
     if dispatched:
+        orca.append({"match": listing, "stdout": orca_json(orca_tasks(run, before))})
         orca.append(
             {
                 "match": [
@@ -775,6 +910,7 @@ def claude_probe(
                 "repeat": True,
             }
         )  # fmt: skip
+        orca.append({"match": listing, "stdout": orca_json(orca_tasks(run, own))})
         orca.append(
             {
                 "match": [

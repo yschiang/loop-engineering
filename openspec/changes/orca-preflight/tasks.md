@@ -289,7 +289,7 @@ Effort 的依據（D69）：
 | `test_unreadable_native_file_fails_the_readback` | 逐 task 審查 T3.1-02 的回歸測試。參數化，`terminal wait` 以 `repeat` 回 timeout，`timeout_s` 為 60：(a) 探測的 `<uuid>.jsonl` 存在但讀不到；(b) 探測的 transcript 可讀且含 marker，另一個專案有一份修改時間晚於 `started`、讀不到的 session 檔；(c) 另一個專案的目錄可列出但不能 stat 其中的檔（修改時間未知，不算已知在範圍外）；(d) 另一個專案的目錄列不出。每一列：讀回各項 `passed is False`、`actual is None`、`reason == "native_unreadable"`；`terminal close` 恰好一次，`stop.confirmed` 成立；verdict 是 unverified。修改時間早於 `started` 或在 `subagents/` 下的檔照舊不在範圍內（見 `test_readback_mismatch_fails_the_item`） | d223714 吞掉 `OSError`：(a) 的 `reason` 是 `native_not_found`，(b)(c)(d) 的讀回項 `passed`，比較不成立 | 通過 |
 | `test_hidden_projects_are_in_the_search_scope` | 逐 task 審查 T3.1-03 的回歸測試。DD-6 的範圍 `$HOME/.claude/projects/*/*.jsonl` 不排除以點開頭的名字。參數化，`terminal wait` 以 `repeat` 回 timeout，`timeout_s` 為 60，探測的 transcript 可讀且含 marker：(a) 名字以點開頭的專案目錄有第二份修改時間晚於 `started`、含 marker 的 transcript → `native_ambiguous`；(b) 這樣的專案有一份修改時間晚於 `started`、讀不到的 `.jsonl` → `native_unreadable`；(c) 探測的專案裡有一份名字以點開頭、修改時間晚於 `started`、含 marker 的 session 檔 → `native_ambiguous`。每一列：讀回各項 `passed is False`、`actual is None`、`reason` 如上 | 17f8e8d 略過以點開頭的名字：讀回項 `passed`，比較不成立 | 通過 |
 
-- [ ] 3.2 Claude 的權限負例、載入的設定、摘錄與遮蔽；全部成立才 verified；驗證：`uv run pytest tests/test_preflight_claude.py`
+- [x] 3.2 Claude 的權限負例、載入的設定、摘錄與遮蔽；全部成立才 verified；驗證：`uv run pytest tests/test_preflight_claude.py`
 
 **模式與 effort**：預設模式；xhigh／xhigh。
 

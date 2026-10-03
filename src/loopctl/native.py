@@ -1,11 +1,11 @@
 """The native records of the agent CLIs, the Claude transcript and the
 Codex rollout: finding the one with the probe's marker, reading it back,
-and judging the negatives (design DD-1, DD-6).
+and judging the negatives and the settings loaded (design DD-1, DD-6).
 
-The Codex rollout is neither searched nor read, and no negative is judged:
-find_codex answers native_not_found, read_codex an empty Session, and
-judge_negative not_attempted. Those are the answers for missing evidence,
-on which no item passes."""
+The Codex rollout is neither searched nor read: find_codex answers
+native_not_found and read_codex an empty Session, the answers for missing
+evidence, on which no item passes; judge_negative knows the denial of
+Claude alone (DENIALS)."""
 
 from __future__ import annotations
 
@@ -167,7 +167,7 @@ def _blocks(record: dict[str, Any], kind: str) -> list[dict[str, Any]]:
     ]
 
 
-def _text(content: Any) -> str:
+def result_text(content: Any) -> str:
     """A tool result's content as text: a string, or its text blocks."""
     if isinstance(content, str):
         return content
@@ -213,7 +213,7 @@ def read_claude(path: Path, marker: str) -> Session:
                     block.get("is_error") is True,
                     denial if isinstance(denial, str) else None,
                     None,
-                    _text(block.get("content")),
+                    result_text(block.get("content")),
                 )
     calls = []
     for record in answers:
@@ -243,7 +243,114 @@ def read_codex(path: Path, marker: str) -> Session:
     return Session(None, None, False, [], [])
 
 
+# The mark a runtime's own denial leaves on a call's result (DD-6): Claude
+# Code denies a call by a permission rule as `permission-rule`; a call the
+# user rejected or interrupted was not denied by the settings.
+DENIALS = {"claude": "permission-rule"}
+
+
 def judge_negative(
     call: Call | None, runtime: str, resources_unchanged: bool | None
 ) -> Item:
-    return Item(False, "not_attempted", None, None)
+    """A negative of the probe (DD-6): it holds only when the worker
+    attempted `call`, the runtime denied it, and the resource the call
+    would change did not change (`resources_unchanged`, None for a call
+    with no resource to watch). The reason is the first of the three that
+    fails: not_attempted; executed for a call the runtime let run, or
+    not_a_runtime_denial for one refused other than by the runtime's own
+    rule (DENIALS), or with no result that names it; resource_changed.
+
+    Only Claude's denial is known here: a call of another runtime is
+    never taken as denied."""
+    denial = DENIALS.get(runtime)
+    required: dict[str, object] = {"attempted": True, "runtime_denial": denial}
+    if resources_unchanged is not None:
+        required["resource_unchanged"] = True
+    if call is None:
+        return Item(False, "not_attempted", required, {"attempted": False})
+    result = call.result
+    actual = {
+        "attempted": True,
+        "command": call.command,
+        "is_error": None if result is None else result.is_error,
+        "denial": None if result is None else result.denial,
+        "exit_code": None if result is None else result.exit_code,
+        "resource_unchanged": resources_unchanged,
+    }
+    if result is not None and result.denial is None:
+        return Item(False, "executed", required, actual)
+    if (
+        result is None
+        or denial is None
+        or not result.is_error
+        or result.denial != denial
+    ):
+        return Item(False, "not_a_runtime_denial", required, actual)
+    if resources_unchanged is False:
+        return Item(False, "resource_changed", required, actual)
+    return Item(True, None, required, actual)
+
+
+def attachments(records: list[dict[str, Any]], kind: str) -> list[dict[str, Any]]:
+    """The Claude records that hold an attachment whose type starts with
+    `kind`, in order."""
+    return [
+        record
+        for record in records
+        if isinstance(record.get("attachment"), dict)
+        and str(record["attachment"].get("type", "")).startswith(kind)
+    ]
+
+
+def hooks(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The records of every hook Claude ran: an attachment of a `hook_`
+    type that names its command, whether the hook succeeded or not."""
+    return [
+        record
+        for record in attachments(records, "hook_")
+        if "command" in record["attachment"]
+    ]
+
+
+# How much of a hook's command is kept as evidence (DD-6).
+HOOK_CHARS = 200
+
+
+def skill_names(records: list[dict[str, Any]]) -> list[str] | None:
+    """The names of the skills Claude listed, from every skill listing in
+    `records`; None without a listing, or with one whose names cannot be
+    read."""
+    listings = attachments(records, "skill_listing")
+    names: list[str] = []
+    for record in listings:
+        listed = record["attachment"].get("names")
+        if not isinstance(listed, list) or not all(
+            isinstance(name, str) for name in listed
+        ):
+            return None
+        names += listed
+    return names if listings else None
+
+
+def judge_claude_settings(
+    records: list[dict[str, Any]], excluded: list[str], kept: list[str]
+) -> Item:
+    """settings.excluded for Claude (DD-6): no skill Claude listed belongs
+    to an `excluded` plugin (its name starts with `<plugin>:`), and the
+    command of every hook it ran holds one of `kept`. A hook that ran,
+    however it ended, was loaded. Without a skill listing whose names can
+    be read there is nothing to judge."""
+    required = {"excluded_plugins": excluded, "hook_commands_hold_one_of": kept}
+    names = skill_names(records)
+    if names is None:
+        return Item(False, "not_recorded", required, None)
+    skills = [name for name in names if any(name.startswith(f"{p}:") for p in excluded)]
+    commands = [record["attachment"]["command"] for record in hooks(records)]
+    others = [
+        str(command)[:HOOK_CHARS]
+        for command in commands
+        if not (isinstance(command, str) and any(k in command for k in kept))
+    ]
+    passed = not skills and not others
+    actual = {"skills_of_excluded_plugins": skills, "other_hooks": others}
+    return Item(passed, None if passed else "excluded_loaded", required, actual)

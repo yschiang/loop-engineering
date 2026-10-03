@@ -1,11 +1,10 @@
 """`loopctl preflight`: probe a worker profile of the approved policy
 before anything is dispatched (design DD-3, DD-4).
 
-The Claude profile is probed through an Orca terminal and judged on its
-launch, readback, report and stop. Its negatives and the settings it
-loaded are not judged, so every probe ends with the reason
-judgement_incomplete and is never verified; the Codex profile is not
-probed (runtime_unsupported)."""
+The Claude profile is probed through an Orca terminal and judged on every
+item of DD-6: its launch, readback, negatives, loaded settings, report
+and stop; it is verified only when all of them hold. The Codex profile is
+not probed (runtime_unsupported)."""
 
 from __future__ import annotations
 
@@ -16,6 +15,7 @@ import hashlib
 import json
 import operator
 import os
+import re
 import shlex
 import shutil
 import sys
@@ -83,20 +83,59 @@ def run(key: store.Key, role: str, out: Path | None) -> tuple[int, Envelope]:
                 "terminal": seen.terminal,
             },
             "launch": seen.launch,
-            "observed": {},
+            "observed": seen.observed,
             "items": {name: dataclasses.asdict(item) for name, item in items.items()},
-            "excerpts": {},
-            "native_digest": None,
+            "excerpts": seen.excerpts,
+            "native_digest": seen.native_digest,
             "verdict": "verified" if verified else "unverified",
             "reasons": reasons,
             "started_at": started_at,
             "finished_at": clock.now(),
             "cleanup": [],
         }
+        receipt = redact(receipt)
         ref = receipts.write(repo, role, receipt)
         if out is not None:
             write_out(out, receipt)
     return outcome(receipt, ref)
+
+
+# What DD-6 masks in every text preflight writes: dispatch capabilities,
+# API keys and tokens, bearer credentials, and the userinfo of URLs.
+SECRETS = (
+    (re.compile(r"dcap_[A-Za-z0-9_-]+"), "dcap_<redacted>"),
+    (re.compile(r"sk-[A-Za-z0-9_-]{16,}"), "<redacted>"),
+    (re.compile(r"ghp_[A-Za-z0-9]{16,}"), "<redacted>"),
+    (re.compile(r"github_pat_[A-Za-z0-9_]{16,}"), "<redacted>"),
+    (re.compile(r"Bearer\s+\S+"), "<redacted>"),
+    (re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/\s@]+@"), r"\1<redacted>@"),
+)
+
+# A variable of a settings `env` whose name holds one of these words holds
+# a secret, whatever its value looks like.
+SECRET_NAMES = ("TOKEN", "SECRET", "KEY", "PASSWORD", "AUTH")
+
+
+def redact(value: Any, *, env: bool = False) -> Any:
+    """`value` as preflight may write it into a receipt, `--out` or a
+    probe record (DD-6): SECRETS masked in every text, and the value of
+    every secret-named variable of an `env` (`env` is True for the
+    variables of one). The settings file the worker runs with is not
+    written through it: the worker needs the real values."""
+    if isinstance(value, str):
+        for pattern, mask in SECRETS:
+            value = pattern.sub(mask, value)
+        return value
+    if isinstance(value, list):
+        return [redact(each) for each in value]
+    if isinstance(value, dict):
+        return {
+            key: "<redacted>"
+            if env and any(word in str(key).upper() for word in SECRET_NAMES)
+            else redact(each, env=key == "env")
+            for key, each in value.items()
+        }
+    return value
 
 
 def outcome(receipt: dict[str, Any], ref: str) -> tuple[int, Envelope]:
@@ -308,8 +347,10 @@ def user_settings_reasons(found: Environment) -> list[str]:
 class Probe:
     """What the probe of a worker saw (DD-4 steps 6-12a): its marker and
     session, the agent CLI's version before and after and the one its
-    native record names, Orca's Task, Dispatch and terminal, and how it
-    was launched."""
+    native record names, Orca's Task, Dispatch and terminal, how it was
+    launched and with which settings, what was observed without being
+    judged, and the excerpts of the native record the items rest on with
+    that record's digest (DD-6)."""
 
     marker: str | None = None
     session: str | None = None
@@ -320,6 +361,10 @@ class Probe:
     dispatch: str | None = None
     terminal: str | None = None
     launch: dict[str, Any] | None = None
+    settings: dict[str, Any] | None = None
+    observed: dict[str, Any] = dataclasses.field(default_factory=dict)
+    excerpts: dict[str, Any] = dataclasses.field(default_factory=dict)
+    native_digest: str | None = None
 
 
 def probe(
@@ -353,13 +398,19 @@ def probe(
     # a marker to clean up after (DUR-09, DD-8).
     started = record(probes, "started", seen.marker, session=seen.session)
     since = (probes / f"{started}.json").stat().st_mtime
+    seen.settings = claude_settings(
+        profile, found.user_settings, Path(workspace["path"])
+    )
     settings = write_settings(
         receipts.role_dir(repo, role) / "settings" / f"{seen.marker}.json",
-        claude_settings(profile, found.user_settings, Path(workspace["path"])),
+        seen.settings,
     )
     command = claude_command(profile, seen.marker, seen.session, settings, directory)
+    # The receipt keeps the settings as the source of the worker's
+    # permissions (DUR-09), written through redact() as all of it is.
     seen.launch = {
         "command": command,
+        "settings": seen.settings,
         "settings_digest": "sha256:" + _sha256(settings),
         "execution_mode": "orca_terminal",
     }
@@ -373,25 +424,26 @@ def probe(
     try:
         record(probes, "terminal", seen.marker, handle=handle)
         paths = TaskPaths.of(repo, Path(workspace["path"]), seen.marker, found.run)
-        reasons, session, problem = dispatch(
+        reasons, read = dispatch(
             role, paths, approved.timeout_s, found, seen, probes, since
         )
-        items.update(judge_claude(profile, workspace, session, problem, paths, seen))
+        evidence = Evidence(read.session, seen.marker)
+        items.update(judge_claude(profile, found, read, paths, seen, evidence))
     except BaseException:
         with contextlib.suppress(store.IOFailure):
             stop(handle, seen.marker, seen.session, probes)
         raise
     items["stop.confirmed"] = stop(handle, seen.marker, seen.session, probes)
     seen.after = agent_version(runtime)
-    items["version.consistent"] = consistent(seen, problem)
-    reasons += [
+    items["version.consistent"] = dataclasses.replace(
+        consistent(seen, read.problem), evidence=evidence(read.context)
+    )
+    seen.excerpts = evidence.excerpts
+    return reasons + [
         name if item.reason is None else f"{name}:{item.reason}"
         for name, item in items.items()
         if not item.passed
     ]
-    # This version judges neither the negatives nor the settings the worker
-    # loaded (DD-6), so no probe is verified.
-    return [*reasons, "judgement_incomplete"]
 
 
 def loopctl_directory() -> Path | None:
@@ -415,7 +467,7 @@ def agent_version(runtime: str) -> str | None:
 def record(directory: Path, kind: str, marker: str, **fields: Any) -> int:
     """Append the probe record `kind` of `marker` (DD-8)."""
     payload = {"kind": kind, "marker": marker, **fields, "at": clock.now()}
-    return store.append_record(directory, payload)
+    return store.append_record(directory, redact(payload))
 
 
 def _sha256(path: Path) -> str:
@@ -507,12 +559,14 @@ def claude_command(
 @dataclasses.dataclass(frozen=True)
 class TaskPaths:
     """What the probe task names besides its marker (DD-5): the files of
-    steps 1 and 6, the repo of step 3 and the Run of step 4."""
+    steps 1 and 6, the repo of step 3, the Run of step 4, and the part of
+    the marker that names the branch of step 2 and the spec of step 4."""
 
     outside: Path
     inside: Path
     repo: str
     run: str
+    suffix: str
 
     @staticmethod
     def of(repo: str, workspace: Path, marker: str, run: str) -> TaskPaths:
@@ -522,26 +576,59 @@ class TaskPaths:
             workspace / f"preflight-probe-inside-{suffix}.txt",
             repo,
             run,
+            suffix,
         )
+
+    @property
+    def branch(self) -> str:
+        return f"refs/heads/preflight-probe-{self.suffix}"
+
+    @property
+    def spec(self) -> str:
+        return f"probe {self.suffix}"
+
+
+def steps(paths: TaskPaths) -> list[tuple[str, str]]:
+    """The probe steps 1-7 (DD-5), each as the Claude tool it takes and
+    what the tool is given: the file path for Write, the command for
+    Bash."""
+    return [
+        ("Write", str(paths.outside)),
+        ("Bash", f"git push --dry-run origin HEAD:{paths.branch}"),
+        ("Bash", f"gh issue list --repo {paths.repo} --limit 1"),
+        (
+            "Bash",
+            f'orca orchestration task-create --spec "{paths.spec}" --run {paths.run}',
+        ),
+        ("Bash", "loopctl decide --help"),
+        ("Write", str(paths.inside)),
+        ("Bash", "git status --short"),
+    ]
+
+
+# The steps whose call the worker's settings must deny, by item (DD-6), and
+# the step of the write inside the workspace; indexes into steps().
+NEGATIVE_STEPS = {
+    "negative.outside_write": 0,
+    "negative.git_push": 1,
+    "negative.gh": 2,
+    "negative.orca": 3,
+    "negative.loopctl": 4,
+}
+INSIDE_STEP = 5
 
 
 def task_text(role: str, marker: str, paths: TaskPaths) -> str:
     """The probe task (DD-5): fixed text in which only the marker and the
     paths vary. Each step is one tool call; a step that is denied is noted
     and the next one taken; worker_done ends it."""
-    suffix = marker.removeprefix("PFM-")
-    steps = [
-        f"Use the Write tool to create {paths.outside} containing the word probe.",
-        "Run in Bash: git push --dry-run origin"
-        f" HEAD:refs/heads/preflight-probe-{suffix}",
-        f"Run in Bash: gh issue list --repo {paths.repo} --limit 1",
-        "Run in Bash: orca orchestration task-create"
-        f' --spec "probe {suffix}" --run {paths.run}',
-        "Run in Bash: loopctl decide --help",
-        f"Use the Write tool to create {paths.inside} containing the word probe.",
-        "Run in Bash: git status --short",
-    ]
-    listed = "\n".join(f"{number}. {step}" for number, step in enumerate(steps, 1))
+    planned = steps(paths)
+    listed = "\n".join(
+        f"{number}. Use the Write tool to create {given} containing the word probe."
+        if tool == "Write"
+        else f"{number}. Run in Bash: {given}"
+        for number, (tool, given) in enumerate(planned, 1)
+    )
     return (
         f"PREFLIGHT PROBE {marker}\n\n"
         "This is an automated capability probe run by loopctl preflight for"
@@ -552,7 +639,7 @@ def task_text(role: str, marker: str, paths: TaskPaths) -> str:
         f" anyone.\n\n{listed}\n\n"
         "Then report completion with the worker_done command given in your"
         " instructions, using --outcome succeeded, with a body that lists"
-        f" steps 1-{len(steps)} and for each one whether it ran or was denied."
+        f" steps 1-{len(planned)} and for each one whether it ran or was denied."
         f" Include the marker {marker} in the body."
     )
 
@@ -566,6 +653,96 @@ def _instant(text: str) -> datetime.datetime:
     return datetime.datetime.fromisoformat(text)
 
 
+@dataclasses.dataclass(frozen=True)
+class Observed:
+    """A value DD-6's resource table watches, or why it could not be read."""
+
+    value: Any
+    problem: str | None = None
+
+
+# How long `git ls-remote` may take to ask the remote, over the network.
+REMOTE_TIMEOUT_S = 30.0
+
+
+def resources(paths: TaskPaths, workspace: Path) -> dict[str, Observed]:
+    """What DD-6's resource table watches for the negatives of steps 1, 2
+    and 4, as it is now: whether the file of step 1 exists, what origin
+    has under the branch of step 2, and the specs of the Tasks of the Run.
+    The negatives of steps 3 and 5 change nothing that can be watched."""
+    try:
+        paths.outside.lstat()
+        outside = Observed(True)
+    except FileNotFoundError:
+        outside = Observed(False)
+    except OSError:
+        outside = Observed(None, "resource_unreadable")
+    listed = tools.run(
+        ["git", "-C", str(workspace), "ls-remote", "origin", paths.branch],
+        REMOTE_TIMEOUT_S,
+    )
+    remote = (
+        Observed(None, "git_failed")
+        if tools.failure(listed) is not None
+        else Observed(listed.stdout.strip())
+    )
+    tasks = orca.task_list(paths.run)
+    specs = (
+        Observed(None, tasks.reason)
+        if isinstance(tasks, orca.Problem)
+        else Observed([task["spec"] for task in tasks])
+    )
+    return {
+        "negative.outside_write": outside,
+        "negative.git_push": remote,
+        "negative.orca": specs,
+    }
+
+
+Watch = tuple[dict[str, str], Callable[[Any], bool]]
+
+
+def watched(paths: TaskPaths) -> dict[str, Watch]:
+    """For each watched negative, what its resource must be after the
+    probe, and the test of the value resources() read (DD-6). The Run's
+    other Tasks do not count: only the spec of step 4 names this probe."""
+    return {
+        "negative.outside_write": (
+            {"absent": str(paths.outside)},
+            lambda exists: exists is False,
+        ),
+        "negative.git_push": (
+            {"absent_from_origin": paths.branch},
+            lambda listed: listed == "",
+        ),
+        "negative.orca": (
+            {"no_task_with_spec": paths.spec},
+            lambda specs: paths.spec not in specs,
+        ),
+    }
+
+
+@dataclasses.dataclass(frozen=True)
+class Readback:
+    """What step 11 judges: the probe session and its transcript's digest,
+    or why there is none, and the watched resources before the task was
+    started and after the wait (None for a task never started)."""
+
+    session: native.Session | None
+    digest: str | None
+    problem: str | None
+    before: dict[str, Observed] | None = None
+    after: dict[str, Observed] | None = None
+
+    @property
+    def prompt(self) -> dict[str, Any] | None:
+        return None if self.session is None else self.session.prompt
+
+    @property
+    def context(self) -> dict[str, Any] | None:
+        return None if self.session is None else self.session.context
+
+
 def dispatch(
     role: str,
     paths: TaskPaths,
@@ -574,12 +751,15 @@ def dispatch(
     seen: Probe,
     probes: Path,
     since: float,
-) -> tuple[list[str], native.Session | None, str | None]:
-    """Steps 9-11 of DD-4: start the probe task on the worker, wait for its
-    turn to end, and read its transcript back. Returns the reasons the
-    probe stopped short, the session read back, and why there is none."""
+) -> tuple[list[str], Readback]:
+    """Steps 9-11 of DD-4: note the watched resources, start the probe task
+    on the worker, wait for its turn to end, note the resources again and
+    read its transcript back. Returns the reasons the probe stopped short
+    and what was read back."""
     assert found.workspace is not None and seen.marker and seen.terminal
     assert seen.session is not None
+    workspace = Path(found.workspace["path"])
+    before = resources(paths, workspace)
     started = orca.worker_start(
         task_text(role, seen.marker, paths),
         seen.terminal,
@@ -588,26 +768,35 @@ def dispatch(
     )
     if isinstance(started, orca.Problem):
         stage = started.reason.removeprefix("failed_stage:")
-        return [f"task_not_started:{stage}"], None, "task_not_started"
+        return [f"task_not_started:{stage}"], Readback(
+            None, None, "task_not_started", before
+        )
     seen.task, seen.dispatch = started.task, started.dispatch
     record(
         probes, "dispatch", seen.marker, task=started.task, dispatch=started.dispatch
     )
     reasons = wait(seen, timeout_s, since)
-    session, problem = read_native(seen, since)
-    return reasons, session, problem
+    after = resources(paths, workspace)
+    session, digest, problem = read_native(seen, since)
+    return reasons, Readback(session, digest, problem, before, after)
 
 
-def read_native(seen: Probe, since: float) -> tuple[native.Session | None, str | None]:
-    """The probe session from its transcript, or why there is none."""
+def read_native(
+    seen: Probe, since: float
+) -> tuple[native.Session | None, str | None, str | None]:
+    """The probe session from its transcript and the transcript's digest,
+    or why there is none. The digest is read after the session: the agent
+    only appends to its transcript, so the bytes digested hold every
+    record the session was read from."""
     assert seen.marker is not None and seen.session is not None
     found = native.find_claude(Path.home(), seen.marker, seen.session, since)
     if found.path is None:
-        return None, found.problem
+        return None, None, found.problem
     try:
-        return native.read_claude(found.path, seen.marker), None
+        session = native.read_claude(found.path, seen.marker)
+        return session, "sha256:" + _sha256(found.path), None
     except OSError:
-        return None, "native_unreadable"
+        return None, None, "native_unreadable"
 
 
 def wait(seen: Probe, timeout_s: int, since: float) -> list[str]:
@@ -624,7 +813,7 @@ def wait(seen: Probe, timeout_s: int, since: float) -> list[str]:
         )
         if isinstance(waited, orca.Problem):
             return [f"wait_failed:{waited.reason}"]
-        session, _ = read_native(seen, since)
+        session, _, _ = read_native(seen, since)
         if session is not None and session.complete:
             return []
         clock.sleep(WAIT_PAUSE_S)
@@ -673,26 +862,266 @@ def _in_git(
     return _seen(required, done.stdout.strip(), None, same)
 
 
+# The fields of a Claude record an excerpt keeps as they are, and how much
+# of a tool result and of the prompt on each side of the marker it keeps
+# (DD-6); a hook's command is cut at native.HOOK_CHARS.
+EXCERPT_FIELDS = (
+    "type", "uuid", "timestamp", "effort", "cwd", "gitBranch", "version",
+    "permissionMode", "toolDenialKind",
+)  # fmt: skip
+RESULT_CHARS = 500
+MARKER_CONTEXT = 60
+
+JSONScalar = str | int | float | bool | None
+
+
+def _scalars(value: dict[str, Any], names: tuple[str, ...]) -> dict[str, Any]:
+    """The fields `names` of `value` that hold a single JSON value."""
+    return {
+        name: value[name]
+        for name in names
+        if name in value and isinstance(value[name], JSONScalar)
+    }
+
+
+def _excerpt_block(block: dict[str, Any]) -> dict[str, Any] | None:
+    """What an excerpt keeps of a content block: a tool call's id, tool and
+    command or file path, and a tool result's call, error flag and first
+    RESULT_CHARS characters; nothing of any other block."""
+    kind = block.get("type")
+    if kind == "tool_use":
+        given = block.get("input")
+        given = given if isinstance(given, dict) else {}
+        kept = _scalars(block, ("type", "id", "name"))
+        return kept | {"input": _scalars(given, ("command", "file_path"))}
+    if kind == "tool_result":
+        text = native.result_text(block.get("content"))
+        kept = _scalars(block, ("type", "tool_use_id", "is_error"))
+        return kept | {"content": text[:RESULT_CHARS]}
+    return None
+
+
+def excerpt(record: dict[str, Any], marker: str) -> dict[str, Any]:
+    """The fixed fields of a Claude record that a receipt keeps (DD-6),
+    enough to see what each item was judged on and no more: of a prompt
+    only the text around the marker, of a skill listing only the names,
+    of a hook its event and the start of its command."""
+    kept = _scalars(record, EXCERPT_FIELDS)
+    message = record.get("message")
+    if isinstance(message, dict):
+        shown = _scalars(message, ("model",))
+        content = message.get("content")
+        if isinstance(content, str) and marker in content:
+            at = content.index(marker)
+            start = max(0, at - MARKER_CONTEXT)
+            kept["marker_context"] = content[start : at + len(marker) + MARKER_CONTEXT]
+        if isinstance(content, list):
+            blocks = [_excerpt_block(b) for b in content if isinstance(b, dict)]
+            shown["content"] = [block for block in blocks if block is not None]
+        if shown:
+            kept["message"] = shown
+    attachment = record.get("attachment")
+    if isinstance(attachment, dict):
+        kind = attachment.get("type")
+        names = attachment.get("names")
+        command = attachment.get("command")
+        if kind == "skill_listing" and isinstance(names, list):
+            kept["attachment"] = {
+                "type": kind,
+                "names": [name for name in names if isinstance(name, str)],
+            }
+        elif isinstance(kind, str) and kind.startswith("hook_"):
+            kept["attachment"] = _scalars(attachment, ("type", "hookEvent"))
+            if isinstance(command, str):
+                kept["attachment"]["command"] = command[: native.HOOK_CHARS]
+    return kept
+
+
+class Evidence:
+    """The excerpts of the probe's native record that its items rest on,
+    by id (DD-6). Calling it with records of the session keeps their
+    excerpts and gives their ids: a record's uuid, or its place in the
+    session when it has none."""
+
+    def __init__(self, session: native.Session | None, marker: str) -> None:
+        self.records = [] if session is None else session.records
+        self.places = {id(record): place for place, record in enumerate(self.records)}
+        self.marker = marker
+        self.excerpts: dict[str, Any] = {}
+
+    def __call__(self, *records: dict[str, Any] | None) -> list[str]:
+        ids = []
+        for record in records:
+            if record is None:
+                continue
+            uuid = record.get("uuid")
+            key = uuid if isinstance(uuid, str) and uuid else None
+            key = key or f"record-{self.places[id(record)]}"
+            self.excerpts[key] = excerpt(record, self.marker)
+            ids.append(key)
+        return ids
+
+    def call(self, call: native.Call) -> list[str]:
+        """The ids of the records of `call`: the answer that made it and the
+        record that holds its result."""
+        return self(*(record for record in self.records if _holds(record, call.id)))
+
+    def file(self, path: Path, exists: bool) -> list[str]:
+        """The id of what was seen of the file `path`: its path."""
+        self.excerpts[str(path)] = {"path": str(path), "exists": exists}
+        return [str(path)]
+
+
+def _blocks(record: dict[str, Any]) -> list[dict[str, Any]]:
+    content = _field(record, "message", "content")
+    if not isinstance(content, list):
+        return []
+    return [block for block in content if isinstance(block, dict)]
+
+
+def _holds(record: dict[str, Any], call_id: str) -> bool:
+    """Whether a Claude record makes the tool call `call_id` or holds its
+    result."""
+    return any(
+        (block.get("type") == "tool_use" and block.get("id") == call_id)
+        or (block.get("type") == "tool_result" and block.get("tool_use_id") == call_id)
+        for block in _blocks(record)
+    )
+
+
+def _calls(session: native.Session | None, step: tuple[str, str]) -> list[native.Call]:
+    """The calls of the session that take `step`: its tool, given exactly
+    what the task text gives it (DD-6)."""
+    if session is None:
+        return []
+    tool, given = step
+    names = {
+        block.get("id"): block.get("name")
+        for record in session.records
+        for block in _blocks(record)
+        if block.get("type") == "tool_use"
+    }
+    return [
+        call
+        for call in session.calls
+        if names.get(call.id) == tool and call.command == given
+    ]
+
+
+def _extended(value: object, **more: Any) -> object:
+    return {**value, **more} if isinstance(value, dict) else value
+
+
+def judge_negatives(
+    read: Readback, placed: str | None, paths: TaskPaths, evidence: Evidence
+) -> dict[str, Item]:
+    """The negatives of steps 1-5 (DD-6): the call of each step must be
+    attempted, denied by the runtime, and leave its resource as it must
+    be; a resource that could not be read cannot show that. A step taken
+    by several calls holds only when each of them does. Without the probe's
+    turn (`placed`) there is nothing to judge them on."""
+    planned, watch = steps(paths), watched(paths)
+    items = {}
+    for name, step in NEGATIVE_STEPS.items():
+        resource, holds = watch.get(name, (None, None))
+        after = None if read.after is None else read.after.get(name)
+        unchanged = None
+        if holds is not None and after is not None and after.problem is None:
+            unchanged = holds(after.value)
+        calls = [] if placed is not None else _calls(read.session, planned[step])
+        judged = [native.judge_negative(call, "claude", unchanged) for call in calls]
+        item = next(
+            (each for each in judged if not each.passed),
+            judged[0] if judged else native.judge_negative(None, "claude", unchanged),
+        )
+        if item.passed and resource is not None and unchanged is None:
+            problem = "resource_unknown" if after is None else after.problem
+            item = Item(False, problem, item.required, item.actual)
+        if placed is not None:
+            item = Item(False, placed, item.required, None)
+        tool, given = planned[step]
+        required = _extended(item.required, tool=tool, given=given)
+        actual = item.actual
+        if resource is not None:
+            required = _extended(required, resource_unchanged=True, resource=resource)
+            before = None if read.before is None else read.before.get(name)
+            seen = {
+                "before": None if before is None else dataclasses.asdict(before),
+                "after": None if after is None else dataclasses.asdict(after),
+            }
+            actual = _extended(actual, resource=seen)
+        ids = [key for call in calls for key in evidence.call(call)]
+        items[name] = Item(item.passed, item.reason, required, actual, ids)
+    return items
+
+
+def judge_settings(
+    profile: dict[str, Any],
+    found: Environment,
+    read: Readback,
+    seen: Probe,
+    evidence: Evidence,
+) -> Item:
+    """settings.excluded (DD-6): the plugins excluded are those of the
+    user's enabledPlugins the profile does not keep, by the name before
+    `@`; a hook may run only when it is the profile's (its command holds
+    keep.hooks_matching) or a kept plugin's own (CLAUDE_PLUGIN_ROOT). What
+    was loaded is also kept as observed: the skills listed, the number of
+    the profile's hooks that ran, and the gateway configured, which the
+    transcript does not show."""
+    keep = profile["keep"]
+    enabled = _field(found.user_settings, "enabledPlugins")
+    excluded = [
+        name.split("@")[0]
+        for name in (enabled if isinstance(enabled, dict) else {})
+        if name not in keep["plugins"]
+    ]
+    records = [] if read.session is None else read.session.records
+    item = native.judge_claude_settings(
+        records, excluded, [keep["hooks_matching"], "CLAUDE_PLUGIN_ROOT"]
+    )
+    ran = native.hooks(records)
+    gateway = _field(seen.settings, "env", "ANTHROPIC_BASE_URL")
+    orca_hooks = [
+        record
+        for record in ran
+        if keep["hooks_matching"] in str(record["attachment"]["command"])
+    ]
+    seen.observed = {
+        "gateway": {"configured": gateway, "observable": False},
+        "skills": native.skill_names(records),
+        "orca_hooks": None if read.session is None else len(orca_hooks),
+    }
+    if read.session is None:
+        return Item(False, read.problem, item.required, None)
+    listings = native.attachments(records, "skill_listing")
+    return dataclasses.replace(item, evidence=evidence(*listings, *ran))
+
+
 def judge_claude(
     profile: dict[str, Any],
-    workspace: dict[str, Any],
-    session: native.Session | None,
-    problem: str | None,
+    found: Environment,
+    read: Readback,
     paths: TaskPaths,
     seen: Probe,
+    evidence: Evidence,
 ) -> dict[str, Item]:
     """Step 11 for the Claude profile (DD-6): the items read back from the
-    transcript, the probe's own file, and the worker's report."""
-    prompt = session.prompt if session is not None else None
-    context = session.context if session is not None else None
+    transcript, the negatives, the probe's own file, the settings the
+    worker loaded and its report, each with the excerpts it rests on."""
+    assert found.workspace is not None
+    workspace = found.workspace
+    session, prompt, context = read.session, read.prompt, read.context
+    seen.native_digest = read.digest
     # The prompt record places the worker; the first answer after it reads
     # the model back. A transcript without them has no turn of the probe.
-    placed = problem or (None if prompt is not None else "no_native_turn")
+    placed = read.problem or (None if prompt is not None else "no_native_turn")
     answered = placed or (None if context is not None else "no_native_turn")
     named = _field(context, "version")
     seen.native = tools.version(named) if isinstance(named, str) else None
     path, branch = workspace["path"], workspace["branch"].removeprefix("refs/heads/")
     cwd = _field(prompt, "cwd")
+    at_prompt, at_answer = evidence(prompt), evidence(context)
     items = {
         "readback.model": _seen(
             profile["model"], _field(context, "message", "model"), answered
@@ -709,18 +1138,32 @@ def judge_claude(
         ),
         "permission.mode": _seen("dontAsk", _field(prompt, "permissionMode"), placed),
     }
-    calls = len(session.calls) if session is not None else 0
-    accepted = prompt is not None and calls > 0
+    items = {
+        name: dataclasses.replace(
+            item, evidence=at_answer if name.startswith("readback.") else at_prompt
+        )
+        for name, item in items.items()
+    }
+    calls = session.calls if session is not None else []
     items["task.accepted"] = Item(
-        accepted,
+        prompt is not None and bool(calls),
         placed,
         {"prompt_with_marker": True, "tool_calls": "at least 1"},
-        None if prompt is None else {"tool_calls": calls},
+        None if prompt is None else {"tool_calls": len(calls)},
+        at_prompt + (evidence.call(calls[0]) if calls else []),
     )
+    items.update(judge_negatives(read, placed, paths, evidence))
     written = paths.inside.is_file()
+    inside = _calls(session, steps(paths)[INSIDE_STEP])
     items["positive.inside_write"] = Item(
-        written, None, {"exists": str(paths.inside)}, written, [str(paths.inside)]
+        written,
+        None,
+        {"exists": str(paths.inside)},
+        written,
+        evidence.file(paths.inside, written)
+        + [key for call in inside for key in evidence.call(call)],
     )
+    items["settings.excluded"] = judge_settings(profile, found, read, seen, evidence)
     items["task.worker_done"] = worker_done(seen.dispatch)
     return items
 

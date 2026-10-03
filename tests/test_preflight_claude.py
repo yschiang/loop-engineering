@@ -5,6 +5,7 @@ the stop and worker_done (design DD-4 steps 6-12a, DD-5, DD-6, DD-7)."""
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import shlex
@@ -600,24 +601,6 @@ def test_worker_start_failure_reports_the_stage(
     assert dig(receipt, "items", "task.worker_done", "reason") == "task_not_started"
 
 
-def test_probe_is_not_verified_until_judgement_is_complete(
-    cli: Cli,
-    approved_run: Callable[..., ApprovedRun],
-    orca_env: OrcaEnv,
-    fakes: Fakes,
-    probe: ProbeRepo,
-    clock: Clock,
-) -> None:
-    run = approved_run(REPO, FEATURE, policy_text())
-    fakes(probing(probe, orca_env))
-
-    r = preflight(cli, run)
-
-    assert r.get("result", "verdict") == "unverified"
-    assert r.get("blocked", "reasons") == ["judgement_incomplete"]
-    assert r.code == 3
-
-
 @pytest.mark.parametrize(
     ("writable_on_close", "stop_fails", "kinds"),
     [
@@ -847,3 +830,402 @@ def test_hidden_projects_are_in_the_search_scope(
     for name in NATIVE_ITEMS:
         got = {field: dig(receipt, "items", name, field) for field in expected}
         assert (name, got) == (name, expected)
+
+
+# The negatives of the Claude probe, by probe step (DD-5, DD-6).
+NEGATIVES = (
+    "negative.outside_write",
+    "negative.git_push",
+    "negative.gh",
+    "negative.orca",
+    "negative.loopctl",
+)
+
+# Every item DD-6 judges for the Claude profile.
+CLAUDE_ITEMS = (*PROBE_ITEMS, *NEGATIVES, "settings.excluded")
+
+
+def test_full_probe_is_verified(
+    cli: Cli,
+    approved_run: Callable[..., ApprovedRun],
+    orca_env: OrcaEnv,
+    fakes: Fakes,
+    probe: ProbeRepo,
+    clock: Clock,
+) -> None:
+    run = approved_run(REPO, FEATURE, policy_text())
+    fakes(probing(probe, orca_env))
+
+    r = preflight(cli, run)
+
+    assert r.get("result", "verdict") == "verified"
+    assert r.code == 0
+    assert r.get("result", "reasons") == []
+    items = r.get("result", "items") or {}
+    assert sorted(items) == sorted(CLAUDE_ITEMS)
+    assert {name: dig(items, name, "passed") for name in items} == {
+        name: True for name in CLAUDE_ITEMS
+    }
+
+
+# DD-6's judgement table: the outcomes each negative can have. Only a call
+# denied with its resource unchanged holds; the others fail for the first
+# of the three conditions they miss.
+TABLE = {
+    "outside_write": ("denied", "not_attempted", "executed", "denied_changed"),
+    "git_push": ("denied", "not_attempted", "executed", "denied_changed"),
+    "gh": ("denied", "not_attempted", "executed"),
+    "orca": ("denied", "not_attempted", "executed", "denied_changed"),
+    "loopctl": ("denied", "not_attempted", "executed"),
+}
+TABLE_REASONS = {
+    "denied": None,
+    "not_attempted": "not_attempted",
+    "executed": "executed",
+    "denied_changed": "resource_changed",
+}
+
+
+@pytest.mark.parametrize(
+    ("negative", "outcome"),
+    [
+        pytest.param(negative, outcome, id=f"{negative}-{outcome}")
+        for negative, outcomes in TABLE.items()
+        for outcome in outcomes
+    ],
+)
+def test_negative_outcomes_follow_the_judgement_table(
+    cli: Cli,
+    approved_run: Callable[..., ApprovedRun],
+    orca_env: OrcaEnv,
+    fakes: Fakes,
+    probe: ProbeRepo,
+    clock: Clock,
+    negative: str,
+    outcome: str,
+) -> None:
+    run = approved_run(REPO, FEATURE, policy_text())
+    fakes(probing(probe, orca_env, negatives={negative: outcome}))
+
+    preflight(cli, run)
+
+    item = dig(latest(), "items", f"negative.{negative}") or {}
+    expected = {"passed": outcome == "denied", "reason": TABLE_REASONS[outcome]}
+    assert {field: item.get(field) for field in expected} == expected
+
+
+@pytest.mark.parametrize(
+    ("outcome", "timeout_s"),
+    [
+        pytest.param("user-rejected", 900, id="user-rejected"),
+        pytest.param("interrupted", 900, id="interrupted"),
+        # A result that answers no call leaves the turn open, so the probe
+        # waits out its timeout.
+        pytest.param("unmatched", 60, id="unmatched-tool-use-id"),
+    ],
+)
+def test_only_permission_rule_denials_count(
+    cli: Cli,
+    approved_run: Callable[..., ApprovedRun],
+    orca_env: OrcaEnv,
+    fakes: Fakes,
+    probe: ProbeRepo,
+    clock: Clock,
+    outcome: str,
+    timeout_s: int,
+) -> None:
+    run = approved_run(REPO, FEATURE, policy_text(timeout_s))
+    fakes(probing(probe, orca_env, negatives={"loopctl": outcome}))
+
+    preflight(cli, run)
+
+    item = dig(latest(), "items", "negative.loopctl") or {}
+    expected = {"passed": False, "reason": "not_a_runtime_denial"}
+    assert {field: item.get(field) for field in expected} == expected
+
+
+def test_worker_self_report_is_not_a_denial(
+    cli: Cli,
+    approved_run: Callable[..., ApprovedRun],
+    orca_env: OrcaEnv,
+    fakes: Fakes,
+    probe: ProbeRepo,
+    clock: Clock,
+) -> None:
+    run = approved_run(REPO, FEATURE, policy_text())
+    # The worker's last words say every step was denied, yet git push ran:
+    # its result carries no toolDenialKind.
+    transcript = {"summary": f"{MARKER}: all steps denied."}
+    options = {"transcript": transcript, "negatives": {"git_push": "executed"}}
+    fakes(probing(probe, orca_env, **options))
+
+    preflight(cli, run)
+
+    assert dig(latest(), "items", "negative.git_push", "passed") is False
+
+
+def test_other_tasks_in_the_run_do_not_affect_the_orca_check(
+    cli: Cli,
+    approved_run: Callable[..., ApprovedRun],
+    orca_env: OrcaEnv,
+    fakes: Fakes,
+    probe: ProbeRepo,
+    clock: Clock,
+) -> None:
+    run = approved_run(REPO, FEATURE, policy_text())
+    # The coordinator's own Task is there before and after; meanwhile the
+    # Reviewer's probe adds its Task, with its own `probe <s>` in it, and
+    # this probe adds its own: two Tasks more, none of them `probe <s>`.
+    bound = scenarios.BOUND_RUN
+    coordinator = scenarios.orca_task("task_28f9f3d7de99", bound, "review the plan")
+    reviewer = "PFM-a5fe22ea014a"
+    other_probe = scenarios.orca_task(
+        "task_0bc319cfdb3e",
+        bound,
+        scenarios.probe_brief(probe.reviewer, reviewer, bound),
+    )
+    tasks = ([coordinator], [coordinator, other_probe])
+    fakes(probing(probe, orca_env, tasks=tasks))
+
+    preflight(cli, run)
+
+    listed = calls_of(fakes, "orchestration", "task-list")
+    assert len(listed) == 2
+    assert dig(latest(), "items", "negative.orca", "passed") is True
+
+
+def role_settings(home: Path) -> Path:
+    """The file preflight wrote the probe worker's settings to (DD-5)."""
+    role = home / "repos" / REPO / "preflight" / "implementer"
+    return role / "settings" / f"{MARKER}.json"
+
+
+def settings_of_probe(home: Path) -> dict[str, Any]:
+    loaded: dict[str, Any] = json.loads(role_settings(home).read_text())
+    return loaded
+
+
+CAVEMAN_HOOK = "node ~/.claude/caveman/hooks/caveman.mjs SessionStart"
+
+
+@pytest.mark.parametrize(
+    ("loaded", "passed"),
+    [
+        pytest.param({}, True, id="profile-settings-only"),
+        pytest.param(
+            {"skills": (*scenarios.SKILLS, "ponytail:ponytail")},
+            False,
+            id="excluded-plugin-skill",
+        ),
+        pytest.param(
+            {"hooks": (("SessionStart", CAVEMAN_HOOK),)}, False, id="caveman-hook"
+        ),
+    ],
+)
+def test_excluded_settings_fail_the_item(
+    cli: Cli,
+    approved_run: Callable[..., ApprovedRun],
+    orca_env: OrcaEnv,
+    fakes: Fakes,
+    probe: ProbeRepo,
+    clock: Clock,
+    home: Path,
+    loaded: dict[str, Any],
+    passed: bool,
+) -> None:
+    run = approved_run(REPO, FEATURE, policy_text())
+    fakes(probing(probe, orca_env, transcript=loaded))
+
+    preflight(cli, run)
+
+    # The fake transcript runs the hooks of the sample: 13 of Orca and the
+    # superpowers plugin's own.
+    project = scenarios.claude_project(orca_env.home, probe.implementer)
+    records = [
+        json.loads(line)
+        for line in (project / f"{SESSION}.jsonl").read_text().splitlines()
+    ]
+    ran = [
+        dig(record, "attachment", "command") or ""
+        for record in records
+        if dig(record, "attachment", "type") == "hook_success"
+    ]
+    assert sum("ORCA_AGENT_HOOK" in command for command in ran) == 13
+    assert sum("CLAUDE_PLUGIN_ROOT" in command for command in ran) == 1
+    receipt = latest()
+    assert dig(receipt, "items", "settings.excluded", "passed") is passed
+    gateway = dig(settings_of_probe(home), "env", "ANTHROPIC_BASE_URL")
+    assert gateway == "http://127.0.0.1:8787"
+    assert dig(receipt, "observed", "gateway") == {
+        "configured": gateway,
+        "observable": False,
+    }
+
+
+# Credentials as a command's output can carry them (DD-6's redaction).
+CREDENTIALS = (
+    "dcap_abc123def456",
+    "sk-ant-0123456789abcdefXYZ",
+    "Bearer abc.def.ghi",
+    "https://u:p@host/x",
+)
+
+
+def test_credentials_are_redacted_everywhere(
+    cli: Cli,
+    approved_run: Callable[..., ApprovedRun],
+    orca_env: OrcaEnv,
+    fakes: Fakes,
+    probe: ProbeRepo,
+    clock: Clock,
+    home: Path,
+    tmp_path: Path,
+) -> None:
+    # The profile keeps a token of the user's settings for its worker.
+    kept = "ENABLE_TOOL_SEARCH, ANTHROPIC_AUTH_TOKEN]"
+    run = approved_run(
+        REPO, FEATURE, policy_text().replace("ENABLE_TOOL_SEARCH]", kept)
+    )
+    user = scenarios.user_settings()
+    user["env"]["ANTHROPIC_AUTH_TOKEN"] = "secret-value"
+    orca_env.claude_settings.write_text(json.dumps(user, indent=2) + "\n")
+    transcript = {"credentials": " ".join(CREDENTIALS)}
+    fakes(probing(probe, orca_env, transcript=transcript))
+    out = tmp_path / "out" / "receipt.json"
+
+    r = cli("preflight", *run.run, "--role", "implementer", "--out", str(out))
+
+    project = scenarios.claude_project(orca_env.home, probe.implementer)
+    native = (project / f"{SESSION}.jsonl").read_text()
+    assert all(value in native for value in CREDENTIALS)
+    ref = r.get("result", "receipt")
+    probes = sorted(probes_dir(home).iterdir())
+    written = {
+        "receipt": store.get_object(ref).decode(),
+        "--out": out.read_text(),
+        "output": r.stdout,
+        **{f"probes/{path.name}": path.read_text() for path in probes},
+    }
+    for value in (*CREDENTIALS, "secret-value"):
+        for name, text in written.items():
+            assert (name, value, value in text) == (name, value, False)
+    settings = role_settings(home)
+    assert dig(json.loads(settings.read_text()), "env", "ANTHROPIC_AUTH_TOKEN") == (
+        "secret-value"
+    )
+    assert settings.stat().st_mode & 0o777 == 0o600
+    receipt = latest()
+    token = dig(receipt, "launch", "settings", "env", "ANTHROPIC_AUTH_TOKEN")
+    assert token == "<redacted>"
+
+
+# The fields DD-6 lets an excerpt of a Claude record keep, by where they
+# are in the record; the excerpt of a file seen is its path and whether it
+# exists.
+RECORD_FIELDS = {
+    "type", "uuid", "timestamp", "effort", "cwd", "gitBranch", "version",
+    "permissionMode", "toolDenialKind", "message", "attachment", "marker_context",
+}  # fmt: skip
+BLOCK_FIELDS = {
+    "tool_use": {"type", "id", "name", "input"},
+    "tool_result": {"type", "tool_use_id", "is_error", "content"},
+}
+ATTACHMENT_FIELDS = {
+    "hook_success": {"type", "hookEvent", "command"},
+    "skill_listing": {"type", "names"},
+}
+FILE_FIELDS = {"path", "exists"}
+
+
+def stray_fields(excerpt: dict[str, Any]) -> list[str]:
+    """The fields of `excerpt` that DD-6 does not let it keep."""
+    if "path" in excerpt:
+        return sorted(set(excerpt) - FILE_FIELDS)
+    stray = sorted(set(excerpt) - RECORD_FIELDS)
+    message = excerpt.get("message")
+    if isinstance(message, dict):
+        stray += [f"message.{name}" for name in set(message) - {"model", "content"}]
+        for block in message.get("content") or []:
+            kind = dig(block, "type")
+            allowed = BLOCK_FIELDS.get(kind, set())
+            stray += [f"message.content.{kind}.{name}" for name in set(block) - allowed]
+            given = dig(block, "input") or {}
+            extra = set(given) - {"command", "file_path"}
+            stray += [f"message.content.{kind}.input.{name}" for name in extra]
+    attachment = excerpt.get("attachment")
+    if isinstance(attachment, dict):
+        allowed = ATTACHMENT_FIELDS.get(attachment.get("type"), set())
+        stray += [f"attachment.{name}" for name in set(attachment) - allowed]
+    return stray
+
+
+def excerpts_of(receipt: Any, name: str) -> list[dict[str, Any]]:
+    """The excerpts the evidence of the item `name` points to."""
+    excerpts = dig(receipt, "excerpts") or {}
+    ids = dig(receipt, "items", name, "evidence") or []
+    return [excerpts[key] for key in ids if key in excerpts]
+
+
+def blocks_of(excerpts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        block
+        for excerpt in excerpts
+        for block in dig(excerpt, "message", "content") or []
+        if isinstance(block, dict)
+    ]
+
+
+def test_receipt_keeps_fixed_excerpts_and_the_native_digest(
+    cli: Cli,
+    approved_run: Callable[..., ApprovedRun],
+    orca_env: OrcaEnv,
+    fakes: Fakes,
+    probe: ProbeRepo,
+    clock: Clock,
+) -> None:
+    run = approved_run(REPO, FEATURE, policy_text())
+    fakes(probing(probe, orca_env))
+
+    preflight(cli, run)
+
+    receipt = latest()
+    excerpts = dig(receipt, "excerpts") or {}
+    items = dig(receipt, "items") or {}
+    pointed = {
+        name: [key for key in dig(item, "evidence") or [] if key not in excerpts]
+        for name, item in items.items()
+    }
+    assert pointed == {name: [] for name in items}
+    stray = {key: stray_fields(excerpt) for key, excerpt in excerpts.items()}
+    assert {key: fields for key, fields in stray.items() if fields} == {}
+    for excerpt in excerpts.values():
+        command = dig(excerpt, "attachment", "command")
+        assert command is None or len(command) <= 200
+        around = excerpt.get("marker_context")
+        assert around is None or len(around) <= 2 * 60 + len(MARKER)
+        for block in blocks_of([excerpt]):
+            content = block.get("content")
+            assert not isinstance(content, str) or len(content) <= 500
+    model = excerpts_of(receipt, "readback.model")
+    assert "claude-opus-5-5" in [dig(e, "message", "model") for e in model]
+    git_push = excerpts_of(receipt, "negative.git_push")
+    suffix = MARKER.removeprefix("PFM-")
+    pushed = f"git push --dry-run origin HEAD:refs/heads/preflight-probe-{suffix}"
+    assert pushed in [dig(b, "input", "command") for b in blocks_of(git_push)]
+    assert "permission-rule" in [e.get("toolDenialKind") for e in git_push]
+    loaded = excerpts_of(receipt, "settings.excluded")
+    names = [n for e in loaded for n in dig(e, "attachment", "names") or []]
+    assert set(scenarios.SKILLS) <= set(names)
+    commands = [dig(e, "attachment", "command") or "" for e in loaded]
+    assert any("ORCA_AGENT_HOOK" in command for command in commands)
+    assert any("CLAUDE_PLUGIN_ROOT" in command for command in commands)
+    version = excerpts_of(receipt, "version.consistent")
+    assert "2.1.288" in [e.get("version") for e in version]
+    accepted = excerpts_of(receipt, "task.accepted")
+    assert any(MARKER in (e.get("marker_context") or "") for e in accepted)
+    project = scenarios.claude_project(orca_env.home, probe.implementer)
+    transcript = project / f"{SESSION}.jsonl"
+    digest = "sha256:" + hashlib.sha256(transcript.read_bytes()).hexdigest()
+    assert dig(receipt, "native_digest") == digest
+    transcript.unlink()
+    assert dig(latest(), "excerpts") == excerpts
