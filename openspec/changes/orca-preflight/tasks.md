@@ -155,6 +155,8 @@ Effort 的依據（D69）：
 | `test_malformed_policy_is_reported_not_raised` | 參數化：YAML 語法錯誤、頂層是 list、`profiles` 是字串、`timeout_s: -1`、檔案不存在。各自的 `errors` 是 `["yaml_error"]`、`["not_a_mapping"]`、`["profiles_not_a_mapping"]`、`["timeout_invalid"]`、`["unreadable"]`；`timeout_s == 900`；前四種的 `digest` 是 bytes 的 sha256，最後一種是 `None` | 先只處理正常檔案，錯誤情況回空的 `errors`：`errors` 的比較不成立 | 通過 |
 | `test_preflight_refuses_without_an_approved_policy` | 參數化四種：登記了但沒核准、核准後檔案被改、沒有登記、檔案讀不到。`preflight --role implementer` 都是 exit 1、`error == "policy_not_approved"`、`policy` 欄等於 `policy_view` 的狀態；`fakes.calls()` 是空的；`$LOOPCTL_HOME/repos` 下沒有 `receipts/` | handler 先一律回 exit 3：exit 的比較不成立 | 通過 |
 | `test_approved_policy_is_not_refused` | 核准的政策：exit 不是 1，`error` 不是 `policy_not_approved` | 突變：把核准判定反過來，`error` 的比較不成立 | 通過 |
+| `test_unconstructible_scalar_is_a_yaml_error` | 逐 task 審查 T1.1-01 的回歸測試。DD-2 範例檔加上 `created_at: 2026-99-99`：語法正確，但 PyYAML 建構日期時丟 `ValueError`。`load` 不拋例外；`errors == ["yaml_error"]`；`digest` 是 bytes 的 sha256；`timeout_s == 900` | `load` 只攔 `yaml.YAMLError`，`ValueError` 穿出：「沒有拋例外」的斷言不成立 | 通過 |
+| `test_unapproved_unconstructible_policy_is_refused` | T1.1-01 的回歸測試。同一份檔案登記了但沒核准：`preflight --role implementer` 沒有未攔截的例外（`Result.exc is None`）、exit 1、`error == "policy_not_approved"`、`policy == "not_approved"`；`fakes.calls()` 是空的 | `policy.load` 的 `ValueError` 穿過 `guarded`：`r.exc is None` 的斷言不成立 | 通過 |
 
 ## 2. Receipt 與不需派 worker 的判定
 

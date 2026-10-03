@@ -180,6 +180,31 @@ def test_malformed_policy_is_reported_not_raised(
     assert loaded.digest == (None if text is None else sha256(text.encode()))
 
 
+# The DD-2 example with a date YAML parses but cannot build: PyYAML raises
+# ValueError ("month must be in 1..12"), not a YAMLError.
+UNCONSTRUCTIBLE = scenarios.POLICY + "created_at: 2026-99-99\n"
+
+
+def outcome(path: Path) -> policy.Policy | Exception:
+    """What policy.load(path) gives: the Policy, or the exception it raised."""
+    try:
+        return policy.load(path)
+    except Exception as error:
+        return error
+
+
+def test_unconstructible_scalar_is_a_yaml_error(tmp_path: Path) -> None:
+    path = tmp_path / "workflow.yaml"
+    path.write_text(UNCONSTRUCTIBLE)
+
+    loaded = outcome(path)
+
+    assert not isinstance(loaded, Exception), loaded
+    assert loaded.errors == ["yaml_error"]
+    assert loaded.digest == sha256(path.read_bytes())
+    assert loaded.timeout_s == 900
+
+
 REPO = "yschiang/loop-engineering"
 FEATURE = "orca-preflight"
 
@@ -234,3 +259,17 @@ def test_approved_policy_is_not_refused(
 
     assert r.get("result", "error") != "policy_not_approved"
     assert r.code != 1
+
+
+def test_unapproved_unconstructible_policy_is_refused(
+    cli: Cli, approved_run: Callable[..., ApprovedRun], fakes: Fakes
+) -> None:
+    run = approved_run(REPO, FEATURE, UNCONSTRUCTIBLE, approve=False)
+
+    r = cli("preflight", *run.run, "--role", "implementer")
+
+    assert r.exc is None
+    assert r.code == 1
+    assert r.get("result", "error") == "policy_not_approved"
+    assert r.get("result", "policy") == "not_approved"
+    assert fakes.calls() == []

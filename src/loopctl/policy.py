@@ -56,7 +56,11 @@ def load(path: Path) -> Policy:
     digest = "sha256:" + hashlib.sha256(data).hexdigest()
     try:
         document = yaml.safe_load(data)
-    except yaml.YAMLError:
+    # Building the document also raises what the Python types it builds
+    # raise, not only YAMLError: ValueError for `2026-99-99` or `!!int abc`,
+    # AttributeError for `!!timestamp foo`, RecursionError for deep nesting.
+    # Each means these bytes are not a YAML document this policy can be.
+    except Exception:
         return _unusable(digest, ["yaml_error"])
     if not isinstance(document, dict):
         return _unusable(digest, ["not_a_mapping"])
