@@ -15,6 +15,8 @@ last_updated_by: Claude Agent SDK subagent（claude-opus-5-5）
 
 # Feature 2（orca-dispatch）現況研究
 
+> 本報告經過一次驗證，更正與新增的事實見 [verification.md](verification.md)；兩者衝突時以 verification.md 為準。
+
 ## 研究問題
 
 Feature 2「orchestrate 經 Orca 派 Implementer、收回結果，卡住時交給人」（change `orca-dispatch`，#43）開 spec 之前，盤點：要承接的 AC 與其中哪些能在 Feature 2 端到端成立；Feature 1 已實作的基準與延伸點；Orca 實際提供什麼、loopctl 還要負責什麼；D79 的三種卡住訊號能否觀察；兩個 profile 的 R1；參考實作能沿用多少；規模。本文只描述現況與證據，不寫 spec、design 或 plan。
