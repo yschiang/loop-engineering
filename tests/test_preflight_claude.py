@@ -1167,6 +1167,53 @@ def test_credentials_are_redacted_everywhere(
     assert token == "<redacted>"
 
 
+# A kept token whose value has none of the shapes DD-6's patterns know.
+OPAQUE = "opaque-credential-0123"
+
+
+def test_kept_secret_values_are_redacted_wherever_they_appear(
+    cli: Cli,
+    approved_run: Callable[..., ApprovedRun],
+    orca_env: OrcaEnv,
+    fakes: Fakes,
+    probe: ProbeRepo,
+    clock: Clock,
+    home: Path,
+    tmp_path: Path,
+) -> None:
+    kept = "ENABLE_TOOL_SEARCH, ANTHROPIC_AUTH_TOKEN]"
+    run = approved_run(
+        REPO, FEATURE, policy_text().replace("ENABLE_TOOL_SEARCH]", kept)
+    )
+    user = scenarios.user_settings()
+    user["env"]["ANTHROPIC_AUTH_TOKEN"] = OPAQUE
+    orca_env.claude_settings.write_text(json.dumps(user, indent=2) + "\n")
+    # Every tool result echoes the variable, as `env` in a shell would.
+    transcript = {"credentials": f"ANTHROPIC_AUTH_TOKEN={OPAQUE}"}
+    fakes(probing(probe, orca_env, transcript=transcript))
+    out = tmp_path / "out" / "receipt.json"
+
+    r = cli("preflight", *run.run, "--role", "implementer", "--out", str(out))
+
+    project = scenarios.claude_project(orca_env.home, probe.implementer)
+    assert OPAQUE in (project / f"{SESSION}.jsonl").read_text()
+    ref = r.get("result", "receipt")
+    probes = sorted(probes_dir(home).iterdir())
+    written = {
+        "receipt": store.get_object(ref).decode(),
+        "--out": out.read_text(),
+        "output": r.stdout,
+        **{f"probes/{path.name}": path.read_text() for path in probes},
+    }
+    for name, text in written.items():
+        assert (name, OPAQUE in text) == (name, False)
+    settings = role_settings(home)
+    assert dig(json.loads(settings.read_text()), "env", "ANTHROPIC_AUTH_TOKEN") == (
+        OPAQUE
+    )
+    assert settings.stat().st_mode & 0o777 == 0o600
+
+
 # The fields DD-6 lets an excerpt of a Claude record keep, by where they
 # are in the record; the excerpt of a file seen is its path and whether it
 # exists.

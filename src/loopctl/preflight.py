@@ -93,7 +93,7 @@ def run(key: store.Key, role: str, out: Path | None) -> tuple[int, Envelope]:
             "finished_at": clock.now(),
             "cleanup": [],
         }
-        receipt = redact(receipt)
+        receipt = redact(receipt, secrets=seen.secrets)
         ref = receipts.write(repo, role, receipt)
         if out is not None:
             write_out(out, receipt)
@@ -115,24 +115,48 @@ SECRETS = (
 # a secret, whatever its value looks like.
 SECRET_NAMES = ("TOKEN", "SECRET", "KEY", "PASSWORD", "AUTH")
 
+# The shortest value of a secret-named variable that is masked wherever it
+# appears. A shorter one, such as the `32000` of a MAX_OUTPUT_TOKENS, is no
+# usable credential, and masking it in every text would corrupt unrelated
+# text; it is masked in its env mapping alone.
+SECRET_MIN_CHARS = 8
 
-def redact(value: Any, *, env: bool = False) -> Any:
+
+def secret_values(settings: dict[str, Any] | None) -> tuple[str, ...]:
+    """The values of the secret-named variables of the `env` of `settings`
+    that redact() masks in every text: those of SECRET_MIN_CHARS or more,
+    longest first, so a value holding another is masked whole."""
+    env = _field(settings, "env")
+    values = {
+        value
+        for name, value in (env.items() if isinstance(env, dict) else [])
+        if any(word in str(name).upper() for word in SECRET_NAMES)
+        and isinstance(value, str)
+        and len(value) >= SECRET_MIN_CHARS
+    }
+    return tuple(sorted(values, key=lambda value: (-len(value), value)))
+
+
+def redact(value: Any, *, secrets: tuple[str, ...], env: bool = False) -> Any:
     """`value` as preflight may write it into a receipt, `--out` or a
-    probe record (DD-6): SECRETS masked in every text, and the value of
-    every secret-named variable of an `env` (`env` is True for the
-    variables of one). The settings file the worker runs with is not
-    written through it: the worker needs the real values."""
+    probe record (DD-6): `secrets` (secret_values() of the worker's
+    settings) and SECRETS masked in every text, and the value of every
+    secret-named variable of an `env` (`env` is True for the variables of
+    one). The settings file the worker runs with is not written through
+    it: the worker needs the real values."""
     if isinstance(value, str):
+        for secret in secrets:
+            value = value.replace(secret, "<redacted>")
         for pattern, mask in SECRETS:
             value = pattern.sub(mask, value)
         return value
     if isinstance(value, list):
-        return [redact(each) for each in value]
+        return [redact(each, secrets=secrets) for each in value]
     if isinstance(value, dict):
         return {
             key: "<redacted>"
             if env and any(word in str(key).upper() for word in SECRET_NAMES)
-            else redact(each, env=key == "env")
+            else redact(each, secrets=secrets, env=key == "env")
             for key, each in value.items()
         }
     return value
@@ -348,7 +372,8 @@ class Probe:
     """What the probe of a worker saw (DD-4 steps 6-12a): its marker and
     session, the agent CLI's version before and after and the one its
     native record names, Orca's Task, Dispatch and terminal, how it was
-    launched and with which settings, what was observed without being
+    launched and with which settings, the values of those settings that
+    redact() masks wherever they appear, what was observed without being
     judged, and the excerpts of the native record the items rest on with
     that record's digest (DD-6)."""
 
@@ -362,6 +387,7 @@ class Probe:
     terminal: str | None = None
     launch: dict[str, Any] | None = None
     settings: dict[str, Any] | None = None
+    secrets: tuple[str, ...] = ()
     observed: dict[str, Any] = dataclasses.field(default_factory=dict)
     excerpts: dict[str, Any] = dataclasses.field(default_factory=dict)
     native_digest: str | None = None
@@ -394,13 +420,16 @@ def probe(
     seen.session = str(uuid.uuid4())
     seen.marker = "PFM-" + uuid.uuid4().hex[:12]
     probes = receipts.role_dir(repo, role) / "probes"
-    # Recorded before any worker exists, so an interrupted preflight leaves
-    # a marker to clean up after (DUR-09, DD-8).
-    started = record(probes, "started", seen.marker, session=seen.session)
-    since = (probes / f"{started}.json").stat().st_mtime
+    # The worker's settings are known before anything is written, so every
+    # record is masked with their secrets.
     seen.settings = claude_settings(
         profile, found.user_settings, Path(workspace["path"])
     )
+    seen.secrets = secret_values(seen.settings)
+    # Recorded before any worker exists, so an interrupted preflight leaves
+    # a marker to clean up after (DUR-09, DD-8).
+    started = record(probes, "started", seen, session=seen.session)
+    since = (probes / f"{started}.json").stat().st_mtime
     settings = write_settings(
         receipts.role_dir(repo, role) / "settings" / f"{seen.marker}.json",
         seen.settings,
@@ -422,7 +451,7 @@ def probe(
     # A failure is reported as it happened: when the stop cannot record its
     # own end, the marker stays without one and is cleaned up after (DD-8).
     try:
-        record(probes, "terminal", seen.marker, handle=handle)
+        record(probes, "terminal", seen, handle=handle)
         paths = TaskPaths.of(repo, Path(workspace["path"]), seen.marker, found.run)
         reasons, read = dispatch(
             role, paths, approved.timeout_s, found, seen, probes, since
@@ -431,9 +460,9 @@ def probe(
         items.update(judge_claude(profile, found, read, paths, seen, evidence))
     except BaseException:
         with contextlib.suppress(store.IOFailure):
-            stop(handle, seen.marker, seen.session, probes)
+            stop(handle, seen, probes)
         raise
-    items["stop.confirmed"] = stop(handle, seen.marker, seen.session, probes)
+    items["stop.confirmed"] = stop(handle, seen, probes)
     seen.after = agent_version(runtime)
     items["version.consistent"] = dataclasses.replace(
         consistent(seen, read.problem), evidence=evidence(read.context)
@@ -464,10 +493,11 @@ def agent_version(runtime: str) -> str | None:
     return None if tools.failure(done) is not None else tools.version(done.stdout)
 
 
-def record(directory: Path, kind: str, marker: str, **fields: Any) -> int:
-    """Append the probe record `kind` of `marker` (DD-8)."""
-    payload = {"kind": kind, "marker": marker, **fields, "at": clock.now()}
-    return store.append_record(directory, redact(payload))
+def record(directory: Path, kind: str, seen: Probe, **fields: Any) -> int:
+    """Append the probe record `kind` of the probe `seen`, under its marker
+    and masked with its secrets (DD-6, DD-8)."""
+    payload = {"kind": kind, "marker": seen.marker, **fields, "at": clock.now()}
+    return store.append_record(directory, redact(payload, secrets=seen.secrets))
 
 
 def _sha256(path: Path) -> str:
@@ -772,9 +802,7 @@ def dispatch(
             None, None, "task_not_started", before
         )
     seen.task, seen.dispatch = started.task, started.dispatch
-    record(
-        probes, "dispatch", seen.marker, task=started.task, dispatch=started.dispatch
-    )
+    record(probes, "dispatch", seen, task=started.task, dispatch=started.dispatch)
     reasons = wait(seen, timeout_s, since)
     after = resources(paths, workspace)
     session, digest, problem = read_native(seen, since)
@@ -1190,20 +1218,21 @@ STOP_CHECKS = 10
 STOP_PAUSE_S = 0.5
 
 
-def stop(handle: str, marker: str, session: str, probes: Path) -> Item:
+def stop(handle: str, seen: Probe, probes: Path) -> Item:
     """Step 12 (DD-7): close the worker's terminal, then confirm from
-    process-info that no process of the worker is left. Orca's word that
-    it killed the terminal is not that confirmation. Only a confirmed stop
-    ends the marker (`closed`); else it stays to be cleaned up
+    process-info that no process of the worker `seen` is left. Orca's word
+    that it killed the terminal is not that confirmation. Only a confirmed
+    stop ends the marker (`closed`); else it stays to be cleaned up
     (`stop_unconfirmed`, DD-8)."""
+    assert seen.marker is not None
     orca.terminal_close(handle)
     confirmed = False
     for _ in range(STOP_CHECKS):
         clock.sleep(STOP_PAUSE_S)
-        if not running(marker, session):
+        if not running(seen.marker, seen.session):
             confirmed = True
             break
-    record(probes, "closed" if confirmed else "stop_unconfirmed", marker, handle=handle)
+    record(probes, "closed" if confirmed else "stop_unconfirmed", seen, handle=handle)
     required = {"processes_with_marker": 0}
     if confirmed:
         return Item(True, None, required, {"processes_with_marker": 0})
