@@ -4,6 +4,7 @@ once (design DD-2)."""
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,7 +27,8 @@ SUPPORTED = {"transport": ("orca",), "runtime": ("claude", "codex")}
 class Profile:
     """The profile of `role` as the file gives it, and what makes it
     unusable: missing or ill-typed fields, `profile_missing`, or an
-    unsupported value."""
+    unsupported value. `fields` is always plain JSON data: a profile that
+    holds anything else is `profile_not_json`, with no fields."""
 
     role: str
     fields: dict[str, Any]
@@ -98,7 +100,41 @@ def _profile(role: str, fields: Any) -> Profile:
         return Profile(role, {}, ["profile_missing"])
     if not isinstance(fields, dict):
         return Profile(role, {}, ["profile_not_a_mapping"])
+    # Every receipt carries the profile and the digest of its canonical JSON,
+    # valid or not (DD-2, DD-8). safe_load also builds dates, bytes, sets,
+    # non-string keys, NaN and containers that hold themselves, which that
+    # JSON cannot hold.
+    if not _plain(fields, {}):
+        return Profile(role, {}, ["profile_not_json"])
     return Profile(role, fields, _invalid(fields))
+
+
+def _plain(value: Any, reached: dict[int, bool]) -> bool:
+    """Whether `value` is plain JSON data: None, a bool, an int, a finite
+    float, a string, or a list or string-keyed mapping of such values.
+    `reached` maps the id of each container already reached to whether it
+    is plain; it is False while the container is still being checked."""
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            return False
+        items = list(value.values())
+    elif isinstance(value, list):
+        items = value
+    else:
+        return value is None or isinstance(value, bool | int | str)
+    # An alias makes one container appear wherever it is used. Reached again
+    # while still being checked, it holds itself; reached again later, it was
+    # already checked, which keeps the walk linear however often it is used.
+    if id(value) in reached:
+        return reached[id(value)]
+    reached[id(value)] = False
+    for item in items:
+        if not _plain(item, reached):
+            return False
+    reached[id(value)] = True
+    return True
 
 
 def _text(value: Any) -> bool:

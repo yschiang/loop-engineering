@@ -205,6 +205,83 @@ def test_unconstructible_scalar_is_a_yaml_error(tmp_path: Path) -> None:
     assert loaded.timeout_s == 900
 
 
+def with_implementer_line(line: str) -> str:
+    """The DD-2 example with `line` as one more field of the Implementer
+    profile."""
+    head, reviewer, tail = scenarios.POLICY.partition("  reviewer:\n")
+    return f"{head}    {line}\n{reviewer}{tail}"
+
+
+def baseline_reviewer(tmp_path: Path) -> policy.Profile | None:
+    """The Reviewer profile of the DD-2 example, unchanged."""
+    path = tmp_path / "baseline.yaml"
+    path.write_text(scenarios.POLICY)
+    return policy.load(path).profiles.get("reviewer")
+
+
+# Values safe_load builds that canonical JSON cannot hold (T2.1-02).
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param("notes: 2026-10-03", id="date"),
+        pytest.param("notes: !!binary aGVsbG8=", id="binary"),
+        pytest.param("notes: !!set {a, b}", id="set"),
+        pytest.param("notes: {a: 1, 2: b}", id="string-and-integer-keys"),
+        pytest.param("notes: {2: b}", id="integer-key"),
+        pytest.param("notes: .nan", id="nan"),
+        pytest.param("notes: .inf", id="infinity"),
+    ],
+)
+def test_profile_values_that_are_not_json_make_it_invalid(
+    tmp_path: Path, line: str
+) -> None:
+    path = tmp_path / "workflow.yaml"
+    path.write_text(with_implementer_line(line))
+
+    loaded = policy.load(path)
+
+    assert loaded.errors == []
+    assert profile_field(loaded, "implementer", "invalid") == ["profile_not_json"]
+    assert profile_field(loaded, "implementer", "fields") == {}
+    assert loaded.profiles.get("reviewer") == baseline_reviewer(tmp_path)
+
+
+# An anchor used inside its own value builds a container that holds itself;
+# one used beside it only shares a container, which JSON writes twice.
+@pytest.mark.parametrize(
+    ("line", "profile"),
+    [
+        pytest.param(
+            "notes: &notes {again: *notes}",
+            policy.Profile("implementer", {}, ["profile_not_json"]),
+            id="mapping-in-itself",
+        ),
+        pytest.param(
+            "notes: &notes [*notes]",
+            policy.Profile("implementer", {}, ["profile_not_json"]),
+            id="list-in-itself",
+        ),
+        pytest.param(
+            "notes: [&notes [a], *notes]",
+            policy.Profile("implementer", {**IMPLEMENTER, "notes": [["a"], ["a"]]}, []),
+            id="list-twice",
+        ),
+    ],
+)
+def test_aliases_are_json_unless_a_value_holds_itself(
+    tmp_path: Path, line: str, profile: policy.Profile
+) -> None:
+    path = tmp_path / "workflow.yaml"
+    path.write_text(with_implementer_line(line))
+
+    loaded = outcome(path)
+
+    assert not isinstance(loaded, Exception), loaded
+    assert loaded.errors == []
+    assert loaded.profiles.get("implementer") == profile
+    assert loaded.profiles.get("reviewer") == baseline_reviewer(tmp_path)
+
+
 REPO = "yschiang/loop-engineering"
 FEATURE = "orca-preflight"
 
