@@ -8,6 +8,7 @@ on which no probe goes on."""
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -97,11 +98,12 @@ def _run_id(result: dict[str, Any] | Problem, command: list[str]) -> str | Probl
 
 
 def run_current() -> str | None | Problem:
-    """The id of the Run bound to the caller's Orca terminal; None when no
-    Run is bound to it."""
+    """The id of the Run bound to the caller's Orca terminal; None when Orca
+    answers `run: null`. An answer without `run` says nothing about the
+    binding, so it is unparseable, never a reason to create a Run."""
     command = ["orchestration", "run-current"]
     result = _query(command)
-    if not isinstance(result, Problem) and result.get("run") is None:
+    if not isinstance(result, Problem) and "run" in result and result["run"] is None:
         return None
     return _run_id(result, command)
 
@@ -112,25 +114,52 @@ def run_create(objective: str) -> str | Problem:
     return _run_id(_query(command, "--objective", objective), command)
 
 
-def _listed(command: list[str], key: str) -> list[dict[str, Any]] | Problem:
-    """The objects Orca lists under `key` in the result of `command`."""
+def _listed(
+    command: list[str], key: str, valid: Callable[[dict[str, Any]], bool]
+) -> list[dict[str, Any]] | Problem:
+    """The objects Orca lists under `key` in the result of `command`, each
+    `valid`; one that is not makes the whole answer unparseable."""
     result = _query(command)
     if isinstance(result, Problem):
         return result
     items = result.get(key)
-    if isinstance(items, list) and all(isinstance(item, dict) for item in items):
+    if isinstance(items, list) and all(
+        isinstance(item, dict) and valid(item) for item in items
+    ):
         return items
     return _unparseable(command)
 
 
+def _strings(value: dict[str, Any], *names: str) -> bool:
+    return all(isinstance(value.get(name), str) for name in names)
+
+
+def _repo(repo: dict[str, Any]) -> bool:
+    """Whether the fields preflight reads of a repo are strings: its id, its
+    kind and the canonical key of its remote identity. A folder repo has
+    no remote identity (samples/orca/repo-list.json), and a repo without
+    one matches no remote."""
+    identity = repo.get("gitRemoteIdentity")
+    return _strings(repo, "id", "kind") and (
+        identity is None
+        or (isinstance(identity, dict) and _strings(identity, "canonicalKey"))
+    )
+
+
+def _worktree(worktree: dict[str, Any]) -> bool:
+    """Whether the fields preflight reads of a workspace are strings: its
+    id, its repo's id, its path, its displayName and its branch."""
+    return _strings(worktree, "id", "repoId", "path", "displayName", "branch")
+
+
 def repos() -> list[dict[str, Any]] | Problem:
     """The repos Orca has registered, with their kind and remote identity."""
-    return _listed(["repo", "list"], "repos")
+    return _listed(["repo", "list"], "repos", _repo)
 
 
 def worktrees() -> list[dict[str, Any]] | Problem:
     """The workspaces of every repo Orca has registered."""
-    return _listed(["worktree", "list"], "worktrees")
+    return _listed(["worktree", "list"], "worktrees", _worktree)
 
 
 def terminal_create(worktree_id: str, title: str, command: str) -> str | Problem:

@@ -318,6 +318,7 @@ def environment(
     run: str | None = None,
     reachable: bool = True,
     status: str | None = None,
+    run_current: str | None = None,
     repos: list[dict[str, Any]] | None = None,
     worktrees: list[dict[str, Any]] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
@@ -326,8 +327,9 @@ def environment(
     the repos and workspaces of `probe`.
 
     The coordinator's terminal has the Run `run` bound; with None it has
-    none, and run-create makes CREATED_RUN. `status` replaces the stdout of
-    `orca status --json`; `repos` and `worktrees` replace the lists.
+    none, and run-create makes CREATED_RUN. `status` and `run_current`
+    replace the stdout of `orca status --json` and of `orca orchestration
+    run-current --json`; `repos` and `worktrees` replace the lists.
     `terminal create` fails, so a preflight that gets that far ends at step
     8 without a worker. The `--version` of each tool is the fakes' own."""
     repos = orca_repos(probe) if repos is None else repos
@@ -351,7 +353,7 @@ def environment(
             },
             {
                 "match": ["orchestration", "run-current", "--json"],
-                "stdout": orca_json(bound),
+                "stdout": run_current or orca_json(bound),
             },
             *created,
             {

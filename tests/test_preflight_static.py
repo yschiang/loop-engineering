@@ -357,6 +357,67 @@ def test_no_run_is_created_when_one_is_bound(
     assert dig(stored(unbound), "orca", "run") == scenarios.CREATED_RUN
 
 
+def test_run_current_without_its_run_creates_no_run(
+    cli: Cli,
+    approved_run: Callable[..., ApprovedRun],
+    orca_env: OrcaEnv,
+    fakes: Fakes,
+    probe: ProbeRepo,
+) -> None:
+    run = approved_run(REPO, FEATURE, scenarios.POLICY)
+    # Only `run: null` says no Run is bound; the scenario would still
+    # answer a run-create.
+    fakes(scenarios.environment(probe, run_current=scenarios.orca_json({})))
+
+    r = preflight(cli, run, "implementer")
+
+    assert run_creates(fakes.calls()) == []
+    assert r.get("blocked", "reasons") == [
+        "unparseable:orca orchestration run-current"
+    ]
+    assert r.code == 3
+    assert r.get("result", "verdict") == "unverified"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param("repo list", id="repo-id"),
+        pytest.param("worktree list", id="worktree-repo-id"),
+    ],
+)
+def test_malformed_orca_identifiers_are_unparseable(
+    cli: Cli,
+    approved_run: Callable[..., ApprovedRun],
+    orca_env: OrcaEnv,
+    fakes: Fakes,
+    probe: ProbeRepo,
+    command: str,
+) -> None:
+    run = approved_run(REPO, FEATURE, scenarios.POLICY)
+    repos = scenarios.orca_repos(probe)
+    worktrees = scenarios.orca_worktrees(probe)
+    if command == "repo list":
+        author = next(entry for entry in repos if entry["path"] == str(probe.author))
+        author["id"] = []
+    else:
+        engineer = next(
+            entry
+            for entry in worktrees
+            if entry["displayName"] == "preflight-engineer"
+        )
+        engineer["repoId"] = []
+    fakes(scenarios.environment(probe, repos=repos, worktrees=worktrees))
+
+    r = preflight(cli, run, "implementer")
+
+    assert r.exc is None
+    assert r.get("blocked", "reasons") == [f"unparseable:orca {command}"]
+    assert r.code == 3
+    assert r.get("result", "verdict") == "unverified"
+    assert receipts.latest(REPO, "implementer") == stored(r)
+
+
 def test_out_writes_the_same_receipt(
     cli: Cli,
     approved_run: Callable[..., ApprovedRun],
