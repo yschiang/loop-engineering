@@ -53,9 +53,10 @@ def policy_text(timeout_s: int = 900) -> str:
 def probing(
     probe: ProbeRepo, orca_env: OrcaEnv, **options: Any
 ) -> dict[str, list[dict[str, Any]]]:
-    """claude_probe for this test's workspaces and ids."""
+    """claude_probe for this test's workspaces and ids, Orca answering the
+    Run's Tasks as the probe lists them (DD-6's resources)."""
     return scenarios.claude_probe(
-        probe, orca_env.home, MARKER, str(SESSION), **options
+        probe, orca_env.home, MARKER, str(SESSION), task_list=True, **options
     )
 
 

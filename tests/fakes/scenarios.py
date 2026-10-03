@@ -754,6 +754,7 @@ def claude_probe(
     snapshot: Path | None = None,
     dispatched: bool = True,
     negatives: dict[str, str] | None = None,
+    task_list: bool = False,
     tasks: tuple[list[dict[str, Any]], list[dict[str, Any]]] = ([], []),
 ) -> dict[str, list[dict[str, Any]]]:
     """The whole Orca conversation of a preflight that probes the Claude
@@ -779,9 +780,10 @@ def claude_probe(
     that was `executed` or `denied_changed` changes its resource where
     DD-6 watches it: the file of step 1 is written, origin gets the
     branch of step 2 (only when denied_changed: a dry run pushes nothing),
-    the Run gets the Task of step 4. `tasks` are the Run's other Tasks
-    that task-list shows before the task is started and after the wait,
-    besides the probe's own."""
+    the Run gets the Task of step 4. With `task_list`, Orca answers the
+    Run's Tasks when the probe lists them before the task is started and
+    after the wait (DD-6's resources); `tasks` are the Run's other Tasks
+    it shows then, besides the probe's own."""
     workspace = probe.implementer
     negatives = negatives or {}
     text = claude_transcript(
@@ -885,7 +887,9 @@ def claude_probe(
         spec = f"probe {marker.removeprefix('PFM-')}"
         own.append(orca_task("task_4b1e9c0d7a25", run, spec))
     if dispatched:
-        orca.append({"match": listing, "stdout": orca_json(orca_tasks(run, before))})
+        if task_list:
+            first = orca_tasks(run, before)
+            orca.append({"match": listing, "stdout": orca_json(first)})
         orca.append(
             {
                 "match": [
@@ -910,7 +914,8 @@ def claude_probe(
                 "repeat": True,
             }
         )  # fmt: skip
-        orca.append({"match": listing, "stdout": orca_json(orca_tasks(run, own))})
+        if task_list:
+            orca.append({"match": listing, "stdout": orca_json(orca_tasks(run, own))})
         orca.append(
             {
                 "match": [
