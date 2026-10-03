@@ -50,6 +50,18 @@ cli ──► preflight ──► policy      讀一次 workflow.yaml：digest�
 - 只有 `tools.run` 開子程序：argv 固定，由 loopctl 組出，不含呼叫者或 worker 提供的命令（ORC-01）。
 - 第一個 task 先建立所有新模組的介面，回傳合理的預設值（stub），讓後面每個 task 的 Red 都走得到自己的斷言（tasks.md 共同規則）。
 
+**跨 task 的介面**（後面的 task 只換實作，不改簽名；型別是 dataclass 或 TypedDict，名稱照寫）
+
+| 模組 | 介面 | 契約 |
+| --- | --- | --- |
+| `tools` | `run(argv: list[str], timeout_s: float) -> Completed`；`Completed(code: int \| None, stdout: str, stderr: str, status: "ok" \| "missing" \| "timeout")` | 不丟例外；執行檔不存在 → `missing`、`code is None`；逾時 → 結束子程序，`timeout` |
+| `store` | `append_record(dir: Path, payload: dict) -> int`；`list_records(dir: Path) -> Records`，`Records(items: list[dict], skipped: list[str])`；`locked_dir(dir: Path) -> ContextManager[None]` | `skipped` 是無法解析的檔名；`locked_dir` 拿不到鎖時丟 `store.Busy`；IO 錯誤照 Feature 1 丟 `store.IOFailure` |
+| `receipts` | `write(repo: str, role: str, receipt: dict) -> str`（ref）；`latest(repo: str, role: str) -> dict \| None`；`applicable(repo: str, role: str, approved_digest: str, current: Versions) -> tuple[bool, list[str]]`；`Versions(transport: str \| None, agent_cli: str \| None)` | `latest` 在 digest 不符時丟 `receipts.ReceiptCorrupt(ref)`；`applicable` 不丟例外，把 `ReceiptCorrupt` 變成原因 `receipt_corrupt` |
+| `orca` | `version() -> str \| Problem`；`status() -> dict \| Problem`；`run_current() -> str \| None \| Problem`；`run_create(objective: str) -> str \| Problem`；`repos() -> list[dict] \| Problem`；`worktrees() -> list[dict] \| Problem`；`terminal_create(worktree_id: str, title: str, command: str) -> str \| Problem`（handle）；`worker_start(spec: str, terminal: str, worktree_id: str, run: str) -> Started \| Problem`，`Started(task: str, dispatch: str)`；`worker_show(dispatch: str) -> dict \| Problem`；`terminal_wait(handle: str, timeout_ms: int) -> "idle" \| "timeout" \| "exited" \| Problem`；`terminal_close(handle: str) -> bool \| Problem`；`task_list(run: str) -> list[dict] \| Problem` | `Problem(reason: str)` 是值，不是例外；`reason` 是 `transport_missing`、`timeout`、`unparseable:<命令>`、`exit:<n>`，`worker_start` 另有 `failed_stage:<stage>` |
+| `native` | `find_claude(home: Path, marker: str, uuid: str, since: float) -> Found`；`find_codex(codex_home: Path, marker: str, days: list[date]) -> Found`；`Found(path: Path \| None, problem: str \| None)`；`read_claude(path: Path, marker: str) -> Session`；`read_codex(path: Path, marker: str) -> Session` | `problem` 是 `native_not_found`、`native_ambiguous`、`native_name_mismatch` 之一；`Session(prompt: dict \| None, context: dict \| None, complete: bool, calls: list[Call], records: list[dict])`：`context` 是讀回用的那筆（Claude 的第一筆 assistant；Codex 的同 turn `turn_context`），找不到時是 `None` |
+| `native` | `Call(id: str, step: int \| None, command: str, result: CallResult \| None)`；`CallResult(is_error: bool, denial: str \| None, exit_code: int \| None, text: str)`；`judge_negative(call: Call \| None, runtime: str, resources_unchanged: bool \| None) -> Item` | `denial` 是 runtime 給的拒絕標記：Claude 的 `toolDenialKind`，Codex 由 DD-6 的標記判定；`resources_unchanged is None` 表示沒有可觀察資源 |
+| `preflight` | `Item(passed: bool, reason: str \| None, required: object, actual: object, evidence: list[str])`；`run(key, role, out: Path \| None) -> tuple[int, Envelope]` | 每個 item 都有 `required` 與 `actual`；判定不了時 `actual is None`，`reason` 寫明 |
+
 ### DD-2. 政策檔 `profiles` 與 pyyaml
 
 pyyaml 改成執行依賴，以 `yaml.safe_load` 讀取。`uv.lock` 已有 6.0.3。
@@ -127,7 +139,14 @@ preflight:
 
 ### DD-4. 探測流程
 
-一個 role 的 preflight 依序執行下列步驟。任一步確定 `unverified`，就跳到第 13 步，但已派出的 worker 一定經過第 12 步停止。
+一個 role 的 preflight 依序執行下列步驟。
+
+- 第 3 步拒絕時直接結束；第 4、5 步不成立時跳到第 13 步。這時沒有派 worker，之後的 item 不出現。
+- 第 8 步失敗（沒有 terminal）時跳到第 13 步。
+- terminal 建立之後的任何問題（`worker-start` 失敗、逾時、native 紀錄找不到），都照樣執行第 11、12、12a 步：
+  - 第 11 步以手上有的證據判定所有 item；
+  - 缺證據的 item 為 `passed: false`，`actual: null`，`reason` 是 `task_not_started`、`native_not_found`、`native_ambiguous`、`native_name_mismatch` 或 `no_native_turn`；
+  - 已派出的 worker 一定經過第 12 步停止。
 
 | # | 步驟 | 不變式與錯誤 |
 | --- | --- | --- |
@@ -198,7 +217,7 @@ Claude 的寫檔用 Write 工具；Codex 用 `sh -c 'echo probe > <path>'`。`gi
 
 | item | Claude | Codex |
 | --- | --- | --- |
-| `readback.model` | 含 marker 的 user 紀錄之後，第一筆 assistant 的 `message.model` | marker 之後第一筆 `turn_context.model` |
+| `readback.model` | 含 marker 的 user 紀錄之後，第一筆 assistant 的 `message.model` | 與含 marker 的 user 訊息同一個 turn 的 `turn_context.model`（見下方「Codex 的 turn 配對」） |
 | `readback.effort` | 同一筆 assistant 的 `effort` | 同一筆 `turn_context.effort` |
 | `placement.cwd` | 含 marker 那筆紀錄的 `cwd` 等於工作區路徑 | `turn_context.cwd` 等於工作區路徑 |
 | `placement.repo`、`placement.branch` | 以 `git -C <cwd> rev-parse --show-toplevel` 與 `git -C <cwd> branch --show-current` 比對工作區的路徑與 branch | 同左 |
@@ -214,6 +233,13 @@ Claude 的寫檔用 Write 工具；Codex 用 `sh -c 'echo probe > <path>'`。`gi
 | `model.distinct`（只有 Reviewer） | — | 兩個 profile 的 model 不同 |
 
 - 一項判定不了（紀錄讀不到、git 指令失敗、輸出無法解析），就算不成立，原因寫明。
+
+**Codex 的 turn 配對**：rollout 的 `turn_context` 寫在 user 訊息之前（research 樣本第 8、9 行），所以不能用「之後的第一筆」。
+
+- 找出 `payload.type == "message"`、`role == "user"`、內容含 marker 的那一筆，取它的 `internal_chat_message_metadata_passthrough.turn_id`。
+- 讀回用 `payload.turn_id` 相同的 `turn_context`；完成用同一個 `turn_id` 的 `event_msg`（`task_complete`）。
+- 工具呼叫是同一個 turn 的 `custom_tool_call`（`name: "exec"`），以 `call_id` 配對 `custom_tool_call_output`；`exit_code` 與輸出從 output 裡的 JSON 讀出。
+- 相同 `turn_id` 的 `turn_context` 有 0 筆 → `turn_context_not_found`；多於 1 筆 → `turn_context_ambiguous`；讀回各項不成立。
 - receipt 另外記錄不判定、只作證據的觀察值：Claude 的 `skill_listing` 名稱與 Orca hook 的數量；Codex 的 `disabled_plugin_ids`、`world_state.state.host_skills` 的名稱、`world_state.state.permissions.approved_command_prefixes` 的數量與 `turn_context.permission_profile`；gateway 與 Codex 的 hook 開關記成 `{configured, observable: false}`。
 
 **拒絕的判準**（AC-D27）
@@ -223,7 +249,7 @@ Claude 的寫檔用 Write 工具；Codex 用 `sh -c 'echo probe > <path>'`。`gi
 1. **嘗試**：Claude 有對應這一步的 `tool_use`（Write 的 `file_path`，或 Bash 的 `command` 等於任務文字）；Codex 有對應的執行呼叫（`cmd` 等於任務文字）。
 2. **runtime 的拒絕**：
    - Claude：以 `tool_use_id` 配對到的 `tool_result.is_error` 為 true，而且所在 user 紀錄的 `toolDenialKind == "permission-rule"`。其他值（例如 `user-rejected`、`interrupted`）不算。
-   - Codex：該呼叫的 `exit_code` 不是 0，而且它自己的輸出含 `Operation not permitted`。exit 0 時，即使輸出含這段文字，也算執行了。
+   - Codex：該呼叫的 `exit_code` 不是 0，而且它自己的輸出含 sandbox 的拒絕標記：`Operation not permitted`（檔案系統），或 Orca CLI 的 `"code": "runtime_access_denied"`（Orca socket 被擋，research 樣本第 30 行）。exit 0 時，即使輸出含這些標記，也算執行了。
 3. **資源未變**：依下表；沒有可觀察資源的負例，只看前兩件。
 
 | 負例 | 可能的結果 | 資源 |
@@ -249,9 +275,10 @@ Claude 的寫檔用 Write 工具；Codex 用 `sh -c 'echo probe > <path>'`。`gi
   - `items: {<名稱>: {pass, reason, evidence: [<摘錄 id>]}}`；
   - `excerpts: {<id>: <摘錄>}`、`native_digest`；
   - `verdict`、`reasons`、`started_at`、`finished_at`、`cleanup`（本次 preflight 處理的殘留，DD-8）。
-- **摘錄只取固定欄位**：
-  - Claude 紀錄：`type`、`uuid`、`timestamp`、`message.model`、`effort`、`cwd`、`gitBranch`、`version`、`permissionMode`、`toolDenialKind`、`tool_use` 的 `id`／`name`／`input.command`／`input.file_path`、`tool_result` 的 `tool_use_id`／`is_error`／內容前 500 字元；
-  - Codex 紀錄：`type`、`timestamp`、`payload.type`、`turn_context` 的 `model`／`effort`／`cwd`／`sandbox_policy`／`approval_policy`／`disabled_plugin_ids`、執行呼叫的 `call_id`／`cmd`、輸出的 `exit_code` 與前 500 字元。
+- **摘錄只取固定欄位**，但必須含每一項判定所依據的值：
+  - Claude 紀錄：`type`、`uuid`、`timestamp`、`message.model`、`effort`、`cwd`、`gitBranch`、`version`、`permissionMode`、`toolDenialKind`；`tool_use` 的 `id`／`name`／`input.command`／`input.file_path`；`tool_result` 的 `tool_use_id`／`is_error`／內容前 500 字元；含 marker 的 prompt 只取 marker 前後各 60 字元（`marker_context`）；`hook_success` 的 `hookEvent` 與命令前 200 字元；`skill_listing` 只取 skill 名稱清單。
+  - Codex 紀錄：`type`、`timestamp`、`payload.type`；`session_meta` 的 `cli_version`；含 marker 的 user 訊息的 `turn_id` 與 `marker_context`；`turn_context` 的 `turn_id`／`model`／`effort`／`cwd`／`sandbox_policy`／`approval_policy`／`disabled_plugin_ids`；執行呼叫的 `call_id`／`cmd`；輸出的 `exit_code` 與前 500 字元。
+  - 每一類 item 的 `evidence` 指向的摘錄，要能直接看到它判定的值：讀回項看得到 model、effort、cwd；負例看得到命令、拒絕標記與 exit；`settings.excluded` 看得到 skill 名稱、hook 命令或 `disabled_plugin_ids`；`version.consistent` 看得到 native 版本。
 - **遮蔽**：所有寫出的文字（receipt、`--out`、探測紀錄、設定檔）都先經 `redact()`：
   - `dcap_[A-Za-z0-9_-]+` → `dcap_<redacted>`；
   - `sk-[A-Za-z0-9_-]{16,}`、`ghp_[A-Za-z0-9]{16,}`、`github_pat_[A-Za-z0-9_]{16,}`、`Bearer\s+\S+` → `<redacted>`；
@@ -341,18 +368,18 @@ $LOOPCTL_HOME/repos/<owner>/<name>/preflight/<role>/
   - `profiles: {<role>: {status: verified|unverified|not_run|not_applicable, verdict, receipt, versions, reasons}}`；
   - `--human` 兩者都印。
 
-  政策已核准時，`status` 讀 receipt 與版本（AC-D01、DUR-09）；政策未核准時，每個 profile 都是 `not_applicable`，原因是政策狀態，不呼叫任何工具。
+  每個 profile 的形狀固定是 `{status, verdict, receipt, versions, reasons}`，不知道的值是 `null`。政策已核准時，`status` 讀 receipt 與版本（AC-D01、DUR-09）；政策未核准時，每個 profile 是 `{status: "not_applicable", verdict: null, receipt: null, versions: null, reasons: ["policy:<policy_view 的狀態>"]}`，狀態是 `not_registered`、`not_approved`、`digest_mismatch` 或 `unreadable`，不呼叫任何工具。
 - `decide`、`register`：envelope 的 `next` 維持狀態檔的值。ORC-01 只允許 `preflight`、`status`、`next` 讀版本，而 DUR-01 寫明「不同時以 `next` 為準」。
 - 狀態檔與 `derive` 不改（DUR-01）。
 
 ### DD-10. 測試接縫
 
 - **整套測試的工具隔離**：conftest 的 autouse fixture 為每個測試建立 `fakebin/`，放 `orca`、`claude`、`codex`、`ps`、`gh`、`herdr`、`opencode` 的 fake，並放在 PATH 最前面。所以既有測試與新測試都不會碰到真實工具。
-  - 沒有 scenario 時，fake 只回答 `orca --version`（1.4.218）、`claude --version`（2.1.288）、`codex --version`（0.157.0）；其他呼叫記成 `unexpected`、exit 97。
+  - fake 一律回答 `orca --version`（1.4.218）、`claude --version`（2.1.288）、`codex --version`（0.157.0），除非 scenario 自己列了這些呼叫；scenario 沒列的其他呼叫記成 `unexpected`、exit 97。
   - fixture 的 teardown 斷言沒有 `unexpected` 的呼叫。
   - 「工具不存在」的測試改用受控的 PATH：`fakebin` 加上只含 `git`、`sh`、`env` 與 Python 直譯器 symlink 的 `minbin/`，並從 `fakebin` 移除那個工具。不依賴開發機剛好沒裝。
 - **fake 的能力**：`tests/fakes/bin/fake` 是一支 Python 腳本，依 basename 判斷身分；行為由 scenario（環境變數 `FAKE_SCENARIO` 指到的 JSON）決定。這兩個環境變數只給 fake 讀，產品不知道它們：
-  - 依呼叫順序比對 argv，可用 `{capture: name}` 擷取 argv 中的值（例如 marker、session uuid、handle），之後的回應與 effect 以 `{name}` 代換；
+  - 依呼叫順序比對 argv，可用 `{capture: name}` 擷取 argv 中的值（例如 marker、session uuid、handle），之後的回應與 effect 以 `{name}` 代換；標 `repeat: true` 的項目可以被連續呼叫任意次（例如 `terminal wait`）；
   - 回應 stdout、stderr、exit；
   - effect：
     - `write`：寫檔，例如在 `terminal create` 時寫出 Claude transcript 或 Codex rollout；
@@ -360,6 +387,7 @@ $LOOPCTL_HOME/repos/<owner>/<name>/preflight/<role>/
     - `snapshot`：把某個目錄當下的檔案清單記進 `FAKE_LOG`，用來證明產品寫入的時間點早於這次呼叫；
     - `kill_parent`：以 SIGKILL 結束呼叫它的 loopctl 程序，用來製造中斷；
   - 每次呼叫以 `{seq, tool, argv, captured, unexpected?}` 追加到 `FAKE_LOG`。
+- **骨架自己的測試**：以 `pytester` 在子程序執行內層測試，PATH 只含 `minbin/` 與 test sources 裡的 `sentinel/`（裡面的 `orca`、`claude` 只印 `SENTINEL`）。所以隔離失效時會解析到 sentinel，不會碰到真實工具。
 - **native 紀錄的範本**：fake transcript 與 rollout 依 [research 的樣本](../../../docs/research/2026-10-03/orca-preflight/samples/README.md) 的欄位與紀錄順序組成。`HOME`、`CODEX_HOME` 指到 tmp。
 - **git**：測試用真的 git。工作區是 tmp 裡的 repo，`origin` 是 tmp 裡的 bare repo，所以 `ls-remote` 不需要網路。
 - **時間**：以 `monkeypatch` 替換 `loopctl.clock.now` 與 `loopctl.clock.sleep`。`sleep` 的替身把假時鐘往前推，不真的等待。
