@@ -76,9 +76,9 @@
 | --- | --- | --- | --- | --- |
 | 1.1 | 測試骨架（工具隔離、fake 的能力）、新模組的介面、pyyaml、`policy.load`、`preflight` 在政策未核准時拒絕 | — | xhigh／xhigh | D30（preflight 部分） |
 | 2.1 | receipt 與探測紀錄的 store、verdict 與 exit、不需派 worker 的判定、`--out` | 1.1 | xhigh／xhigh | D19、D23、G23、D29（不改 feature 狀態） |
-| 3.1 | Implementer 探測的主流程：marker、terminal、worker-start、等待、Claude 讀回、版本、停止、`worker_done` | 2.1 | xhigh／xhigh | D18、D19 |
+| 3.1 | Implementer 探測的主流程：marker、terminal、worker-start、等待、Claude 讀回、版本、停止、`worker_done` | 2.1 | high／xhigh | D18、D19 |
 | 3.2 | Claude 的權限負例、載入的設定、摘錄與遮蔽；全部成立才 verified | 3.1 | xhigh／xhigh | D27、D28、D29 |
-| 4.1 | Reviewer 探測：Codex 啟動、rollout 讀回、sandbox 拒絕、隔離負例、獨立 clone、Codex 的設定 | 3.2 | xhigh／xhigh | G24、D18、D27、D28、D22、G19 |
+| 4.1 | Reviewer 探測：Codex 啟動、rollout 讀回、sandbox 拒絕、隔離負例、獨立 clone、Codex 的設定 | 3.2 | high／xhigh | G24、D18、D27、D28、D22、G19 |
 | 5.1 | 派工管制：適用判定、目前版本、`next.effective`、`status` 的 profiles、跨 run 共用 | 4.1 | xhigh／xhigh | D26、D30（next 部分）、D01、D22、D29 |
 | 6.1 | 殘留清理、兩種中斷點、清理失敗的重試 | 5.1 | xhigh／xhigh | D31、D30（清理） |
 | 7.1 | 政策檔的實際 profiles、能力證據矩陣、CI 測試調整 | 6.1 | medium／high | G19、D22 |
@@ -87,6 +87,7 @@ Effort 的依據（D69）：
 
 - 1.1～6.1 守的是「未驗證的 profile 不可用」與「未核准的政策不探測」這兩道安全界線，或 receipt 的完整性。出錯會讓不安全的 worker 被判成可用。
 - 7.1 只改設定與文件。
+- 3.1、4.1 的 Implementer 依 Project Lead 於 2026-10-03 的決定改為 high，Reviewer 維持 xhigh：這兩個 task 的出錯由 xhigh 的逐 task 審查把關。4.1 涵蓋 6 個 AC，照 D69 的表是 xhigh；改成 high 是 Project Lead 的決定。
 
 ## 1. 測試骨架與政策檔
 
@@ -234,7 +235,7 @@ Effort 的依據（D69）：
 
 - [ ] 3.1 marker 與探測紀錄、啟動 Claude、worker-start、等待、讀回、版本、停止與 `worker_done`；驗證：`uv run pytest tests/test_preflight_claude.py`
 
-**模式與 effort**：預設模式；xhigh／xhigh。
+**模式與 effort**：預設模式；high／xhigh。
 
 **交付**：
 
@@ -329,7 +330,7 @@ Effort 的依據（D69）：
 
 - [ ] 4.1 Codex 的啟動、rollout 讀回、sandbox 拒絕、隔離負例、獨立 clone、Codex 的設定；驗證：`uv run pytest tests/test_preflight_codex.py`
 
-**模式與 effort**：預設模式；xhigh／xhigh。
+**模式與 effort**：預設模式；high／xhigh。
 
 **交付**：
 
