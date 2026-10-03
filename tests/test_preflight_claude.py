@@ -677,3 +677,89 @@ def test_terminal_record_failure_still_stops_the_worker(
     assert r.get("result", "op") == "write_record"
     assert r.get("result", "errno") == "EACCES"
     assert [record["kind"] for record in store.list_records(probes).items] == kinds
+
+
+def unreadable_file(path: Path, text: str) -> Path:
+    """Make `path` hold `text`, modified after the probe started (an hour
+    ahead), and readable by no one."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    ahead = time.time() + 3600
+    os.utime(path, (ahead, ahead))
+    path.chmod(0o000)
+    return path
+
+
+def unreadable_transcript(probe: ProbeRepo, env: OrcaEnv) -> tuple[str, Path, int]:
+    # The probe's own transcript is there, under its name, but unreadable.
+    project = scenarios.claude_project(env.home, probe.implementer)
+    text = scenarios.claude_transcript(
+        probe.implementer, MARKER, str(SESSION), scenarios.BOUND_RUN
+    )
+    return "none", unreadable_file(project / f"{SESSION}.jsonl", text), 0o600
+
+
+def unreadable_other(probe: ProbeRepo, env: OrcaEnv) -> tuple[str, Path, int]:
+    # The probe's transcript is readable and holds the marker; another
+    # session file in scope cannot be read, so it may hold the marker too.
+    project = scenarios.claude_project(env.home, probe.reviewer)
+    return "one", unreadable_file(project / "other.jsonl", "{}\n"), 0o600
+
+
+def unstatable_other(probe: ProbeRepo, env: OrcaEnv) -> tuple[str, Path, int]:
+    # Another project lists its session file but lets no one stat it: its
+    # modification time is unknown, so it is not known to be out of scope.
+    project = scenarios.claude_project(env.home, probe.reviewer)
+    session = project / "other.jsonl"
+    session.parent.mkdir(parents=True)
+    session.write_text("{}\n")
+    project.chmod(0o400)
+    return "one", project, 0o700
+
+
+def unlistable_project(probe: ProbeRepo, env: OrcaEnv) -> tuple[str, Path, int]:
+    # Another project cannot be listed: its session files are unknown.
+    project = scenarios.claude_project(env.home, probe.reviewer)
+    (project / "other.jsonl").parent.mkdir(parents=True)
+    (project / "other.jsonl").write_text("{}\n")
+    project.chmod(0o000)
+    return "one", project, 0o700
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        pytest.param(unreadable_transcript, id="transcript-unreadable"),
+        pytest.param(unreadable_other, id="other-session-unreadable"),
+        pytest.param(unstatable_other, id="other-session-unstatable"),
+        pytest.param(unlistable_project, id="other-project-unlistable"),
+    ],
+)
+def test_unreadable_native_file_fails_the_readback(
+    cli: Cli,
+    approved_run: Callable[..., ApprovedRun],
+    orca_env: OrcaEnv,
+    fakes: Fakes,
+    probe: ProbeRepo,
+    clock: Clock,
+    row: Callable[[ProbeRepo, OrcaEnv], tuple[str, Path, int]],
+) -> None:
+    run = approved_run(REPO, FEATURE, policy_text(60))
+    files, locked, mode = row(probe, orca_env)
+    # The search cannot tell how many transcripts hold the marker, so the
+    # worker's turn is never seen to end and the probe times out.
+    fakes(probing(probe, orca_env, files=files, wait="timeout"))
+
+    try:
+        r = preflight(cli, run)
+    finally:
+        locked.chmod(mode)
+
+    receipt = latest()
+    expected = {"passed": False, "actual": None, "reason": "native_unreadable"}
+    for name in NATIVE_ITEMS:
+        got = {field: dig(receipt, "items", name, field) for field in expected}
+        assert (name, got) == (name, expected)
+    assert len(calls_of(fakes, "terminal", "close")) == 1
+    assert dig(receipt, "items", "stop.confirmed", "passed") is True
+    assert r.get("result", "verdict") == "unverified"

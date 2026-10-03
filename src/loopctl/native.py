@@ -10,6 +10,8 @@ on which no item passes."""
 from __future__ import annotations
 
 import json
+import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -32,7 +34,8 @@ class Item:
 @dataclass(frozen=True)
 class Found:
     """The one native record with the marker, or why there is none:
-    `native_not_found`, `native_ambiguous` or `native_name_mismatch`."""
+    `native_not_found`, `native_ambiguous`, `native_name_mismatch` or
+    `native_unreadable`."""
 
     path: Path | None
     problem: str | None
@@ -74,21 +77,26 @@ class Session:
 
 
 NOT_FOUND = Found(None, "native_not_found")
+UNREADABLE = Found(None, "native_unreadable")
 
 
 def find_claude(home: Path, marker: str, uuid: str, since: float) -> Found:
     """The transcript of the probe session (DD-6): exactly one session file
     of a Claude project under `home`, modified at `since` or later, holds
     `marker`, and it is named after the session `uuid`. Subagents keep
-    theirs a level deeper, which is not searched; a file that cannot be
-    read is not one that holds the marker."""
+    theirs a level deeper, which is not searched.
+
+    Exactly one cannot be told while a file in scope may hold the marker
+    unseen: a directory that cannot be listed, or a session file whose
+    time or bytes cannot be read, is native_unreadable. A file is out of
+    scope only once its time is known to be before `since`."""
     holding = []
-    for path in sorted((home / ".claude" / "projects").glob("*/*.jsonl")):
-        try:
+    try:
+        for path in _claude_sessions(home / ".claude" / "projects"):
             if path.stat().st_mtime >= since and marker.encode() in path.read_bytes():
                 holding.append(path)
-        except OSError:
-            continue
+    except OSError:
+        return UNREADABLE
     if not holding:
         return NOT_FOUND
     if len(holding) > 1:
@@ -96,6 +104,33 @@ def find_claude(home: Path, marker: str, uuid: str, since: float) -> Found:
     if holding[0].name != f"{uuid}.jsonl":
         return Found(None, "native_name_mismatch")
     return Found(holding[0], None)
+
+
+def _claude_sessions(projects: Path) -> list[Path]:
+    """The session files of every Claude project in `projects`, as the
+    glob `*/*.jsonl` names them, except that a directory which cannot be
+    listed raises OSError where glob would pass over it. Without
+    `projects` there are none."""
+    try:
+        folders = _listed(projects, lambda entry: entry.is_dir())
+    except FileNotFoundError:
+        return []
+    return sorted(
+        path
+        for folder in folders
+        for path in _listed(folder, lambda entry: entry.name.endswith(".jsonl"))
+    )
+
+
+def _listed(directory: Path, chosen: Callable[[os.DirEntry[str]], bool]) -> list[Path]:
+    """The entries of `directory` that are `chosen`; as for glob's `*`, a
+    name that starts with a dot is hidden. Raises OSError."""
+    with os.scandir(directory) as entries:
+        return [
+            Path(entry.path)
+            for entry in entries
+            if not entry.name.startswith(".") and chosen(entry)
+        ]
 
 
 def find_codex(codex_home: Path, marker: str, days: list[date]) -> Found:
