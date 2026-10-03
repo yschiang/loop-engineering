@@ -30,7 +30,7 @@ Feature 2 要經 Orca 派 Implementer，但派工前必須先知道派出去的 
   - verdict 與逐項原因。
 - **`status`／`next`**：`status` 顯示每個 profile 是否驗證過與原因。下列任一情況，核准後 `next` 不給派工，改回報需要先跑 preflight：
   - profile 沒有對應目前政策 digest 的 verified receipt；
-  - Orca 版本與 receipt 不同（D76(5)）。
+  - Orca 或 agent CLI 的版本與 receipt 不同（D76(5)，延伸到 agent CLI，見待決 3）。
 - **未選用的接入**：Herdr、OpenCode 不存在或故障時，不影響已選的兩個 profile，也不會被呼叫（AC-D23）。
 - **能力證據矩陣**：依接法分欄（Orca＋claude、Orca＋codex），每項能力標 `fake`、`profile-probe`、`real-E2E` 或 `none`。本 Feature 填 `fake` 與 `profile-probe`（AC-G19、D22）。
 - **兩個 profile 的真實 R1 各跑一次**，receipt 存進 repo，作為驗收證據。
@@ -65,9 +65,9 @@ AC：D18、D19、D22、D23、G11、G12、G19。都只成立 R1 的部分：
 | # | 項目 | 是否阻擋 Design | 負責 |
 | --- | --- | --- | --- |
 | 1 | 權限設定怎麼帶到 worker。預設每次自己開 terminal，帶 CLI 自己的 `--settings`、`--session-id` 或 sandbox 參數，不改使用者的 Orca 全域設定；代價是 Orca 不能幫忙停 worker，要由 loopctl 關掉 terminal 作為停止證據。只有 live probe 證明這條走不通時，才回來問要不要改全域設定 | 否（design 依此做；若要改全域設定則回到 Project Lead） | Engineer；改全域設定由 Project Lead 決定 |
-| 2 | worker 繼承的使用者設定：本機 gateway、plugins（superpowers、ponytail、ralph-wiggum）、hooks（Orca、caveman、Herdr）。哪些保留、哪些關掉 | 是 | Project Lead |
-| 3 | R1 何時重跑：只在 Orca 換版本（D76(5)），或 agent CLI 換版本也重跑 | 是 | Project Lead |
-| 4 | D38（OpenCode 預設、Orca／Codex／Claude Code 選配）：確認為部署層級的選擇，或修訂。影響 DUR-09 的寫法 | 是 | Project Lead |
+| 2 | worker 繼承的使用者設定。**已定（2026-10-03）**：跟 Feature 1 效果一樣。保留本機 gateway、superpowers 與 Orca 的 hook；關掉 ponytail、ralph-wiggum，以及 caveman 與 Herdr 的 hook。receipt 記下實際載入的 gateway、plugin 與 hook | 否 | Project Lead（回答「跟 Feature 1 效果一樣」） |
+| 3 | R1 何時重跑。**已定（2026-10-03）**：Orca 或 agent CLI（Claude Code、Codex CLI）的版本和 receipt 不同就重跑；重跑不需要人工決策，沒過才停下交人。記為 D81(2)，補充 D76(5) | 否 | Project Lead（回答「Orca 或 agent CLI 換版都重跑」） |
+| 4 | D38 的讀法。**已定（2026-10-03，D81）**：部署層級。每個部署在 profiles 選接法；M1 選 Orca＋Claude Code＋Codex。DUR-09 照此寫，Orca 專有欄位不進共用契約 | 否 | Project Lead（回答「A：部署層級」） |
 | 5 | effort 的判定：讀回的 effort 與要求不符、或讀不到，是否都算 `unverified`（D76(2) 要求 Reviewer 的 effort 由 native 紀錄讀回；兩種 runtime 都讀得到） | 否 | spec，Project Lead 同意 |
 | 6 | 探測 worker 在哪裡跑：預設由人一次性在 Orca 以 git repo 註冊 loop-engineering，並建立探測用的工作區；preflight 只核對它們存在與位置 | 否 | Project Lead（環境設定） |
 | 7 | Reviewer 的放置要讓它改不到作者的 branch（DUR-02 的獨立 clone）。R1 依此設計負例 | 否 | Engineer（design） |
