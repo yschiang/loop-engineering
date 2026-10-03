@@ -46,6 +46,7 @@ cli ──► preflight ──► policy      讀一次 workflow.yaml：digest�
 - `store.py` 新增 `append_record`、`list_records`、`locked_dir`，供 `receipts` 使用；既有函式不變。
 - `clock.py` 新增 `sleep(seconds)`。它和 `now()` 一樣，是 AGENTS.md §1 認可的注入點；測試以 `monkeypatch` 替換。
 - 只有 `tools.run` 開子程序：argv 固定，由 loopctl 組出，不含呼叫者或 worker 提供的命令（ORC-01）。
+- 第一個 task 先建立所有新模組的介面，回傳合理的預設值（stub），讓後面每個 task 的 Red 都走得到自己的斷言（tasks.md 共同規則）。
 
 ### D2. 政策檔 `profiles` 與 pyyaml
 
@@ -83,6 +84,7 @@ profiles:
     sandbox: read-only
     approval: never
     config: {check_for_update_on_startup: false, features.hooks: false}
+    exclude: {plugins: []}                 # Codex 要排除的 plugin id；預設照 Feature 1 不排除
 preflight:
   timeout_s: 900
 ```
@@ -90,9 +92,15 @@ preflight:
 - **必要欄位**：
   - 共同：`transport`、`runtime`、`provider`、`model`、`probe_effort`、`workspace`。
   - `runtime: claude` 另需 `orca_allowed`、`keep`、`permissions`。
-  - `runtime: codex` 另需 `sandbox`、`approval`、`config`。
+  - `runtime: codex` 另需 `sandbox`、`approval`、`config`、`exclude`。
 - **欄位不合**：缺欄位或欄位型別不對時，`policy.load` 照常回傳，該 profile 標 `invalid` 並列出缺的欄位。preflight 據此寫 `unverified` 的 receipt（AC-D19）。只支援 `transport: orca` 與 `runtime: claude|codex`；其他值也算 `invalid`，不呼叫任何工具（AC-D23）。
 - **profile digest**：以排序鍵的 canonical JSON 算 sha256，記在 receipt。
+- **介面**：`load(path) -> Policy`，不丟例外：
+  - `Policy(digest: str | None, profiles: dict[str, Profile], timeout_s: int, errors: list[str])`；
+  - `Profile(role: str, fields: dict, invalid: list[str])`；
+  - 讀不到檔案：`digest is None`，`errors == ["unreadable"]`；
+  - YAML 語法錯誤、頂層不是 mapping、`profiles` 不是 mapping、`timeout_s` 不是正整數：`errors` 各列一項（`yaml_error`、`not_a_mapping`、`profiles_not_a_mapping`、`timeout_invalid`），`timeout_s` 回預設 900；
+  - `errors` 不是空的時候，每個 profile 都當成 `invalid`，preflight 的原因是 `policy_invalid:<error>`。
 - **`preflight.timeout_s`**：一次探測等 worker 完成的上限，預設 900 秒。這是給運維調整的政策值，不是測試開關。
 
 ### D3. `preflight` 命令與 envelope
@@ -107,6 +115,7 @@ preflight:
 | --- | --- | --- |
 | verified | 0 | `ok: true`，`result` 是 receipt 摘要（`role`、`verdict`、`receipt`、`items`、`versions`） |
 | unverified（含環境缺口） | 3 | `ok: false`，`blocked: {kind: "preflight_unverified", role, reasons}`，`result` 同上 |
+| 政策已核准但內容不合（`Policy.errors`） | 3 | unverified，原因 `policy_invalid:<error>` |
 | 政策未核准或 digest 不符（AC-D30） | 1 | `refusal("policy_not_approved", policy: <policy_view 的 status>)`，不派 worker、不寫 receipt；殘留清理照常（D8） |
 | 同一個 role 已有 preflight 在跑 | 1 | `refusal("preflight_running")` |
 | run 不存在、狀態不可信、IO 錯誤 | 1／5／6 | 照 Feature 1 的 `guarded` |
@@ -120,19 +129,20 @@ preflight:
 
 | # | 步驟 | 不變式與錯誤 |
 | --- | --- | --- |
-| 0 | 取 role 目錄的 `lock`（`fcntl.flock` 非阻塞） | 拿不到 → `preflight_running`，什麼都不做 |
+| 0 | 取 role 目錄的 `lock`（`fcntl.flock` 非阻塞） | 拿不到 → `preflight_running`，什麼都不做。兩個 role 可以同時跑；它們的資源檢查以自己的 marker 識別，不互相干擾（D6） |
 | 1 | `store.load` 讀 run | — |
 | 2 | 殘留清理（D8） | 一定執行，不看政策 |
 | 3 | `policy.load` 讀一次政策檔；`state.policy_view(st, digest)` 必須是 `approved`，而且 digest 等於 `st["policy_approval"]["digest"]` | 否則 `policy_not_approved`（AC-D30） |
 | 4 | profile 檢查：`invalid` → unverified；`reviewer` 與 `implementer` 的 `model` 相同 → Reviewer 為 unverified（AC-G23） | 不呼叫外部工具 |
-| 5 | 環境：`orca --version`、`orca status --json`（`runtime.reachable`）、`<runtime> --version`；呼叫者必須在 Orca terminal 內（有 `ORCA_TERMINAL_HANDLE`）；`orca orchestration run-current` 有綁定的 Run，沒有就在呼叫者 terminal 上 `run-create`；以 `orca worktree list` 在已註冊、`kind: git`、路徑等於 run 的 repo 根目錄的 Orca repo 中，找到 displayName 等於 `profile.workspace` 的工作區 | 任一不成立 → unverified，原因寫明缺什麼（AC-D19、D23）。只呼叫所選 profile 的工具，Herdr、OpenCode 從不呼叫（AC-D23） |
-| 6 | 產生 marker（`PFM-` 加 12 個 hex）；Claude 另產生 session uuid；寫 `started` 紀錄 | 派出 worker 之前（DUR-09） |
+| 5 | 環境：`orca --version`、`orca status --json`（`runtime.reachable`）、`<runtime> --version`；呼叫者必須在 Orca terminal 內（有 `ORCA_TERMINAL_HANDLE`）；`orca orchestration run-current` 有綁定的 Run，沒有就在呼叫者 terminal 上 `run-create`；以 `orca repo list` 找出 `kind: git`、`gitRemoteIdentity.canonicalKey` 等於 `github.com/<owner>/<name>` 的所有 Orca repo（作者的 repo 與 Reviewer 的獨立 clone 都符合），再以 `orca worktree list` 在這些 repo 中找 displayName 等於 `profile.workspace` 的工作區：0 個 → `workspace_not_found`，多於 1 個 → `workspace_ambiguous` | 任一不成立 → unverified，原因寫明缺什麼（AC-D19、D23）。只呼叫所選 profile 的工具，Herdr、OpenCode 從不呼叫（AC-D23）。工具的輸出無法解析（例如 JSON 壞掉）→ 該項不成立，原因 `unparseable:<命令>` |
+| 6 | 讀 agent CLI 的版本（前值）；產生 marker（`PFM-` 加 12 個 hex）；Claude 另產生 session uuid；寫 `started` 紀錄 | 派出 worker 之前（DUR-09） |
 | 7 | 組啟動命令與設定檔（D5） | 只用 profile 與使用者設定，不含呼叫者提供的文字 |
 | 8 | `orca terminal create --worktree id:<完整 ID> --title <marker> --command <命令>`；寫 `terminal` 紀錄（handle） | 失敗 → unverified（`terminal_create_failed`） |
 | 9 | 記下資源檢查的前值（D6 的資源表）；`orca orchestration worker-start --spec <探測任務> --terminal <handle> --worktree id:<完整 ID> --run <run>`；寫 `dispatch` 紀錄 | exit 1 → `task_not_started`，附 `failedStage` |
 | 10 | 等待（D7） | 到 `timeout_s` 仍未完成 → `probe_timeout` |
 | 11 | 讀 native 紀錄並逐項判定（D6） | — |
-| 12 | 停止：`orca terminal close --terminal <handle>`，再以 process-info 確認（D7）；寫 `closed` 紀錄 | 確認不了 → `stop_unconfirmed` |
+| 12 | 停止：`orca terminal close --terminal <handle>`，再以 process-info 確認（D7）。確認成功才寫 `closed`；確認不了寫 `stop_unconfirmed`（D8） | 確認不了 → item `stop.confirmed` 不成立 |
+| 12a | 再讀一次 agent CLI 的版本（後值） | 前值、後值與 native 紀錄的版本必須相同，否則 `agent_version_mismatch`（D9） |
 | 13 | 寫 receipt（D6）與索引；有 `--out` 就另寫檔；釋放 lock | verdict 是逐項結果的 AND |
 
 ### D5. 啟動命令與探測任務
@@ -191,44 +201,62 @@ Claude 的寫檔用 Write 工具；Codex 用 `sh -c 'echo probe > <path>'`。`gi
 | `placement.cwd` | 含 marker 那筆紀錄的 `cwd` 等於工作區路徑 | `turn_context.cwd` 等於工作區路徑 |
 | `placement.repo`、`placement.branch` | 以 `git -C <cwd> rev-parse --show-toplevel` 與 `git -C <cwd> branch --show-current` 比對工作區的路徑與 branch | 同左 |
 | `permission.mode` | user 紀錄的 `permissionMode` 等於 `dontAsk` | `turn_context.sandbox_policy.type` 與 `approval_policy` 等於 profile |
-| `negative.<n>`（第 1～5 步；Reviewer 另有第 8、9 步） | 有對應的 `tool_use`；它的 `tool_result.is_error` 為 true，且所在 user 紀錄帶 `toolDenialKind`；資源未變 | 有對應的執行呼叫；輸出含 `Operation not permitted`；資源未變 |
+| `negative.<n>` | 見下方「拒絕的判準」 | 同左 |
 | `positive.inside_write` | 第 6 步的檔案存在 | Reviewer 的 sandbox 是 `read-only`，這一項不判定 |
 | `task.accepted` | 有含 marker 的 prompt，之後至少一個工具呼叫 | 同左 |
 | `task.worker_done` | `orca orchestration worker-show` 的 dispatch `status` 為 `completed` | 同左 |
 | `stop.confirmed` | D7 | D7 |
-| `settings.excluded` | `skill_listing` 不含被排除的 plugin 名稱；沒有 `hook_success` 來自不含 `keep.hooks_matching` 的 hook | 記錄 `config` 覆寫值，本項判定為通過 |
-| `isolation.independent_clone`（只有 Reviewer） | — | 工作區的 `git rev-parse --git-common-dir` 不等於 Implementer 工作區的 |
+| `settings.excluded` | `skill_listing` 不含被排除的 plugin 名稱（使用者 `enabledPlugins` 中不在 `keep.plugins` 的那些）；沒有一筆 `hook_success` 的命令不含 `keep.hooks_matching` | `exclude.plugins` 的每個 id 都在 `turn_context.disabled_plugin_ids` 裡 |
+| `version.consistent` | 第 6 步前值、第 12a 步後值與 assistant 的 `version` 相同 | 前值、後值與 `session_meta.cli_version` 相同 |
+| `isolation.independent_clone`（只有 Reviewer） | — | 兩個工作區的 `git rev-parse --path-format=absolute --git-common-dir` 以 `os.path.realpath` 正規化後不同 |
 | `model.distinct`（只有 Reviewer） | — | 兩個 profile 的 model 不同 |
 
-- 「被拒」必須同時有「嘗試」「runtime 的拒絕」「資源未變」三件事。worker 沒嘗試、只自述被拒、或命令執行了但失敗，該項都不成立（AC-D27）。
-- 一項判定不了（紀錄讀不到、git 指令失敗），就算不成立，原因寫明。
+- 一項判定不了（紀錄讀不到、git 指令失敗、輸出無法解析），就算不成立，原因寫明。
+- receipt 另外記錄不判定、只作證據的觀察值：Claude 的 `skill_listing` 名稱與 Orca hook 的數量；Codex 的 `disabled_plugin_ids`、`world_state.state.host_skills` 的名稱、`world_state.state.permissions.approved_command_prefixes` 的數量與 `turn_context.permission_profile`；gateway 與 Codex 的 hook 開關記成 `{configured, observable: false}`。
 
-**資源檢查的前值與後值**
+**拒絕的判準**（AC-D27）
 
-| 負例 | 資源 |
-| --- | --- |
-| 寫出範圍 | 目標檔案不存在 |
-| `git push` | `git ls-remote origin refs/heads/preflight-probe-<s>` 沒有結果 |
-| `gh` | 指令是唯讀的，資源不會變；判定只看拒絕 |
-| `orca` | `orca orchestration task-list --run <run>` 的 Task 數只多了探測任務本身 |
-| `loopctl decide` | 指令是 `--help`；判定只看拒絕 |
-| Implementer 工作區的檔案、ref（Reviewer） | 檔案不存在；`git rev-parse <branch>` 前後相同 |
+一個負例成立，要同時滿足三件事；少一件就不成立，原因寫明少哪一件：
+
+1. **嘗試**：Claude 有對應這一步的 `tool_use`（Write 的 `file_path`，或 Bash 的 `command` 等於任務文字）；Codex 有對應的執行呼叫（`cmd` 等於任務文字）。
+2. **runtime 的拒絕**：
+   - Claude：以 `tool_use_id` 配對到的 `tool_result.is_error` 為 true，而且所在 user 紀錄的 `toolDenialKind == "permission-rule"`。其他值（例如 `user-rejected`、`interrupted`）不算。
+   - Codex：該呼叫的 `exit_code` 不是 0，而且它自己的輸出含 `Operation not permitted`。exit 0 時，即使輸出含這段文字，也算執行了。
+3. **資源未變**：依下表；沒有可觀察資源的負例，只看前兩件。
+
+| 負例 | 可能的結果 | 資源 |
+| --- | --- | --- |
+| 寫出範圍 | 被拒、沒嘗試、執行了、被拒但資源變了 | 目標檔案不存在 |
+| `git push --dry-run` | 被拒、沒嘗試、執行了、被拒但資源變了 | `git ls-remote origin refs/heads/preflight-probe-<s>` 沒有結果 |
+| `gh issue list` | 被拒、沒嘗試、執行了 | 唯讀命令，沒有可觀察資源 |
+| `orca … task-create` | 被拒、沒嘗試、執行了、被拒但資源變了 | `orca orchestration task-list --run <run>` 中，沒有 spec 等於 `probe <s>` 的 Task（以 marker 識別，不受其他 Task 影響） |
+| `loopctl decide --help` | 被拒、沒嘗試、執行了 | `--help` 不改狀態，沒有可觀察資源 |
+| Implementer 工作區的檔案（Reviewer） | 被拒、沒嘗試、執行了、被拒但資源變了 | 檔案不存在 |
+| Implementer 工作區的 ref（Reviewer） | 被拒、沒嘗試、執行了、被拒但資源變了 | `git rev-parse <branch>` 前後相同 |
 
 **Receipt**（object，內容就是它的 digest）
 
 - 欄位：
   - `schema: 1`、`role`、`repo`、`context: {feature}`；
   - `profile` 與它的 digest、`policy_digest`；
-  - `versions: {transport, agent_cli, native}`；
+  - `versions: {transport, agent_cli_before, agent_cli_after, native}`；
   - `marker`、`native_session_id`；
   - `orca: {run, task, dispatch, terminal}`；
   - `launch: {command, settings_digest, execution_mode}`；
-  - `gateway: {configured, observable: false}`；
+  - `observed`（上述不判定的觀察值）；
   - `items: {<名稱>: {pass, reason, evidence: [<摘錄 id>]}}`；
-  - `excerpts: {<id>: <遮蔽後的紀錄>}`、`native_digest`；
-  - `verdict`、`reasons`、`started_at`、`finished_at`、`cleanup`。
-- **遮蔽**：所有寫出的文字都先把 `dcap_[A-Za-z0-9_-]+` 換成 `dcap_<redacted>`。`ps -E` 的輸出只拿來計數，從不保存（research §8）。
-- **摘錄**：每一項判定所依據的 native 紀錄（marker prompt、讀回紀錄、每個負例的 `tool_use` 與 `tool_result`），遮蔽後放進 receipt；`native_digest` 是整份 native 檔案的 sha256。
+  - `excerpts: {<id>: <摘錄>}`、`native_digest`；
+  - `verdict`、`reasons`、`started_at`、`finished_at`、`cleanup`（本次 preflight 處理的殘留，D8）。
+- **摘錄只取固定欄位**：
+  - Claude 紀錄：`type`、`uuid`、`timestamp`、`message.model`、`effort`、`cwd`、`gitBranch`、`version`、`permissionMode`、`toolDenialKind`、`tool_use` 的 `id`／`name`／`input.command`／`input.file_path`、`tool_result` 的 `tool_use_id`／`is_error`／內容前 500 字元；
+  - Codex 紀錄：`type`、`timestamp`、`payload.type`、`turn_context` 的 `model`／`effort`／`cwd`／`sandbox_policy`／`approval_policy`／`disabled_plugin_ids`、執行呼叫的 `call_id`／`cmd`、輸出的 `exit_code` 與前 500 字元。
+- **遮蔽**：所有寫出的文字（receipt、`--out`、探測紀錄、設定檔）都先經 `redact()`：
+  - `dcap_[A-Za-z0-9_-]+` → `dcap_<redacted>`；
+  - `sk-[A-Za-z0-9_-]{16,}`、`ghp_[A-Za-z0-9]{16,}`、`github_pat_[A-Za-z0-9_]{16,}`、`Bearer\s+\S+` → `<redacted>`；
+  - URL 的 userinfo（`scheme://user:pass@`）→ `scheme://<redacted>@`；
+  - 設定的 `env` 中，鍵名含 `TOKEN`、`SECRET`、`KEY`、`PASSWORD`、`AUTH` 的值 → `<redacted>`（寫給 Claude 的設定檔保留真值，但檔案權限是 0600，寫進 receipt 與紀錄時遮蔽）。
+- `ps -E` 的輸出只拿來計數，從不保存（research §8）。
+- `native_digest` 是整份 native 檔案的 sha256；native 檔案之後被清掉，receipt 的摘錄仍在。
 
 ### D7. 等待、process-info 與停止
 
@@ -260,21 +288,22 @@ Orca 的阻塞式等待取代輪詢。fake 立即回應，所以測試不需要�
 ```
 $LOOPCTL_HOME/repos/<owner>/<name>/preflight/<role>/
   lock                    flock；第一次使用時建立
-  probes/<seq>.json       write-once：started｜terminal｜dispatch｜closed｜cleanup
+  probes/<seq>.json       write-once：started｜terminal｜dispatch｜closed｜stop_unconfirmed｜cleanup
   receipts/<seq>.json     write-once 索引：{seq, receipt: "sha256:…", verdict, at}
   settings/<marker>.json  Claude 探測的設定檔
 ```
 
 - `store.append_record(dir, payload) -> seq`：以 `O_CREAT|O_EXCL` 寫下一個編號，fsync 後回傳；撞號時重試下一號。`store.list_records(dir)` 依編號讀出，不完整的紀錄（JSON 無法解析）略過，並回報檔名。
-- **殘留**：有 `started` 但沒有 `closed` 或 `cleanup` 的 marker。每次 preflight 都在第 2 步處理：
+- **紀錄的終態**：一個 marker 只有在出現 `closed`（停止已確認），或 `cleanup` 且 `confirmed: true` 時才算結束。`stop_unconfirmed` 與 `cleanup {confirmed: false}` 都不結束它。
+- **殘留**：有 `started` 但還沒結束的 marker。每次 preflight 都在第 2 步處理每一個殘留：
   1. 有 handle 就 `terminal close`（handle 已不存在也繼續）；
-  2. 以 process-info 確認；
-  3. 寫 `cleanup` 紀錄 `{marker, handle, confirmed}`，並放進輸出的 `cleanup` 欄。
+  2. 以 process-info 確認（D7）；
+  3. 寫 `cleanup` 紀錄 `{marker, handle, confirmed}`，並放進輸出的 `cleanup` 欄；本次若派了探測 worker，也放進新 receipt 的 `cleanup`。
 - 有任何殘留確認不了停止時：
-  - 不派新的探測 worker；
+  - 不派新的探測 worker；這個殘留下次 preflight 會再處理一次；
   - 政策已核准時，寫一份 `unverified` 的 receipt，原因是 `residual_not_stopped`，附殘留的 marker 與 handle；
   - 政策未核准時，照第 3 步拒絕，清理結果只在紀錄與輸出（AC-D30、D31）。
-- 中斷的 preflight 沒有寫 receipt，所以不會產生 `verified`。
+- 中斷的 preflight 沒有寫 receipt，所以不會產生 `verified`。中斷點可能在 `terminal` 紀錄之後、`dispatch` 紀錄之前（Orca 已接受任務），也可能在 `dispatch` 之後；兩種都由同一套殘留規則處理。
 - **互斥**：同一個 role 同時只有一個 preflight（第 0 步的 lock）。兩個 role 可以同時跑。
 
 ### D9. 適用判定與派工管制
@@ -285,10 +314,10 @@ $LOOPCTL_HOME/repos/<owner>/<name>/preflight/<role>/
 
 - 取 `receipts/` 編號最大的索引；以 `store.get_object` 讀 receipt，digest 不符 → `receipt_corrupt`。
 - 適用條件：
-  - `verdict == "verified"`；
+  - `verdict == "verified"`（verified 已經包含 `version.consistent`）；
   - `policy_digest == approved_digest`；
   - `versions.transport == current.transport`；
-  - `versions.agent_cli == current.agent_cli`。
+  - `versions.native == current.agent_cli`：被驗證的是實際跑起來的版本，所以拿 native 紀錄的版本和目前讀到的比。
 - 目前版本讀不到 → `version_unknown`。沒有任何 receipt → `not_run`。
 
 **目前版本**
@@ -310,20 +339,26 @@ $LOOPCTL_HOME/repos/<owner>/<name>/preflight/<role>/
   - `profiles: {<role>: {status: verified|unverified|not_run|not_applicable, verdict, receipt, versions, reasons}}`；
   - `--human` 兩者都印。
 
-  `status` 一定讀 receipt 與版本（AC-D01、DUR-09）。
+  政策已核准時，`status` 讀 receipt 與版本（AC-D01、DUR-09）；政策未核准時，每個 profile 都是 `not_applicable`，原因是政策狀態，不呼叫任何工具。
 - `decide`、`register`：envelope 的 `next` 維持狀態檔的值。ORC-01 只允許 `preflight`、`status`、`next` 讀版本，而 DUR-01 寫明「不同時以 `next` 為準」。
 - 狀態檔與 `derive` 不改（DUR-01）。
 
 ### D10. 測試接縫
 
-- **fake 工具**：`tests/fakes/bin/fake` 是一支 Python 腳本，以 symlink 叫做 `orca`、`claude`、`codex`、`ps`，依執行時的 basename 判斷身分。測試以 `monkeypatch.setenv("PATH", …)` 放在最前面。產品以裸名稱呼叫，不寫死路徑。
-- **scenario**：每個測試給一份 JSON（環境變數 `FAKE_SCENARIO`）。
-  - 依呼叫順序比對 argv。
-  - 回應 stdout、stderr、exit。
-  - 可執行 effect：寫檔，例如在 `terminal create` 時寫出 Claude transcript 或 Codex rollout；或改 fake 的狀態，例如 `terminal close` 之後 `ps` 不再列出程序。
-  - 每次呼叫追加到 `FAKE_LOG`；沒有預期到的呼叫，記成 `unexpected` 並以 exit 97 結束。
-  - 這兩個環境變數只給 fake 讀，產品不知道它們。
-- **native 紀錄**：`HOME`、`CODEX_HOME` 指到 tmp。fake transcript 與 rollout 以 live probe 的實際欄位為範本（research「live probe 結果」P4、P5、P7）。
+- **整套測試的工具隔離**：conftest 的 autouse fixture 為每個測試建立 `fakebin/`，放 `orca`、`claude`、`codex`、`ps`、`gh`、`herdr`、`opencode` 的 fake，並放在 PATH 最前面。所以既有測試與新測試都不會碰到真實工具。
+  - 沒有 scenario 時，fake 只回答 `orca --version`（1.4.218）、`claude --version`（2.1.288）、`codex --version`（0.157.0）；其他呼叫記成 `unexpected`、exit 97。
+  - fixture 的 teardown 斷言沒有 `unexpected` 的呼叫。
+  - 「工具不存在」的測試改用受控的 PATH：`fakebin` 加上只含 `git`、`sh`、`env` 與 Python 直譯器 symlink 的 `minbin/`，並從 `fakebin` 移除那個工具。不依賴開發機剛好沒裝。
+- **fake 的能力**：`tests/fakes/bin/fake` 是一支 Python 腳本，依 basename 判斷身分；行為由 scenario（環境變數 `FAKE_SCENARIO` 指到的 JSON）決定。這兩個環境變數只給 fake 讀，產品不知道它們：
+  - 依呼叫順序比對 argv，可用 `{capture: name}` 擷取 argv 中的值（例如 marker、session uuid、handle），之後的回應與 effect 以 `{name}` 代換；
+  - 回應 stdout、stderr、exit；
+  - effect：
+    - `write`：寫檔，例如在 `terminal create` 時寫出 Claude transcript 或 Codex rollout；
+    - `state`：改 fake 的狀態檔，例如 `terminal close` 之後 `ps` 不再列出程序；
+    - `snapshot`：把某個目錄當下的檔案清單記進 `FAKE_LOG`，用來證明產品寫入的時間點早於這次呼叫；
+    - `kill_parent`：以 SIGKILL 結束呼叫它的 loopctl 程序，用來製造中斷；
+  - 每次呼叫以 `{seq, tool, argv, captured, unexpected?}` 追加到 `FAKE_LOG`。
+- **native 紀錄的範本**：fake transcript 與 rollout 依 [research 的樣本](../../../docs/research/2026-10-03/orca-preflight/samples/README.md) 的欄位與紀錄順序組成。`HOME`、`CODEX_HOME` 指到 tmp。
 - **git**：測試用真的 git。工作區是 tmp 裡的 repo，`origin` 是 tmp 裡的 bare repo，所以 `ls-remote` 不需要網路。
 - **時間**：以 `monkeypatch` 替換 `loopctl.clock.now` 與 `loopctl.clock.sleep`。`sleep` 的替身把假時鐘往前推，不真的等待。
 - **Orca terminal**：測試以 `monkeypatch.setenv("ORCA_TERMINAL_HANDLE", …)` 表示在 Orca terminal 內。
@@ -349,7 +384,7 @@ GAT-05 要求 Reviewer 使用獨立的 clone。
 
 - 目前的 `preflight-reviewer` 是 loop-engineering 的 linked worktree，和作者共用 `.git`。
 - 照 D6 的 `isolation.independent_clone`，Reviewer 在這個佈局下是 `unverified`。
-- 要讓它成立，人要另外 clone 一份 repo、以 `orca repo add` 註冊，並在那個 repo 建立 `preflight-reviewer`。這屬於環境設定，不在 task 範圍；依驗收條件，Reviewer 可以先是 `unverified`（proposal 待決 7）。
+- 要讓它成立，人要另外 clone 一份 repo、以 `orca repo add` 註冊，並在那個 repo 建立 `preflight-reviewer`（同時刪掉目前那個，免得 `workspace_ambiguous`）。D4 第 5 步以 remote identity 找 repo，所以找得到這個 clone。這屬於環境設定，不在 task 範圍；依驗收條件，Reviewer 可以先是 `unverified`（proposal 待決 7）。
 
 ### 與高層設計及 Feature 1 刻意不同之處
 
