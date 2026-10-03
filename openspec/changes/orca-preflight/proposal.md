@@ -14,16 +14,16 @@ Feature 2 要經 Orca 派 Implementer，但派工前必須先知道派出去的 
   - `implementer`：Orca 的 Claude agent、`claude-opus-5-5`；
   - `reviewer`：Orca 的 Codex agent、`gpt-6-astra`、effort xhigh（D76(2)）。
   - 每個 profile 寫明 transport、runtime、model、探測時的 effort、權限設定、可寫範圍、允許的 `orca` 子命令，以及保留與排除的設定來源（待決 2）；以人工 `policy_change` 核准並綁定 digest（D53）。逐 task 的 effort 屬於派工，在 Feature 2。
-- **`loopctl preflight`**：政策未核准就拒絕執行。核准後經 Orca 派一個帶唯一 marker 的探測 worker 到探測工作區，逐項判定，任一項不成立就是 `unverified` 並寫明原因：
+- **`loopctl preflight`**：以一個 run 為脈絡，該 run 的政策未核准就拒絕執行；不需要協調權，也不寫 feature 狀態。先持久記錄 marker 與 handle，再經 Orca 派一個帶唯一 marker 的探測 worker 到探測工作區，逐項判定，任一項不成立就是 `unverified` 並寫明原因：
   - 恰好一份 native 紀錄含 marker；model、effort、工作目錄取自那個 turn，和 profile 與探測工作區相符；
   - 權限負例：寫出可寫範圍、`git push`、`gh`、允許清單以外的 `orca` 子命令、`loopctl decide`。「被拒」指 native 紀錄顯示 worker 嘗試了、被 runtime 的權限或 sandbox 擋下，而且資源沒變；Reviewer 另做「改不到代表作者的 branch 與 worktree」；
   - worker 把 Orca 交付的任務當成任務，並交出 `worker_done`；
   - 停止以 process-info 確認探測 agent 的程序已不存在；
   - 沒有載入被排除的設定；兩個 profile 的 model 不同（D52）。
 - **Receipt**：記錄 digest、Orca 與 agent CLI 的版本、marker、native session ID、讀回值、實際權限模式、執行模式、權限設定的來源、任務的送達方式、每個負例、載入的設定，以及判定依據的 native 紀錄摘錄（遮蔽後）與 digest。native transcript 約 30 天會被清掉，所以摘錄要留在 receipt（verification §三）。不含 dispatch capability 等憑證。中斷的 preflight 不產生 `verified`；下一次先停掉殘留的探測 worker。
-- **適用的 receipt**：每個 profile 以最新一份為準；只有 `verified`、綁定目前已核准的 digest、Orca 與 agent CLI 版本都等於目前值才適用（D81）。
+- **適用的 receipt**：receipt 存在 run 狀態之外，帶自身內容的 digest。每個 profile 以最新一份為準；對一個 run，只有 `verified`、綁定的 digest 等於該 run 已核准的 digest、Orca 與 agent CLI 版本都等於目前值才適用（D81），所以已核准同一 digest 的 run 可以共用。
 - **`status`／`next`**：`status` 顯示每個 profile 的驗證狀態、版本與原因。已核准的 run 中，政策未核准時 `next` 回報需要 `policy_change`；Implementer 沒有適用的 receipt 時回報 `preflight` 動作，附 profile 與原因。重跑 preflight 不需要人工決策。
-- **ORC-01**：controller 原本「不啟動 agents」；改為只有 `preflight` 可以依已核准的政策、以固定的命令經 Orca 派出、讀回、停止探測 worker，並讀版本。仍然不常駐，也不執行呼叫者或 worker 提供的命令。
+- **ORC-01**：controller 原本「不啟動 agents」；改為只有 `preflight` 可以依已核准的政策、以固定的命令經 Orca 派出、讀回、停止探測 worker；`preflight`、`status`、`next` 可以以固定的命令讀 Orca 與 agent CLI 的版本。仍然不常駐，也不執行呼叫者或 worker 提供的命令。
 - **未選用的接入**：Herdr、OpenCode 不存在或故障時，不影響已選的 profile，也不會被呼叫（AC-D23）。
 - **能力證據矩陣**：依接法分欄（Orca＋claude、Orca＋codex），每格記證據類型（`fake`、`profile-probe`、`real-E2E`）與 verdict，沒執行的標 `none`。本 Feature 填 `fake` 與 `profile-probe`（AC-G19、D22）。
 - **兩個 profile 的真實 R1 各跑一次**，receipt 存進 repo（見「驗收條件」）。
