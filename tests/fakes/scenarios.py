@@ -536,8 +536,9 @@ class _Transcript:
         self.parent = uuid
         return uuid
 
-    def hook(self, event: str, name: str, command: str) -> None:
-        attachment = {
+    def hook(self, event: str, name: str, command: str | None) -> None:
+        """The record of a hook that ran; without `command` it names none."""
+        attachment: dict[str, Any] = {
             "type": "hook_success",
             "hookName": name,
             "toolUseID": "e84e03be-1176-4dde-b1c8-6672472918e3",
@@ -548,6 +549,21 @@ class _Transcript:
             "exitCode": 0,
             "command": command,
             "durationMs": 40,
+        }
+        if command is None:
+            del attachment["command"]
+        self.add("attachment", attachment=attachment)
+
+    def context(self, event: str) -> None:
+        """The context a hook of `event` gave back to Claude, as the
+        superpowers SessionStart hook does (Claude sample, line 7): it names
+        no command."""
+        attachment = {
+            "type": "hook_additional_context",
+            "content": ["<EXTREMELY_IMPORTANT>\nYou have superpowers.\n"],
+            "hookName": event,
+            "toolUseID": event,
+            "hookEvent": event,
         }
         self.add("attachment", attachment=attachment)
 
@@ -588,7 +604,8 @@ def claude_transcript(
     negatives: dict[str, str] | None = None,
     summary: str | None = None,
     skills: tuple[str, ...] = SKILLS,
-    hooks: tuple[tuple[str, str], ...] = (),
+    hooks: tuple[tuple[str, str | None], ...] = (),
+    contexts: tuple[str, ...] = (),
     credentials: str | None = None,
 ) -> str:
     """The transcript of a probe worker that did every step as the profile
@@ -607,7 +624,9 @@ def claude_transcript(
     run (SessionStart, a PreToolUse for each call, a PostToolUse for each
     call that ran, Stop), the superpowers plugin runs its own SessionStart
     hook, and Claude lists `skills`. `hooks` are more hooks that ran at
-    startup, each (event, command). `credentials` is text the result of
+    startup, each (event, command); a None command writes a record that
+    names none. `contexts` are the events whose hooks gave context back,
+    written after the startup hooks. `credentials` is text the result of
     every call ends with, as a command's output can carry them."""
     outcomes = {
         number: (negatives or {}).get(name, "denied")
@@ -638,6 +657,8 @@ def claude_transcript(
     t.hook("SessionStart", "SessionStart:startup", SUPERPOWERS_HOOK)
     for event, command in hooks:
         t.hook(event, f"{event}:startup", command)
+    for event in contexts:
+        t.context(event)
     steps = probe_steps(workspace, marker, run)
     prompt = (
         "Please carry out this task from my Orca coordinator by following the"

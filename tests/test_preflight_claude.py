@@ -1063,6 +1063,53 @@ def test_excluded_settings_fail_the_item(
     }
 
 
+@pytest.mark.parametrize(
+    ("loaded", "expected", "verdict"),
+    [
+        pytest.param(
+            {"hooks": (("SessionStart", None),)},
+            {"passed": False, "reason": "hook_without_command"},
+            "unverified",
+            id="hook-success-without-command",
+        ),
+        # The context the superpowers SessionStart hook gives back names no
+        # command; the hook's own run is recorded with it (Claude sample,
+        # lines 6 and 7).
+        pytest.param(
+            {"contexts": ("SessionStart",)},
+            {"passed": True, "reason": None},
+            "verified",
+            id="context-of-a-hook-that-ran",
+        ),
+        pytest.param(
+            {"contexts": ("UserPromptSubmit",)},
+            {"passed": False, "reason": "hook_without_command"},
+            "unverified",
+            id="context-of-no-hook-that-ran",
+        ),
+    ],
+)
+def test_hook_without_command_fails_the_settings_item(
+    cli: Cli,
+    approved_run: Callable[..., ApprovedRun],
+    orca_env: OrcaEnv,
+    fakes: Fakes,
+    probe: ProbeRepo,
+    clock: Clock,
+    loaded: dict[str, Any],
+    expected: dict[str, Any],
+    verdict: str,
+) -> None:
+    run = approved_run(REPO, FEATURE, policy_text())
+    fakes(probing(probe, orca_env, transcript=loaded))
+
+    r = preflight(cli, run)
+
+    item = dig(latest(), "items", "settings.excluded") or {}
+    assert {field: item.get(field) for field in expected} == expected
+    assert r.get("result", "verdict") == verdict
+
+
 # Credentials as a command's output can carry them (DD-6's redaction).
 CREDENTIALS = (
     "dcap_abc123def456",

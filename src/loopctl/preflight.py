@@ -1082,10 +1082,11 @@ def judge_settings(
     )
     ran = native.hooks(records)
     gateway = _field(seen.settings, "env", "ANTHROPIC_BASE_URL")
+    commands = [_field(record, "attachment", "command") for record in ran]
     orca_hooks = [
-        record
-        for record in ran
-        if keep["hooks_matching"] in str(record["attachment"]["command"])
+        command
+        for command in commands
+        if isinstance(command, str) and keep["hooks_matching"] in command
     ]
     seen.observed = {
         "gateway": {"configured": gateway, "observable": False},

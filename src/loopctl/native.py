@@ -303,17 +303,41 @@ def attachments(records: list[dict[str, Any]], kind: str) -> list[dict[str, Any]
 
 
 def hooks(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The records of every hook Claude ran: an attachment of a `hook_`
-    type that names its command, whether the hook succeeded or not."""
-    return [
-        record
-        for record in attachments(records, "hook_")
-        if "command" in record["attachment"]
-    ]
+    """The records of every hook Claude ran: each attachment of a `hook_`
+    type, whatever it names."""
+    return attachments(records, "hook_")
 
 
 # How much of a hook's command is kept as evidence (DD-6).
 HOOK_CHARS = 200
+
+# The record of the context a hook gave back to Claude. It names no
+# command: the hook's own run is recorded beside it with its command, and
+# its event (Claude sample, lines 6 and 7).
+HOOK_CONTEXT = "hook_additional_context"
+
+
+def without_command(ran: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The hook records in `ran` that cannot be judged by a command: a run
+    whose command is missing or not text, and a context given back in an
+    event of which no run names its command. A hook that cannot be judged
+    cannot count as one the profile keeps."""
+    named = {
+        record["attachment"].get("hookEvent")
+        for record in ran
+        if record["attachment"].get("type") != HOOK_CONTEXT
+        and isinstance(record["attachment"].get("command"), str)
+    }
+    unjudged = []
+    for record in ran:
+        attachment = record["attachment"]
+        if attachment.get("type") == HOOK_CONTEXT:
+            judged = attachment.get("hookEvent") in named
+        else:
+            judged = isinstance(attachment.get("command"), str)
+        if not judged:
+            unjudged.append(record)
+    return unjudged
 
 
 def skill_names(records: list[dict[str, Any]]) -> list[str] | None:
@@ -339,18 +363,33 @@ def judge_claude_settings(
     to an `excluded` plugin (its name starts with `<plugin>:`), and the
     command of every hook it ran holds one of `kept`. A hook that ran,
     however it ended, was loaded. Without a skill listing whose names can
-    be read there is nothing to judge."""
+    be read there is nothing to judge.
+
+    An excluded skill or hook seen fails the item as excluded_loaded; else
+    a hook record that cannot be judged by a command (without_command)
+    fails it as hook_without_command."""
     required = {"excluded_plugins": excluded, "hook_commands_hold_one_of": kept}
     names = skill_names(records)
     if names is None:
         return Item(False, "not_recorded", required, None)
     skills = [name for name in names if any(name.startswith(f"{p}:") for p in excluded)]
-    commands = [record["attachment"]["command"] for record in hooks(records)]
+    commands = [record["attachment"].get("command") for record in hooks(records)]
     others = [
-        str(command)[:HOOK_CHARS]
+        command[:HOOK_CHARS]
         for command in commands
-        if not (isinstance(command, str) and any(k in command for k in kept))
+        if isinstance(command, str) and not any(k in command for k in kept)
     ]
-    passed = not skills and not others
-    actual = {"skills_of_excluded_plugins": skills, "other_hooks": others}
-    return Item(passed, None if passed else "excluded_loaded", required, actual)
+    unjudged = [
+        {name: record["attachment"].get(name) for name in ("type", "hookEvent")}
+        for record in without_command(hooks(records))
+    ]
+    actual = {
+        "skills_of_excluded_plugins": skills,
+        "other_hooks": others,
+        "hooks_without_command": unjudged,
+    }
+    if skills or others:
+        return Item(False, "excluded_loaded", required, actual)
+    if unjudged:
+        return Item(False, "hook_without_command", required, actual)
+    return Item(True, None, required, actual)
