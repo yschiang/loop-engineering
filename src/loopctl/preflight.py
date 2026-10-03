@@ -813,9 +813,10 @@ def read_native(
     seen: Probe, since: float
 ) -> tuple[native.Session | None, str | None, str | None]:
     """The probe session from its transcript and the transcript's digest,
-    or why there is none. The digest is read after the session: the agent
-    only appends to its transcript, so the bytes digested hold every
-    record the session was read from."""
+    or why there is none: a transcript that cannot be read, or whose lines
+    cannot be decoded, is native_unreadable (DD-6). The digest is read
+    after the session: the agent only appends to its transcript, so the
+    bytes digested hold every record the session was read from."""
     assert seen.marker is not None and seen.session is not None
     found = native.find_claude(Path.home(), seen.marker, seen.session, since)
     if found.path is None:
@@ -823,7 +824,7 @@ def read_native(
     try:
         session = native.read_claude(found.path, seen.marker)
         return session, "sha256:" + _sha256(found.path), None
-    except OSError:
+    except (OSError, native.Unreadable):
         return None, None, "native_unreadable"
 
 

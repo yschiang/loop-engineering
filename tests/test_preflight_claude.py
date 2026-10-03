@@ -833,6 +833,61 @@ def test_hidden_projects_are_in_the_search_scope(
         assert (name, got) == (name, expected)
 
 
+# A line nested deeper than the JSON decoder follows.
+NESTED = "[" * 100_000 + "]" * 100_000
+
+
+@pytest.mark.parametrize(
+    ("tail", "timeout_s", "wait", "reason"),
+    [
+        pytest.param(NESTED + "\n", 60, "timeout", "native_unreadable", id="nested"),
+        # A whole line that is not JSON may be the record of a hook or a
+        # call; it cannot be passed over.
+        pytest.param(
+            '{"type": "attachment", "attachment": {"type": "hook_success"\n',
+            60,
+            "timeout",
+            "native_unreadable",
+            id="not-json",
+        ),
+        # The last line, without its end, is one the agent is still writing.
+        pytest.param(
+            '{"type": "assistant", "message": {"model": "claude-op',
+            900,
+            "idle",
+            None,
+            id="unfinished-last-line",
+        ),
+    ],
+)
+def test_undecodable_transcript_line_fails_the_readback(
+    cli: Cli,
+    approved_run: Callable[..., ApprovedRun],
+    orca_env: OrcaEnv,
+    fakes: Fakes,
+    probe: ProbeRepo,
+    clock: Clock,
+    tail: str,
+    timeout_s: int,
+    wait: str,
+    reason: str | None,
+) -> None:
+    run = approved_run(REPO, FEATURE, policy_text(timeout_s))
+    fakes(probing(probe, orca_env, wait=wait, transcript={"tail": tail}))
+
+    r = preflight(cli, run)
+
+    receipt = latest()
+    expected = {"passed": reason is None, "reason": reason}
+    for name in NATIVE_ITEMS:
+        got = {field: dig(receipt, "items", name, field) for field in expected}
+        assert (name, got) == (name, expected), r.exc
+    assert dig(receipt, "items", "stop.confirmed", "passed") is True
+    assert r.exc is None
+    verdict = "verified" if reason is None else "unverified"
+    assert (r.code, r.get("result", "verdict")) == (0 if reason is None else 3, verdict)
+
+
 # The negatives of the Claude probe, by probe step (DD-5, DD-6).
 NEGATIVES = (
     "negative.outside_write",

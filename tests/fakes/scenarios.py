@@ -607,6 +607,7 @@ def claude_transcript(
     hooks: tuple[tuple[str, str | None], ...] = (),
     contexts: tuple[str, ...] = (),
     credentials: str | None = None,
+    tail: str = "",
 ) -> str:
     """The transcript of a probe worker that did every step as the profile
     allows (research P4): steps 1-5 denied by a permission rule, steps 6
@@ -627,7 +628,9 @@ def claude_transcript(
     startup, each (event, command); a None command writes a record that
     names none. `contexts` are the events whose hooks gave context back,
     written after the startup hooks. `credentials` is text the result of
-    every call ends with, as a command's output can carry them."""
+    every call ends with, as a command's output can carry them. `tail` is
+    text after the last record: a line the agent is still writing, or one
+    that cannot be decoded."""
     outcomes = {
         number: (negatives or {}).get(name, "denied")
         for number, name in enumerate(NEGATIVES, 1)
@@ -742,7 +745,7 @@ def claude_transcript(
     t.assistant([{"type": "text", "text": words}], "end_turn", model=model, **efforts)
     t.hook("Stop", "Stop", orca_hook("Stop"))
     t.add("system", subtype="turn_duration", durationMs=31000, messageCount=40)
-    return t.text()
+    return t.text() + tail
 
 
 def ps_lines(marker: str, session: str, *, environment: bool) -> str:

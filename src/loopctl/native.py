@@ -135,19 +135,37 @@ def find_codex(codex_home: Path, marker: str, days: list[date]) -> Found:
     return NOT_FOUND
 
 
+class Unreadable(Exception):
+    """A native record whose bytes were read but whose lines cannot all be
+    decoded: it cannot show what the agent did (DD-6)."""
+
+
 def _records(path: Path) -> list[dict[str, Any]]:
-    """The records of the JSON-lines file `path`. A line that is not a JSON
-    object, such as the last one while the agent is still writing it, is
-    no record. Raises OSError when the file cannot be read."""
+    """The records of the JSON-lines file `path`: the JSON objects among its
+    lines. The agent ends every line it writes; a last line without its
+    end is one it is still writing, and is no record until it is ended.
+    A line that is ended but cannot be decoded, as one nested deeper than
+    the decoder follows, may be the record of any call or hook, so the
+    file is Unreadable; a blank line holds nothing. Raises OSError when
+    the file cannot be read."""
+    lines = path.read_bytes().split(b"\n")
+    # What follows the last end of line: empty when every line is ended.
+    lines, unfinished = lines[:-1], lines[-1]
     records = []
-    for line in path.read_bytes().splitlines():
+    for line in lines:
+        if not line.strip():
+            continue
         try:
             record = json.loads(line)
-        except ValueError:
-            continue
+        except (ValueError, RecursionError) as error:
+            raise Unreadable(f"{path}: {type(error).__name__}") from error
         if isinstance(record, dict):
             records.append(record)
-    return records
+    try:
+        record = json.loads(unfinished)
+    except (ValueError, RecursionError):
+        return records
+    return records + [record] if isinstance(record, dict) else records
 
 
 def _content(record: dict[str, Any]) -> Any:
@@ -186,7 +204,8 @@ def read_claude(path: Path, marker: str) -> Session:
     and the last prompt hold it too, and are not the prompt); the readback
     is the first assistant record after it; the turn is complete when the
     last assistant record after it ended the turn with every tool call
-    answered (DD-6, DD-7). Raises OSError when `path` cannot be read."""
+    answered (DD-6, DD-7). Raises OSError when `path` cannot be read, and
+    Unreadable when its lines cannot be decoded."""
     records = _records(path)
     start = next(
         (
