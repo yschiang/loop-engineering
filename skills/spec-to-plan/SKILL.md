@@ -24,6 +24,8 @@ Use `research-codebase` on the flows this feature touches: entry points, existin
 
 Run `openspec instructions design --change <id>` and write within the high-level design's boundaries: modules, interfaces, data flow, failure handling, and the seams tests will use. When two approaches need comparing, use the option comparison from `brainstorming`, but write the outcome into `design.md`, never into `docs/superpowers/specs/`. A new high-level boundary goes back to the Project Lead.
 
+Number the design's decisions `DD-1`, `DD-2`, …, and cite them that way from `tasks.md` and the reviews, so they never read as the project's `D<n>` in `docs/decisions.md` (D83). A change archived before D83 keeps its numbering.
+
 ## 3. Write tasks.md, the only plan
 
 Run `openspec instructions tasks --change <id>`. Cut the work into tasks as vertical slices, the tracer-bullet rules of Matt Pocock's `to-tickets` (D71):
